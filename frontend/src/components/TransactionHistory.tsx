@@ -1,6 +1,7 @@
 
 import React from 'react';
 import { useTransactionHistory } from '../hooks/useTransactionHistory';
+import { CopyButton } from './CopyButton'
 
 interface TransactionHistoryProps {
   publicKey?: string;
@@ -98,15 +99,18 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
                     </span>
                   </td>
                   <td className="px-4 py-2">
-                    <a
-                      href={`https://stellar.expert/explorer/public/tx/${tx.hash}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-blue-600 underline"
-                      aria-label={`View transaction ${tx.hash} on Stellar Explorer`}
-                    >
-                      View
-                    </a>
+                    <div className="flex items-center gap-2">
+                      <a
+                        href={`https://stellar.expert/explorer/public/tx/${tx.hash}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-600 underline"
+                        aria-label={`View transaction ${tx.hash} on Stellar Explorer`}
+                      >
+                        View
+                      </a>
+                      <CopyButton value={tx.hash} ariaLabel="Copy transaction hash" className="text-gray-400" />
+                    </div>
                   </td>
                 </tr>
               ))}
