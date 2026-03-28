@@ -21,7 +21,11 @@
     "installFreighter": "Install Freighter",
     "connected": "Wallet connected",
     "disconnected": "Wallet disconnected",
-    "connectFailed": "Failed to connect wallet"
+    "connectFailed": "Failed to connect wallet",
+    "loadingBalance": "Loading balance...",
+    "lowBalance": "Insufficient balance for fees",
+    "lowBalanceTestnet": "Your balance is too low to cover fees. Get free testnet XLM from",
+    "lowBalanceMainnet": "Your XLM balance is too low to cover transaction fees. Please top up your wallet before proceeding."
   },
   "home": {
     "welcome": "Welcome to Nova Launch",

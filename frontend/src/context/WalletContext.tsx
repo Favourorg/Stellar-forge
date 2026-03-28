@@ -37,7 +37,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   })
   const [isConnecting, setIsConnecting] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [isInstalled, setIsInstalled] = useState<boolean>(true) // Assume installed initially
+  const [isInstalled, setIsInstalled] = useState<boolean>(true)
 
   const fetchBalance = async (address: string) => {
     try {
@@ -46,6 +46,10 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     } catch (err) {
       console.error('Failed to fetch balance:', err)
     }
+  }
+
+  const refreshBalance = async () => {
+    if (wallet.address) await fetchBalance(wallet.address)
   }
 
   const connect = async () => {
@@ -74,9 +78,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       const installed = await walletService.isInstalled()
       setIsInstalled(installed)
 
-      if (!installed) {
-        return
-      }
+      if (!installed) return
 
       try {
         const address = await walletService.checkExistingConnection()
@@ -108,7 +110,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         isInstalled,
         connect,
         disconnect,
-        refreshBalance: () => (wallet.address ? fetchBalance(wallet.address) : Promise.resolve()),
+        refreshBalance,
       }}
     >
       {children}

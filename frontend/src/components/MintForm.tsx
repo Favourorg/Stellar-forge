@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { Input, Button, ConfirmModal } from './UI'
 import { useDebounce } from '../hooks/useDebounce'
 import { useTos } from '../context/TosContext'
+import { useWalletContext } from '../context/WalletContext'
 import { stellarService } from '../services/stellar'
 import { isValidStellarAddress } from '../utils/validation'
 import type { TokenInfo } from '../types'
@@ -27,6 +28,7 @@ export const MintForm: React.FC<MintFormProps> = ({
   const [recipientValidationError, setRecipientValidationError] = useState<string | null>(null)
   const [isCheckingRecipient, setIsCheckingRecipient] = useState(false)
   const { requireTos } = useTos()
+  const { refreshBalance } = useWalletContext()
 
   const debouncedAddress = useDebounce(tokenAddress, ADDRESS_DEBOUNCE_DELAY)
   const debouncedRecipient = useDebounce(recipient, ADDRESS_DEBOUNCE_DELAY)
@@ -90,6 +92,7 @@ export const MintForm: React.FC<MintFormProps> = ({
   const handleConfirm = async () => {
     setPending(false)
     // mint logic placeholder
+    await refreshBalance()
     onSuccess?.()
   }
 
