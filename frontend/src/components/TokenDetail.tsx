@@ -1,20 +1,23 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useParams, Link } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import { useStellarContext } from '../context/StellarContext'
 import { useNetwork } from '../context/NetworkContext'
 import { useToast } from '../context/ToastContext'
 import { useWallet } from '../hooks/useWallet'
 import { ipfsService } from '../services/ipfs'
-import { stellarExplorerUrl, ipfsToGatewayUrl, formatAddress } from '../utils/formatting'
+import { stellarExplorerUrl, ipfsToGatewayUrl, formatAddress, formatTimestamp } from '../utils/formatting'
 import { isValidContractAddress } from '../utils/validation'
 import type { TokenInfo, IPFSMetadata } from '../types'
 import { Card, Button, Spinner } from './UI'
 import { CopyButton } from './CopyButton'
+import { ExplorerLink } from './ExplorerLink'
 import { QRCodeModal } from './UI/QRCodeModal'
 import { ShareButton } from './ShareButton'
 import { MintForm } from './MintForm'
 import { BurnForm } from './BurnForm'
 import { SetMetadataForm } from './SetMetadataForm'
+import { TokenHistory } from './TokenHistory'
 
 const BASE_URL = 'https://stellarforge.app'
 
@@ -208,13 +211,10 @@ export const TokenDetail: React.FC = () => {
                   type="account"
                   value={token.creator}
                   network={network}
-                  label="View on Stellar Expert"
+                  label={formatAddress(token.creator)}
                   ariaLabel={`View account ${token.creator} on Stellar Expert`}
                   className="text-indigo-500 hover:underline"
-                  title={token.creator}
-                >
-                  {formatAddress(token.creator)}
-                </a>
+                />
               ) : '—'}
             </dd>
           </div>
@@ -308,6 +308,9 @@ export const TokenDetail: React.FC = () => {
           )}
         </>
       )}
+
+      {/* Token History */}
+      {address && <TokenHistory tokenAddress={address} />}
     </div>
   )
 }
