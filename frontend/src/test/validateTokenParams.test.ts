@@ -22,6 +22,22 @@ describe('validateTokenParams - name', () => {
     expect(validateTokenParams({ ...valid, name: 'A'.repeat(32) }).valid).toBe(true)
   })
 
+  it('strips leading/trailing whitespace from name', () => {
+    expect(validateTokenParams({ ...valid, name: '  MyToken  ' }).valid).toBe(true)
+  })
+
+  it('rejects a name with special characters', () => {
+    const { valid: ok, errors } = validateTokenParams({ ...valid, name: '<script>' })
+    expect(ok).toBe(false)
+    expect(errors.name).toBeDefined()
+  })
+
+  it('rejects a name with HTML entities', () => {
+    const { valid: ok, errors } = validateTokenParams({ ...valid, name: 'Token&Name' })
+    expect(ok).toBe(false)
+    expect(errors.name).toBeDefined()
+  })
+
   it('rejects an empty name', () => {
     const { valid: ok, errors } = validateTokenParams({ ...valid, name: '' })
     expect(ok).toBe(false)

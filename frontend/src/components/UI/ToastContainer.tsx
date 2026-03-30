@@ -1,3 +1,4 @@
+import React from 'react'
 import { useToast, type Toast } from '../../context/ToastContext'
 
 const STYLES: Record<Toast['variant'], string> = {
@@ -11,8 +12,6 @@ const ToastItem: React.FC<{ toast: Toast }> = ({ toast }) => {
   const { removeToast } = useToast()
   return (
     <div
-      role="alert"
-      aria-live="assertive"
       className={`flex items-center justify-between gap-4 px-4 py-3 rounded-lg shadow-lg text-white text-sm min-w-64 ${STYLES[toast.variant]}`}
     >
       <span>{toast.message}</span>
@@ -29,9 +28,13 @@ const ToastItem: React.FC<{ toast: Toast }> = ({ toast }) => {
 
 export const ToastContainer: React.FC = () => {
   const { toasts } = useToast()
-  if (!toasts.length) return null
   return (
-    <div className="fixed top-4 right-4 z-50 flex flex-col gap-2" aria-label="Notifications">
+    <div
+      role="region"
+      aria-live="polite"
+      aria-label="Notifications"
+      className="fixed top-4 right-4 z-50 flex flex-col gap-2"
+    >
       {toasts.map((t) => (
         <ToastItem key={t.id} toast={t} />
       ))}

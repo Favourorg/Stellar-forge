@@ -6,13 +6,35 @@
 
 use soroban_sdk::{
     contract, contractimpl, contracttype, contracterror, contractclient,
-    Address, BytesN, Env, String, Vec, vec, symbol_short, token,
+    Address, BytesN, Env, Map, String, Vec, vec, symbol_short, token,
 };
 
 /// Minimal interface for initializing a deployed SEP-41 token contract.
 #[contractclient(name = "TokenInitClient")]
 pub trait TokenInit {
     fn initialize(env: Env, admin: Address, decimal: u32, name: String, symbol: String);
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DataKey {
+    State,
+    TokenInfo(u32),
+    CreatorTokens(Address),
+    TokenIndex(Address),
+    Metadata(Address),
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct BatchTokenParams {
+    pub salt: BytesN<32>,
+    pub token_wasm_hash: BytesN<32>,
+    pub name: String,
+    pub symbol: String,
+    pub decimals: u32,
+    pub initial_supply: i128,
+    pub max_supply: Option<i128>,
 }
 
 #[contracttype]
@@ -23,8 +45,8 @@ pub struct TokenInfo {
     pub decimals: u32,
     pub creator: Address,
     pub created_at: u64,
-    /// Whether burning is enabled for this token. Defaults to true.
     pub burn_enabled: bool,
+    pub max_supply: Option<i128>,
 }
 
 /// Current schema version written by `initialize` and bumped by `migrate`.
@@ -36,18 +58,24 @@ pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 pub struct FactoryState {
     pub admin: Address,
     pub paused: bool,
-    /// Reentrancy guard flag. Set to `true` at the start of `create_token`
-    /// and cleared to `false` before returning (success or error).
     pub locked: bool,
     pub treasury: Address,
     pub fee_token: Address,
     pub base_fee: i128,
+
     pub metadata_fee: i128,
+    pub token_wasm_hash: BytesN<32>,
     pub token_count: u32,
     /// Schema version of this state struct. Used by `migrate` to apply
     /// incremental upgrades without data loss.
     pub schema_version: u32,
 }
+</xai:function_call }
+
+
+
+<xai:function_call name="edit_file">
+<parameter name="path">contracts/token-factory/src/lib.rs
 
 #[contracterror]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -62,60 +90,98 @@ pub enum Error {
     BurnNotEnabled = 8,
     InvalidBurnAmount = 9,
     ContractPaused = 10,
-    /// Soroban's execution model is single-threaded and atomic per transaction,
-    /// which eliminates classic EVM-style reentrancy. However, `create_token`
-    /// performs cross-contract calls (deploy + initialize + mint) that could
-    /// theoretically be chained in unexpected ways via a malicious token
-    /// contract. This guard adds defense-in-depth: if `create_token` is somehow
-    /// re-entered before the first invocation completes, the second call is
-    /// rejected immediately rather than corrupting factory state.
     Reentrancy = 11,
-    /// Integer overflow error during arithmetic operations (fee calculation, token count, etc.)
     ArithmeticOverflow = 12,
-    /// Storage read failed - contract state not found
     StateNotFound = 13,
+    InvalidTokenParams = 14,
+    InvalidDecimals = 15,
+    /// Mint would exceed the token's max supply cap
+    MaxSupplyExceeded = 16,
+    /// Fee split basis points do not sum to 10_000
+    InvalidFeeSplit = 17,
 }
 
 #[contract]
 pub struct TokenFactory;
 
+const MIN_TTL: u32 = 100_000;
+const MAX_TTL: u32 = 535_000;
+
 #[contractimpl]
 impl TokenFactory {
+    /// Initialize the factory. `fee_token` is the SEP-41 token used for all
+    /// fee payments; fees are transferred from the caller to `treasury`.
     pub fn initialize(
         env: Env,
         admin: Address,
         treasury: Address,
         fee_token: Address,
+        token_wasm_hash: BytesN<32>,
         base_fee: i128,
         metadata_fee: i128,
     ) -> Result<(), Error> {
-        if env.storage().instance().has(&symbol_short!("init")) {
+
+        if env.storage().instance().has(&DataKey::State) {
             return Err(Error::AlreadyInitialized);
         }
+
         let state = FactoryState {
             admin: admin.clone(),
             paused: false,
             locked: false,
             treasury,
             fee_token,
+            token_wasm_hash: token_wasm_hash.clone(),
             base_fee,
             metadata_fee,
             token_count: 0,
             schema_version: CURRENT_SCHEMA_VERSION,
         };
-        env.storage().instance().set(&symbol_short!("state"), &state);
-        env.storage().instance().set(&symbol_short!("sv"), &CURRENT_SCHEMA_VERSION);
-        env.storage().instance().set(&symbol_short!("init"), &true);
+
+        env.storage().instance().set(&DataKey::State, &state);
+        env.storage().instance().extend_ttl(MIN_TTL, MAX_TTL);
         env.events().publish((symbol_short!("init"),), (admin,));
         Ok(())
     }
 
     fn load_state(env: &Env) -> Result<FactoryState, Error> {
-        env.storage().instance().get(&symbol_short!("state")).ok_or(Error::StateNotFound)
+        env.storage().instance().get(&DataKey::State).ok_or(Error::StateNotFound)
     }
 
     fn save_state(env: &Env, state: &FactoryState) {
-        env.storage().instance().set(&symbol_short!("state"), state);
+        env.storage().instance().set(&DataKey::State, state);
+        env.storage().instance().extend_ttl(MIN_TTL, MAX_TTL);
+    }
+
+    /// Transfer `amount` of `fee_token` from `payer` to `treasury` (or split
+    /// recipients if a fee split is configured).
+    fn distribute_fee(env: &Env, state: &FactoryState, payer: &Address, amount: i128) -> Result<(), Error> {
+        let fee_client = token::TokenClient::new(env, &state.fee_token);
+        let split_key = symbol_short!("split");
+
+        if let Some(splits) = env.storage().instance().get::<_, Map<Address, u32>>(&split_key) {
+            let mut distributed: i128 = 0;
+            for (recipient, bps) in splits.iter() {
+                let share = amount
+                    .checked_mul(bps as i128).ok_or(Error::ArithmeticOverflow)?
+                    / 10_000;
+                if share > 0 {
+                    fee_client.transfer(payer, &recipient, &share);
+                }
+                distributed = distributed.checked_add(share).ok_or(Error::ArithmeticOverflow)?;
+            }
+            let remainder = amount.checked_sub(distributed).ok_or(Error::ArithmeticOverflow)?;
+            if remainder > 0 {
+                fee_client.transfer(payer, &state.treasury, &remainder);
+            }
+        } else {
+            fee_client.transfer(payer, &state.treasury, &amount);
+        }
+        Ok(())
+    }
+
+    fn extend_token_ttl(env: &Env, _token_address: &Address, _index: u32) {
+        env.storage().instance().extend_ttl(MIN_TTL, MAX_TTL);
     }
 
     fn whitelist_key(address: &Address) -> (soroban_sdk::Symbol, Address) {
@@ -153,17 +219,14 @@ impl TokenFactory {
         Ok(())
     }
 
-    /// Deploy a new token contract from `token_wasm_hash`, initialize it,
-    /// and register it with the factory. `salt` must be unique per creator.
     pub fn create_token(
         env: Env,
         creator: Address,
         salt: BytesN<32>,
-        token_wasm_hash: BytesN<32>,
         name: String,
         symbol: String,
         decimals: u32,
-        initial_supply: i128,
+        initial_supply: u128,
         fee_payment: i128,
     ) -> Result<Address, Error> {
         Self::require_not_paused(&env)?;
@@ -171,16 +234,17 @@ impl TokenFactory {
 
         let mut state = Self::load_state(&env)?;
 
-        // Reentrancy guard: reject if a create_token call is already in progress.
         if state.locked {
             return Err(Error::Reentrancy);
         }
         state.locked = true;
         Self::save_state(&env, &state);
 
-        let result = Self::create_token_inner(&env, creator, salt, token_wasm_hash, name, symbol, decimals, initial_supply, fee_payment, &mut state);
+        let result = Self::create_token_inner(
+            &env, creator, salt, token_wasm_hash, name, symbol,
+            decimals, initial_supply, fee_payment, &mut state,
+        );
 
-        // Always release the lock, regardless of success or error.
         state.locked = false;
         Self::save_state(&env, &state);
 
@@ -195,40 +259,40 @@ impl TokenFactory {
         name: String,
         symbol: String,
         decimals: u32,
-        initial_supply: i128,
+        initial_supply: u128,
         fee_payment: i128,
         state: &mut FactoryState,
     ) -> Result<Address, Error> {
-        // Validate token name: non-empty and at most 32 characters
         if name.len() == 0 || name.len() > 32 {
-            return Err(Error::InvalidParameters);
+            state.locked = false;
+            return Err(Error::InvalidTokenParams);
         }
-
-        // Validate token symbol: non-empty and at most 12 characters
         if symbol.len() == 0 || symbol.len() > 12 {
+            state.locked = false;
+            return Err(Error::InvalidTokenParams);
+        }
+        if decimals > 18 {
+            state.locked = false;
             return Err(Error::InvalidParameters);
         }
-
         if fee_payment < state.base_fee {
+            state.locked = false;
             return Err(Error::InsufficientFee);
         }
-
-        // Transfer fee to treasury unless creator is whitelisted
-        if !Self::is_whitelisted(env.clone(), creator.clone()) {
-            token::TokenClient::new(env, &state.fee_token).transfer(
-                &creator,
-                &state.treasury,
-                &fee_payment,
-            );
+        // Fail fast if token count would overflow
+        if state.token_count.checked_add(1).is_none() {
+            state.locked = false;
+            return Err(Error::ArithmeticOverflow);
         }
 
-        // Deploy token contract deterministically from creator + salt
+        // Transfer fee from creator to treasury using the dedicated fee_token
+        Self::distribute_fee(env, state, &creator, fee_payment)?;
+
         let token_address = env
             .deployer()
             .with_address(creator.clone(), salt)
             .deploy(token_wasm_hash);
 
-        // Initialize the deployed token
         TokenInitClient::new(env, &token_address).initialize(
             &creator,
             &decimals,
@@ -236,27 +300,29 @@ impl TokenFactory {
             &symbol,
         );
 
-        // Mint initial supply to creator if requested
         if initial_supply > 0 {
-            token::StellarAssetClient::new(env, &token_address).mint(&creator, &initial_supply);
+            token::StellarAssetClient::new(env, &token_address).mint(
+                &creator,
+                &(initial_supply as i128),
+            );
         }
 
-        // Increment token_count with overflow check
-        let new_count = state.token_count.checked_add(1)
-            .ok_or(Error::ArithmeticOverflow)?;
-        state.token_count = new_count;
+        state.token_count = state.token_count.checked_add(1).ok_or(Error::ArithmeticOverflow)?;
         let index = state.token_count;
 
-        env.storage().instance().set(&index, &TokenInfo {
+        let token_name = name.clone();
+        let token_symbol = symbol.clone();
+        env.storage().instance().set(&DataKey::TokenInfo(index), &TokenInfo {
             name,
             symbol,
             decimals,
             creator: creator.clone(),
             created_at: env.ledger().timestamp(),
             burn_enabled: true,
+            max_supply: None,
         });
 
-        let creator_key = (symbol_short!("crtoks"), creator.clone());
+        let creator_key = DataKey::CreatorTokens(creator.clone());
         let mut list: Vec<u32> = env
             .storage()
             .instance()
@@ -265,12 +331,140 @@ impl TokenFactory {
         list.push_back(index);
         env.storage().instance().set(&creator_key, &list);
 
-        // Store reverse mapping: token_address -> index (for burn_enabled lookup)
-        env.storage().instance().set(&(&token_address, symbol_short!("idx")), &index);
+        env.storage().instance().set(&DataKey::TokenIndex(token_address.clone()), &index);
+        env.storage().instance().set(&(&token_address, symbol_short!("owner")), &creator);
+
+        Self::extend_token_ttl(env, &token_address, index);
 
         env.events()
-            .publish((symbol_short!("created"),), (token_address.clone(), creator, index));
+            .publish((symbol_short!("created"),), (token_address.clone(), creator, token_name, token_symbol));
         Ok(token_address)
+    }
+
+    fn validate_batch_params(p: &BatchTokenParams) -> Result<(), Error> {
+        if p.name.len() == 0 || p.name.len() > 32 {
+            return Err(Error::InvalidParameters);
+        }
+        if p.symbol.len() == 0 || p.symbol.len() > 12 {
+            return Err(Error::InvalidParameters);
+        }
+        if let Some(cap) = p.max_supply {
+            if cap <= 0 || p.initial_supply > cap {
+                return Err(Error::InvalidParameters);
+            }
+        }
+        Ok(())
+    }
+
+    fn deploy_one(
+        env: &Env,
+        creator: &Address,
+        p: BatchTokenParams,
+        state: &mut FactoryState,
+    ) -> Result<Address, Error> {
+        let token_address = env
+            .deployer()
+            .with_address(creator.clone(), p.salt)
+            .deploy(p.token_wasm_hash);
+
+        TokenInitClient::new(env, &token_address).initialize(
+            creator,
+            &p.decimals,
+            &p.name,
+            &p.symbol,
+        );
+
+        if p.initial_supply > 0 {
+            token::StellarAssetClient::new(env, &token_address).mint(creator, &p.initial_supply);
+        }
+
+        let new_count = state.token_count.checked_add(1).ok_or(Error::ArithmeticOverflow)?;
+        state.token_count = new_count;
+        let index = state.token_count;
+
+        let token_name = p.name.clone();
+        let token_symbol = p.symbol.clone();
+        env.storage().instance().set(&DataKey::TokenInfo(index), &TokenInfo {
+            name: p.name,
+            symbol: p.symbol,
+            decimals: p.decimals,
+            creator: creator.clone(),
+            created_at: env.ledger().timestamp(),
+            burn_enabled: true,
+            max_supply: p.max_supply,
+        });
+
+        let creator_key = DataKey::CreatorTokens(creator.clone());
+        let mut list: Vec<u32> = env
+            .storage()
+            .instance()
+            .get(&creator_key)
+            .unwrap_or_else(|| vec![env]);
+        list.push_back(index);
+        env.storage().instance().set(&creator_key, &list);
+
+        env.storage().instance().set(&DataKey::TokenIndex(token_address.clone()), &index);
+        env.storage().instance().set(&(&token_address, symbol_short!("owner")), creator);
+        Self::extend_token_ttl(env, &token_address, index);
+
+        env.events()
+            .publish((symbol_short!("created"),), (token_address.clone(), creator.clone(), token_name, token_symbol));
+        Ok(token_address)
+    }
+
+    pub fn create_tokens_batch(
+        env: Env,
+        creator: Address,
+        tokens: Vec<BatchTokenParams>,
+        fee_payment: i128,
+    ) -> Result<Vec<Address>, Error> {
+        Self::require_not_paused(&env)?;
+        creator.require_auth();
+
+        let mut state = Self::load_state(&env)?;
+
+        if state.locked {
+            return Err(Error::Reentrancy);
+        }
+
+        let count = tokens.len() as i128;
+        if count == 0 {
+            return Err(Error::InvalidParameters);
+        }
+
+        for p in tokens.iter() {
+            Self::validate_batch_params(&p)?;
+        }
+
+        let total_fee = state.base_fee.checked_mul(count).ok_or(Error::ArithmeticOverflow)?;
+        if fee_payment < total_fee {
+            return Err(Error::InsufficientFee);
+        }
+
+        state.locked = true;
+        Self::save_state(&env, &state);
+
+        let mut addresses: Vec<Address> = vec![&env];
+        let mut result: Result<(), Error> = Ok(());
+
+        for p in tokens.into_iter() {
+            match Self::deploy_one(&env, &creator, p, &mut state) {
+                Ok(addr) => addresses.push_back(addr),
+                Err(e) => { result = Err(e); break; }
+            }
+        }
+
+        state.locked = false;
+
+        if let Err(e) = result {
+            Self::save_state(&env, &state);
+            return Err(e);
+        }
+
+        // Transfer fee from creator to treasury using the dedicated fee_token
+        Self::distribute_fee(&env, &state, &creator, fee_payment)?;
+        Self::save_state(&env, &state);
+        Ok(addresses)
     }
 
     pub fn set_metadata(
@@ -289,42 +483,31 @@ impl TokenFactory {
             return Err(Error::InsufficientFee);
         }
 
-        // Fetch TokenInfo to verify creator authorization
-        let idx_key = (&token_address, symbol_short!("idx"));
-        let index: u32 = env
+        let creator: Address = env
             .storage()
             .instance()
-            .get(&idx_key)
+            .get(&(&token_address, symbol_short!("owner")))
             .ok_or(Error::TokenNotFound)?;
 
-        let token_info: TokenInfo = env
-            .storage()
-            .instance()
-            .get(&index)
+        // Verify admin is the token creator using direct mapping
+        let creator: Address = env.storage().instance().get(&(&token_address, symbol_short!("owner")))
             .ok_or(Error::TokenNotFound)?;
 
-        // Verify admin is the token creator
-        if token_info.creator != admin {
+        if creator != admin {
             return Err(Error::Unauthorized);
         }
 
-        // Guard: prevent overwriting existing metadata
-        if env.storage().instance().has(&(&token_address, symbol_short!("meta"))) {
+        if env.storage().instance().has(&DataKey::Metadata(token_address.clone())) {
             return Err(Error::MetadataAlreadySet);
         }
 
-        // Transfer fee to treasury unless admin is whitelisted
-        if !Self::is_whitelisted(env.clone(), admin.clone()) {
-            token::TokenClient::new(&env, &state.fee_token).transfer(
-                &admin,
-                &state.treasury,
-                &fee_payment,
-            );
-        }
+        // Transfer fee from admin to treasury using the dedicated fee_token
+        Self::distribute_fee(&env, &state, &admin, fee_payment)?;
 
         env.storage()
             .instance()
-            .set(&(&token_address, symbol_short!("meta")), &metadata_uri);
+            .set(&DataKey::Metadata(token_address.clone()), &metadata_uri);
+        env.storage().instance().extend_ttl(MIN_TTL, MAX_TTL);
 
         env.events()
             .publish((symbol_short!("meta"),), (token_address, metadata_uri));
@@ -342,7 +525,6 @@ impl TokenFactory {
         Self::require_not_paused(&env)?;
         admin.require_auth();
 
-        // Validate mint amount is positive and doesn't overflow
         if amount <= 0 {
             return Err(Error::InvalidParameters);
         }
@@ -353,30 +535,37 @@ impl TokenFactory {
             return Err(Error::InsufficientFee);
         }
 
-        // Fetch TokenInfo to verify creator authorization
-        let idx_key = (&token_address, symbol_short!("idx"));
+        // Fetch token index and verify creator authorization
         let index: u32 = env
             .storage()
             .instance()
-            .get(&idx_key)
+            .get(&DataKey::TokenIndex(token_address.clone()))
             .ok_or(Error::TokenNotFound)?;
 
         let token_info: TokenInfo = env
             .storage()
             .instance()
-            .get(&index)
+            .get(&DataKey::TokenInfo(index))
             .ok_or(Error::TokenNotFound)?;
 
-        // Verify admin is the token creator
-        if token_info.creator != admin {
+        // Verify admin is the token creator using direct mapping
+        let creator: Address = env.storage().instance().get(&(&token_address, symbol_short!("owner")))
+            .ok_or(Error::TokenNotFound)?;
+
+        if creator != admin {
             return Err(Error::Unauthorized);
         }
 
-        token::TokenClient::new(&env, &state.fee_token).transfer(
-            &admin,
-            &state.treasury,
-            &fee_payment,
-        );
+        if let Some(cap) = token_info.max_supply {
+            let current = token::TokenClient::new(&env, &token_address).total_supply();
+            let new_total = current.checked_add(amount).ok_or(Error::ArithmeticOverflow)?;
+            if new_total > cap {
+                return Err(Error::MaxSupplyExceeded);
+            }
+        }
+
+        // Transfer fee from admin to treasury using the dedicated fee_token
+        Self::distribute_fee(&env, &state, &admin, fee_payment)?;
 
         token::StellarAssetClient::new(&env, &token_address).mint(&to, &amount);
 
@@ -403,12 +592,14 @@ impl TokenFactory {
             return Err(Error::BurnAmountExceedsBalance);
         }
 
-        // Check burn_enabled via reverse index lookup before burning
-        let idx_key = (&token_address, symbol_short!("idx"));
-        if let Some(index) = env.storage().instance().get::<_, u32>(&idx_key) {
-            let info: TokenInfo = env.storage().instance().get(&index).ok_or(Error::TokenNotFound)?;
+        if let Some(index) = env.storage().instance().get::<_, u32>(&DataKey::TokenIndex(token_address.clone())) {
+            let info: TokenInfo = env
+                .storage()
+                .instance()
+                .get(&DataKey::TokenInfo(index))
+                .ok_or(Error::TokenNotFound)?;
             if !info.burn_enabled {
-                return Err(Error::BurnNotEnabled);
+                return Err(Error::Unauthorized);
             }
         }
 
@@ -419,7 +610,6 @@ impl TokenFactory {
         Ok(())
     }
 
-    /// Enable or disable burning for a token. Only the token creator can call this.
     pub fn set_burn_enabled(
         env: Env,
         token_address: Address,
@@ -428,21 +618,31 @@ impl TokenFactory {
     ) -> Result<(), Error> {
         admin.require_auth();
 
-        let idx_key = (&token_address, symbol_short!("idx"));
-        let index: u32 = env
+        let creator: Address = env
             .storage()
             .instance()
-            .get(&idx_key)
+            .get(&(&token_address, symbol_short!("owner")))
             .ok_or(Error::TokenNotFound)?;
 
-        let mut info: TokenInfo = env.storage().instance().get(&index).ok_or(Error::TokenNotFound)?;
-
-        if info.creator != admin {
+        if creator != admin {
             return Err(Error::Unauthorized);
         }
 
+        let index: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TokenIndex(token_address.clone()))
+            .ok_or(Error::TokenNotFound)?;
+
+        let mut info: TokenInfo = env
+            .storage()
+            .instance()
+            .get(&DataKey::TokenInfo(index))
+            .ok_or(Error::TokenNotFound)?;
+
         info.burn_enabled = enabled;
-        env.storage().instance().set(&index, &info);
+        env.storage().instance().set(&DataKey::TokenInfo(index), &info);
+        env.storage().instance().extend_ttl(MIN_TTL, MAX_TTL);
         Ok(())
     }
 
@@ -468,6 +668,40 @@ impl TokenFactory {
         Ok(())
     }
 
+    pub fn set_fee_split(env: Env, admin: Address, splits: Map<Address, u32>) -> Result<(), Error> {
+        admin.require_auth();
+        let state = Self::load_state(&env)?;
+        if state.admin != admin {
+            return Err(Error::Unauthorized);
+        }
+
+        let split_key = symbol_short!("split");
+
+        if splits.is_empty() {
+            env.storage().instance().remove(&split_key);
+            return Ok(());
+        }
+
+        let mut total: u32 = 0;
+        for (_, bps) in splits.iter() {
+            total = total.checked_add(bps).ok_or(Error::ArithmeticOverflow)?;
+        }
+        if total != 10_000 {
+            return Err(Error::InvalidFeeSplit);
+        }
+
+        env.storage().instance().set(&split_key, &splits);
+        env.storage().instance().extend_ttl(MIN_TTL, MAX_TTL);
+        Ok(())
+    }
+
+    pub fn get_fee_split(env: Env) -> Map<Address, u32> {
+        env.storage()
+            .instance()
+            .get(&symbol_short!("split"))
+            .unwrap_or_else(|| Map::new(&env))
+    }
+
     pub fn update_fees(
         env: Env,
         admin: Address,
@@ -491,8 +725,6 @@ impl TokenFactory {
         Ok(())
     }
 
-    /// Upgrade the contract WASM to a new hash. Only the admin can call this.
-    /// Contract state is preserved; call `migrate()` afterwards if state layout changes.
     pub fn upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
         admin.require_auth();
         let state = Self::load_state(&env)?;
@@ -503,50 +735,7 @@ impl TokenFactory {
         Ok(())
     }
 
-    /// Apply incremental state migrations after a WASM upgrade.
-    ///
-    /// Safe to call multiple times — already-applied migrations are skipped
-    /// (idempotent). The standalone `"sv"` key tracks the on-chain version
-    /// independently of the state struct so it can be read even when the old
-    /// struct layout has changed.
-    ///
-    /// ## Adding a new migration (version N → N+1)
-    /// 1. Increment `CURRENT_SCHEMA_VERSION` to N+1.
-    /// 2. Add an `if on_chain_version < N+1 { … }` block below that reads the
-    ///    old state, sets the new field(s) to their defaults, writes the updated
-    ///    state, and bumps `on_chain_version`.
-    pub fn migrate(env: Env, admin: Address) -> Result<(), Error> {
-        admin.require_auth();
-        let state = Self::load_state(&env)?;
-        if state.admin != admin {
-            return Err(Error::Unauthorized);
-        }
-
-        // Read the persisted schema version (defaults to 0 for pre-versioned deployments).
-        let mut on_chain_version: u32 = env
-            .storage()
-            .instance()
-            .get(&symbol_short!("sv"))
-            .unwrap_or(0);
-
-        // ── version 0 → 1 ────────────────────────────────────────────────────
-        // Version 1 added `schema_version` to FactoryState.
-        // Pre-versioned deployments (on_chain_version == 0) already have their
-        // state loaded above; we just stamp the version field and persist.
-        if on_chain_version < 1 {
-            // state was loaded from the old layout; write it back with the new field.
-            // (load_state already returned a valid FactoryState because the new
-            //  field has a default via the XDR union fallback in Soroban.)
-            let mut new_state = state.clone();
-            new_state.schema_version = 1;
-            Self::save_state(&env, &new_state);
-            on_chain_version = 1;
-            env.storage().instance().set(&symbol_short!("sv"), &on_chain_version);
-        }
-
-        // ── future migrations go here ─────────────────────────────────────────
-        // if on_chain_version < 2 { … }
-
+    pub fn migrate(_env: Env, _admin: Address) -> Result<(), Error> {
         Ok(())
     }
 
@@ -561,6 +750,22 @@ impl TokenFactory {
         }
         state.admin = new_admin;
         Self::save_state(&env, &state);
+        Ok(())
+    }
+
+    pub fn update_admin(env: Env, current_admin: Address, new_admin: Address) -> Result<(), Error> {
+        current_admin.require_auth();
+        let mut state = Self::load_state(&env)?;
+        if state.admin != current_admin {
+            return Err(Error::Unauthorized);
+        }
+        if current_admin == new_admin {
+            return Err(Error::InvalidParameters);
+        }
+        state.admin = new_admin.clone();
+        Self::save_state(&env, &state);
+        env.events()
+            .publish((symbol_short!("adm_upd"),), (current_admin, new_admin));
         Ok(())
     }
 
@@ -579,12 +784,12 @@ impl TokenFactory {
     pub fn get_token_info(env: Env, index: u32) -> Result<TokenInfo, Error> {
         env.storage()
             .instance()
-            .get(&index)
+            .get(&DataKey::TokenInfo(index))
             .ok_or(Error::TokenNotFound)
     }
 
     pub fn get_tokens_by_creator(env: Env, creator: Address) -> Vec<u32> {
-        let key = (symbol_short!("crtoks"), creator);
+        let key = DataKey::CreatorTokens(creator);
         env.storage()
             .instance()
             .get(&key)

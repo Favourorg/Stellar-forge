@@ -104,11 +104,14 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({ forceOpen, onC
         {/* Step indicators */}
         <div
           className="flex gap-1.5 justify-center"
+          role="group"
           aria-label={`Step ${step + 1} of ${STEPS.length}`}
         >
           {STEPS.map((_, i) => (
             <span
               key={i}
+              aria-current={i === step ? 'step' : undefined}
+              aria-label={`Step ${i + 1}${i === step ? ', current' : ''}`}
               className={`h-2 rounded-full transition-all ${
                 i === step ? 'w-6 bg-blue-600' : 'w-2 bg-gray-300 dark:bg-gray-600'
               }`}

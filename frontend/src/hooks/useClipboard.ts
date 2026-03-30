@@ -42,9 +42,8 @@ export const useClipboard = (resetDelay = 2000) => {
 
           if (successful) {
             setCopied(true)
-          } else {
-            console.error('Fallback copy failed')
           }
+          // Fallback copy silently failed — nothing to surface to the user
         }
 
         // Reset copied state after delay
@@ -52,8 +51,7 @@ export const useClipboard = (resetDelay = 2000) => {
           setCopied(false)
           timeoutRef.current = null
         }, resetDelay)
-      } catch (err) {
-        console.error('Failed to copy to clipboard:', err)
+      } catch {
         setCopied(false)
       }
     },

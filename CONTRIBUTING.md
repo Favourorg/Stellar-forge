@@ -6,6 +6,7 @@ Thank you for your interest in contributing to StellarForge! This document provi
 
 - [Prerequisites](#prerequisites)
 - [Local Development Setup](#local-development-setup)
+- [Docker Development Setup](#docker-development-setup)
 - [Development Workflow](#development-workflow)
 - [Commit Message Format](#commit-message-format)
 - [Pull Request Process](#pull-request-process)
@@ -135,23 +136,202 @@ cargo test
 
 If all commands pass, your environment is ready for development.
 
+## Docker Development Setup
+
+For a consistent, reproducible development environment, you can use Docker instead of installing dependencies locally.
+
+### Prerequisites for Docker Setup
+
+- **Docker** (v20.10+): Container runtime
+- **Docker Compose** (v2.0+): Multi-container orchestration
+
+### Verify Docker Installation
+
+```bash
+docker --version          # Should be v20.10 or higher
+docker compose version    # Should be v2.0 or higher
+```
+
+### Step 1: Clone the Repository
+
+```bash
+git clone https://github.com/YOUR_USERNAME/Stellar-forge.git
+cd Stellar-forge
+```
+
+### Step 2: Start Development Environment
+
+```bash
+# Start both frontend and contract builder services
+docker compose up -d
+
+# View logs
+docker compose logs -f frontend
+docker compose logs -f contract-builder
+```
+
+This will:
+- Build and start the frontend development server on `http://localhost:5173`
+- Build the contract builder environment with Rust, Stellar CLI, and all dependencies
+- Mount source directories as volumes for hot reloading
+
+### Step 3: Verify Setup
+
+```bash
+# Check frontend is running
+curl http://localhost:5173
+
+# Access contract builder for testing
+docker compose exec contract-builder bash
+# Inside container:
+cd token-factory
+cargo test
+```
+
+### Working with Docker Environment
+
+#### Frontend Development
+
+The frontend runs automatically with hot reloading. Make changes to files in `frontend/src/` and they'll be reflected immediately at `http://localhost:5173`.
+
+```bash
+# View frontend logs
+docker compose logs -f frontend
+
+# Restart frontend service
+docker compose restart frontend
+```
+
+#### Contract Development
+
+Access the contract builder environment for Rust development:
+
+```bash
+# Enter contract builder shell
+docker compose exec contract-builder bash
+
+# Inside the container, you can:
+cd token-factory
+
+# Run tests
+cargo test
+
+# Build contracts
+cargo build --target wasm32-unknown-unknown --release
+
+# Run the build script
+./build.sh
+
+# Use Stellar CLI
+stellar --help
+```
+
+#### Managing Services
+
+```bash
+# Start services
+docker compose up -d
+
+# Stop services
+docker compose down
+
+# Rebuild services (after Dockerfile changes)
+docker compose build
+
+# View all service status
+docker compose ps
+
+# Clean up everything (removes volumes)
+docker compose down -v
+```
+
+### Docker vs Local Development
+
+| Aspect | Docker | Local |
+|--------|--------|-------|
+| **Setup Time** | Fast (just Docker required) | Longer (multiple tools) |
+| **Consistency** | Identical across machines | May vary by OS/versions |
+| **Performance** | Slight overhead | Native performance |
+| **Disk Usage** | Higher (images + volumes) | Lower |
+| **Offline Work** | Works after initial setup | Requires local installs |
+
+Choose Docker if you:
+- Want quick, consistent setup
+- Work on multiple machines
+- Prefer isolated environments
+- Have team members on different OS
+
+Choose local setup if you:
+- Need maximum performance
+- Already have tools installed
+- Prefer native development
+- Want to use system-wide tools
+
+### Quick Docker Commands Reference
+
+```bash
+# Start development environment
+./scripts/docker-dev.sh start
+# or
+docker compose up -d
+
+# View frontend at http://localhost:5173
+# Access contract builder
+docker compose exec contract-builder bash
+
+# Run tests
+./scripts/docker-dev.sh test
+
+# View logs
+./scripts/docker-dev.sh logs
+
+# Stop everything
+./scripts/docker-dev.sh stop
+
+# Clean up completely
+./scripts/docker-dev.sh clean
+```
+
 ## Development Workflow
+
+### Branch Naming Conventions
+
+Always create a new branch for your work. Use these prefixes to categorize your changes:
+
+| Prefix | Purpose | Example |
+|--------|---------|---------|
+| `feature/` | New features or enhancements | `feature/add-token-burn` |
+| `fix/` | Bug fixes | `fix/wallet-connection-timeout` |
+| `docs/` | Documentation updates | `docs/update-readme` |
+| `refactor/` | Code refactoring (no behavior change) | `refactor/simplify-validation` |
+| `test/` | Test additions or updates | `test/add-mint-tests` |
+| `chore/` | Maintenance tasks (deps, config) | `chore/update-dependencies` |
+| `perf/` | Performance improvements | `perf/optimize-event-queries` |
+| `style/` | Code style/formatting changes | `style/fix-linting-errors` |
+
+**Branch naming rules:**
+- Use lowercase with hyphens (kebab-case)
+- Be descriptive but concise
+- Include issue number if applicable: `fix/123-wallet-timeout`
+
+**Examples:**
+```bash
+git checkout -b feature/token-history-pagination
+git checkout -b fix/42-ipfs-upload-error
+git checkout -b docs/deployment-guide
+git checkout -b refactor/stellar-service-cleanup
+```
 
 ### Creating a Feature Branch
 
-Always create a new branch for your work:
-
 ```bash
+# Make sure you're on main and up to date
+git checkout main
+git pull origin main
+
+# Create your feature branch
 git checkout -b feature/your-feature-name
 ```
-
-Branch naming conventions:
-- `feature/` - New features (e.g., `feature/add-token-burn`)
-- `fix/` - Bug fixes (e.g., `fix/wallet-connection-timeout`)
-- `docs/` - Documentation updates (e.g., `docs/update-readme`)
-- `refactor/` - Code refactoring (e.g., `refactor/simplify-validation`)
-- `test/` - Test additions or updates (e.g., `test/add-mint-tests`)
-- `chore/` - Maintenance tasks (e.g., `chore/update-dependencies`)
 
 ### Making Changes
 
@@ -496,6 +676,19 @@ test('submits form with valid data', () => {
 
 ### Smart Contracts (Rust)
 
+#### Formatting
+
+All Rust code **must** be formatted with `cargo fmt` before committing. CI enforces this with `cargo fmt -- --check` and will fail if any file is not formatted.
+
+```bash
+# Format all Rust files
+cd contracts
+cargo fmt
+
+# Verify formatting (what CI runs)
+cargo fmt -- --check
+```
+
 #### General Principles
 
 - Follow Rust naming conventions (snake_case for functions/variables, PascalCase for types)
@@ -715,33 +908,55 @@ Include in your PR:
 
 ## SDK Upgrade Process
 
+### Current Pinned Versions
+
+The contracts currently pin the following SDK versions in `contracts/token-factory/Cargo.toml`:
+
+| Crate | Version | Reason |
+|-------|---------|--------|
+| `soroban-sdk` | `25.0.0` | Matches Stellar Protocol 22 (the current mainnet protocol). Pinned to avoid unexpected breaking changes from minor/patch releases. |
+| `soroban-token-sdk` | `25.0.0` | Must match `soroban-sdk` exactly — mismatched versions cause type incompatibilities at compile time. |
+
+> **Important:** `soroban-sdk` and `soroban-token-sdk` must always be on the **same version**. When upgrading one, upgrade both together.
+
+### Upgrading soroban-sdk
+
 When upgrading Soroban SDK or other major dependencies, follow this process:
 
-### Step 1: Plan the Upgrade
+#### Step 1: Plan the Upgrade
 
-- Check the changelog for breaking changes
+- Check the [soroban-sdk CHANGELOG](https://github.com/stellar/rs-soroban-sdk/blob/main/CHANGELOG.md) for breaking changes
+- Check the [soroban-token-sdk releases](https://github.com/stellar/rs-soroban-sdk/releases) — confirm the matching version
 - Review migration guides
 - Identify affected code
 
-### Step 2: Update Dependencies
+#### Step 2: Update Dependencies
 
-```bash
-# For Soroban SDK in contracts
-cd contracts/token-factory
-cargo update soroban-sdk --aggressive
+Edit `contracts/token-factory/Cargo.toml` to set the new version for **both** crates:
 
-# For frontend dependencies
-cd frontend
-npm update
+```toml
+[dependencies]
+soroban-sdk = "NEW_VERSION"
+soroban-token-sdk = { version = "NEW_VERSION" }
+
+[dev-dependencies]
+soroban-sdk = { version = "NEW_VERSION", features = ["testutils"] }
 ```
 
-### Step 3: Update Code
+Then regenerate the lockfile:
+
+```bash
+cd contracts
+cargo update
+```
+
+#### Step 3: Update Code
 
 - Fix any breaking changes in the contract code
 - Update TypeScript types if needed
 - Update configuration files
 
-### Step 4: Test Thoroughly
+#### Step 4: Test Thoroughly
 
 ```bash
 # Contract tests
@@ -757,38 +972,40 @@ npm run lint
 # Deploy to testnet and test all features
 ```
 
-### Step 5: Document Changes
+#### Step 5: Document Changes
 
 - Update CHANGELOG.md with upgrade details
 - Document any breaking changes
+- Update the version table in this section of CONTRIBUTING.md
 - Update README if needed
 
-### Step 6: Submit PR
+#### Step 6: Submit PR
 
 Include in your PR:
 - Dependency update commits
 - Code changes for compatibility
-- Updated documentation
+- Updated documentation (including the version table above)
 - Test results
 
 ### Example: Upgrading Soroban SDK
 
 ```bash
-# 1. Update Cargo.toml
-cd contracts/token-factory
-cargo update soroban-sdk
+# 1. Edit contracts/token-factory/Cargo.toml — bump both soroban-sdk and soroban-token-sdk
 
-# 2. Fix any compilation errors
+# 2. Regenerate lockfile
+cd contracts && cargo update
+
+# 3. Fix any compilation errors
 cargo build --target wasm32-unknown-unknown
 
-# 3. Run tests
-cargo test
+# 4. Run tests
+cd token-factory && cargo test
 
-# 4. Update CHANGELOG.md
-# Add entry: "Upgraded Soroban SDK to v21.1.0"
+# 5. Update CHANGELOG.md
+# Add entry: "Upgraded soroban-sdk and soroban-token-sdk to vX.Y.Z"
 
-# 5. Commit
-git commit -m "chore(contracts): upgrade soroban-sdk to v21.1.0"
+# 6. Commit
+git commit -m "chore(contracts): upgrade soroban-sdk and soroban-token-sdk to vX.Y.Z"
 ```
 
 ## Code of Conduct

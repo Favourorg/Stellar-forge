@@ -22,6 +22,8 @@ export const validateTokenParams = (params: {
 
   if (!trimmedName || trimmedName.length < 1 || trimmedName.length > 32) {
     errors.name = 'Token name must be 1-32 characters'
+  } else if (!/^[A-Za-z0-9 _-]+$/.test(trimmedName)) {
+    errors.name = 'Token name can only contain letters, digits, spaces, hyphens, and underscores'
   }
 
   if (!trimmedSymbol || trimmedSymbol.length < 1 || trimmedSymbol.length > 12) {
@@ -73,7 +75,9 @@ export const isValidImageFile = (file: File): { valid: boolean; error?: string }
 
 export const validateTokenName = (name: string): boolean => {
   const trimmed = name.trim()
-  return trimmed.length >= 1 && trimmed.length <= 32
+  // Allow letters, digits, spaces, hyphens, underscores — reject HTML/special chars
+  const validPattern = /^[A-Za-z0-9 _-]+$/
+  return trimmed.length >= 1 && trimmed.length <= 32 && validPattern.test(trimmed)
 }
 
 export const validateTokenSymbol = (symbol: string): boolean => {

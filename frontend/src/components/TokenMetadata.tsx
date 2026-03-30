@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from 'react'
-
-import { Spinner } from './UI/Spinner'
+import { Skeleton } from './UI/Skeleton'
 import { ipfsService } from '../services/ipfs'
 
 interface TokenMetadataResponse {
@@ -53,9 +52,8 @@ export const TokenMetadata: React.FC<TokenMetadataProps> = ({
         }
         setState({ status: 'resolved', imageUrl: data.image, description: data.description })
       })
-      .catch((err: unknown) => {
+      .catch((_err: unknown) => {
         if (cancelled) return
-        console.error('[TokenMetadata] Failed to fetch metadata:', err)
         setState({ status: 'error' })
       })
 
@@ -68,7 +66,11 @@ export const TokenMetadata: React.FC<TokenMetadataProps> = ({
 
   return (
     <div className={`flex flex-col items-center gap-2 ${className}`}>
-      {state.status === 'loading' && <Spinner size="md" label="Loading token metadata…" />}
+      {state.status === 'loading' && (
+        <div aria-label="Loading token metadata" aria-busy="true">
+          <Skeleton className="h-24 w-24 rounded-full" />
+        </div>
+      )}
 
       {state.status === 'resolved' && (
         <img

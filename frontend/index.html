@@ -2,7 +2,18 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' https://*.stellar.org https://api.pinata.cloud; img-src 'self' data: https://gateway.pinata.cloud; script-src 'self'" />
+    <!--
+      DEVELOPMENT FALLBACK ONLY — meta tags cannot enforce frame-ancestors.
+      Production CSP is set via HTTP headers in vercel.json / public/_headers,
+      generated from src/csp/policy.ts. Do not rely on this tag for production
+      security and do not edit it by hand — run `npm run prebuild` instead.
+
+      X-Frame-Options and frame-ancestors are header-only directives; browsers
+      silently ignore them when set via meta tags.
+    -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://gateway.pinata.cloud; connect-src 'self' https://horizon.stellar.org https://horizon-testnet.stellar.org https://soroban-testnet.stellar.org https://rpc-mainnet.stellar.org https://gateway.pinata.cloud https://api.pinata.cloud https://*.ingest.sentry.io; font-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; upgrade-insecure-requests; worker-src blob:" />
+    <!-- X-Content-Type-Options prevents MIME-type sniffing attacks. -->
+    <meta http-equiv="X-Content-Type-Options" content="nosniff" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <link rel="apple-touch-icon" href="/icons/icon-192x192.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -32,6 +43,15 @@
     <link rel="manifest" href="/manifest.json" />
     <link rel="sitemap" type="application/xml" href="/sitemap.xml" />
     <title>StellarForge - Stellar Token Deployer</title>
+    <!-- Plausible Analytics — loaded only when VITE_PLAUSIBLE_DOMAIN is set -->
+    <!-- defer + data-api keeps it privacy-respecting and non-blocking -->
+    <script
+      defer
+      data-domain="%VITE_PLAUSIBLE_DOMAIN%"
+      data-api="https://plausible.io/api/event"
+      src="https://plausible.io/js/script.manual.js"
+    ></script>
+    <script>window.plausible = window.plausible || function() { (window.plausible.q = window.plausible.q || []).push(arguments) }</script>
   </head>
   <body>
     <div id="root"></div>

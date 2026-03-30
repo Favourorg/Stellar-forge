@@ -1,12 +1,12 @@
 import { Keypair } from 'stellar-sdk';
 
 /**
- * Funds an account on the local Stellar testnet using Friendbot.
+ * Funds an account on the Stellar testnet using the public Friendbot.
  */
 export async function fundAccount(address: string) {
-  const friendbotUrl = 'http://localhost:8000/friendbot';
+  const friendbotUrl = 'https://friendbot.stellar.org';
   const response = await fetch(`${friendbotUrl}?addr=${address}`);
-  
+
   if (!response.ok) {
     const errorBody = await response.text();
     throw new Error(`Failed to fund account ${address}: ${response.statusText} - ${errorBody}`);

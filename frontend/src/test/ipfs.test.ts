@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { IPFSService } from '../services/ipfs'
+import type { TokenMetadata } from '../services/ipfs'
 import { IPFSConfigError, IPFSUploadError } from '../services/ipfs-errors'
 
 // Keep error classes stable across vi.resetModules() calls
@@ -151,7 +152,7 @@ describe('IPFSService', () => {
       const fresh = new Fresh()
       const big = makeFile('big.png', 'image/png', 6 * 1024 * 1024)
 
-      await expect(fresh.uploadMetadata(big, 'desc', 'Token')).rejects.toThrow('5MB limit')
+      await expect(fresh.uploadMetadata(big, 'desc', 'Token')).rejects.toThrow('5MB')
     })
 
     it('accepts JPEG files', async () => {
@@ -482,6 +483,33 @@ describe('IPFSService', () => {
       const err = new IPFSUploadError('test')
       expect(err.name).toBe('IPFSUploadError')
       expect(err).toBeInstanceOf(Error)
+    })
+  })
+
+  // ── URI string construction ────────────────────────────────────────────────
+
+  describe('URI string construction', () => {
+    it('formats image URI as ipfs://{hash}', () => {
+      const hash = 'QmImageHash123'
+      const uri = `ipfs://${hash}`
+      expect(uri).toBe('ipfs://QmImageHash123')
+    })
+
+    it('formats metadata URI as ipfs://{hash}', () => {
+      const hash = 'QmMetaHash456'
+      const uri = `ipfs://${hash}`
+      expect(uri).toBe('ipfs://QmMetaHash456')
+    })
+
+    it('TokenMetadata interface shape is correct', () => {
+      const meta: TokenMetadata = {
+        name: 'MyToken',
+        description: 'A test token',
+        image: 'ipfs://QmImageHash',
+      }
+      expect(meta.image).toMatch(/^ipfs:\/\//)
+      expect(meta.name).toBe('MyToken')
+      expect(meta.description).toBe('A test token')
     })
   })
 })

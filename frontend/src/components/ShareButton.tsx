@@ -29,6 +29,7 @@ export const ShareButton: React.FC<ShareButtonProps> = ({ tokenAddress, tokenNam
         onClick={() => setOpen((o: boolean) => !o)}
         aria-haspopup="true"
         aria-expanded={open}
+        aria-label="Share token"
         className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-md border border-gray-300 bg-white hover:bg-gray-50 text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-700"
       >
         <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">

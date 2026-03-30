@@ -66,8 +66,9 @@ export const TermsModal: React.FC<TermsModalProps> = ({ isOpen, onAccept }) => {
           </ul>
 
           {/* Checkbox */}
-          <label className="flex items-start gap-3 cursor-pointer mt-4">
+          <label htmlFor="tos-accept" className="flex items-start gap-3 cursor-pointer mt-4">
             <input
+              id="tos-accept"
               type="checkbox"
               checked={checked}
               onChange={(e) => setChecked(e.target.checked)}

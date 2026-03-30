@@ -14,6 +14,7 @@ export const NetworkSwitcher: React.FC = () => {
   const [open, setOpen] = useState(false)
   const [pendingNetwork, setPendingNetwork] = useState<Network | null>(null)
   const dropdownRef = useRef<HTMLDivElement>(null)
+  const confirmBtnRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
@@ -22,6 +23,12 @@ export const NetworkSwitcher: React.FC = () => {
     document.addEventListener('mousedown', handleClick)
     return () => document.removeEventListener('mousedown', handleClick)
   }, [])
+
+  useEffect(() => {
+    if (pendingNetwork === 'mainnet') {
+      confirmBtnRef.current?.focus()
+    }
+  }, [pendingNetwork])
 
   const handleSelect = (n: Network) => {
     setOpen(false)
@@ -138,6 +145,7 @@ export const NetworkSwitcher: React.FC = () => {
               <Button
                 variant="primary"
                 size="sm"
+                ref={confirmBtnRef}
                 className="bg-red-600 hover:bg-red-700 focus:ring-red-500"
                 onClick={confirmSwitch}
               >

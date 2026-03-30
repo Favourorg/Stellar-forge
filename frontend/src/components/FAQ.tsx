@@ -27,6 +27,7 @@ const FAQ_DATA = [
 export const FAQ: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const { t } = useTranslation();
+  const searchId = 'faq-search';
 
   const filteredFAQ = FAQ_DATA.filter(item =>
     item.question.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -36,17 +37,23 @@ export const FAQ: React.FC = () => {
   return (
     <div className="max-w-4xl mx-auto">
       <div className="text-center mb-12">
-        <h1 className="text-4xl font-bold text-gray-900 mb-6">{t('faq.title', 'Frequently Asked Questions')}</h1>
+        <h2 className="text-4xl font-bold text-gray-900 dark:text-white mb-6">
+          {t('faq.title', 'Frequently Asked Questions')}
+        </h2>
         <p className="text-xl text-gray-600 mb-8">
           {t('faq.subtitle', 'Find answers to common questions about token creation, fees, and Stellar network.')}
         </p>
         <div className="max-w-md mx-auto">
+          <label htmlFor={searchId} className="sr-only">
+            {t('faq.searchLabel', 'Search FAQs')}
+          </label>
           <input
+            id={searchId}
             type="text"
             placeholder={t('faq.searchPlaceholder', 'Search FAQs...')}
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full px-4 py-3 border border-gray-300 rounded-xl shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            className="w-full px-4 py-3 border border-gray-300 dark:border-slate-600 rounded-xl shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 dark:bg-slate-800/50 dark:text-white"
           />
         </div>
       </div>
@@ -54,15 +61,18 @@ export const FAQ: React.FC = () => {
       <div className="space-y-4">
         {filteredFAQ.length > 0 ? (
           filteredFAQ.map((item, index) => (
-            <details key={index} className="bg-white border border-gray-200 rounded-2xl p-6 shadow-sm hover:shadow-md transition-shadow">
-              <summary className="font-semibold text-gray-900 text-lg cursor-pointer list-none pb-4">
+            <details
+              key={index}
+              className="bg-white border border-gray-200 dark:border-slate-700 dark:bg-slate-800/50 rounded-2xl p-6 shadow-sm hover:shadow-md dark:hover:shadow-slate-900/50 transition-shadow backdrop-blur-sm"
+            >
+              <summary className="font-semibold text-gray-900 dark:text-gray-100 text-lg cursor-pointer list-none pb-4">
                 {item.question}
               </summary>
-              <p className="text-gray-600 leading-relaxed mt-2">{item.answer}</p>
+              <p className="text-gray-600 dark:text-gray-300 leading-relaxed mt-2">{item.answer}</p>
             </details>
           ))
         ) : (
-          <div className="text-center py-12">
+          <div className="text-center py-12" role="status">
             <p className="text-gray-500 text-lg">{t('faq.noResults', 'No FAQs match your search. Try another keyword.')}</p>
           </div>
         )}
@@ -72,7 +82,7 @@ export const FAQ: React.FC = () => {
         <div className="mt-8 text-center">
           <button
             onClick={() => setSearchQuery('')}
-            className="text-blue-600 hover:text-blue-800 font-medium"
+            className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 font-medium focus:outline-none focus:ring-2 focus:ring-blue-500 rounded"
           >
             {t('faq.clearSearch', 'Clear search')}
           </button>
@@ -81,4 +91,3 @@ export const FAQ: React.FC = () => {
     </div>
   );
 };
-

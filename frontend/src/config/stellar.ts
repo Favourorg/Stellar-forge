@@ -25,5 +25,6 @@ export const NETWORK_CONFIGS: Record<Network, NetworkConfig> = {
 export const STELLAR_CONFIG = {
   network: ENV.network,
   factoryContractId: ENV.factoryContractId,
+  tokenWasmHash: ENV.tokenWasmHash,
   ...NETWORK_CONFIGS,
 }

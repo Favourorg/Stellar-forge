@@ -167,12 +167,36 @@ describe('validateTokenName', () => {
     expect(validateTokenName('A'.repeat(32))).toBe(true)
   })
 
+  it('accepts a name with spaces, hyphens, and underscores', () => {
+    expect(validateTokenName('My Token-Name_1')).toBe(true)
+  })
+
+  it('strips leading/trailing whitespace before validating', () => {
+    expect(validateTokenName('  MyToken  ')).toBe(true)
+  })
+
   it('rejects an empty name', () => {
     expect(validateTokenName('')).toBe(false)
   })
 
   it('rejects a name over 32 characters', () => {
     expect(validateTokenName('A'.repeat(33))).toBe(false)
+  })
+
+  it('rejects a name with HTML tags', () => {
+    expect(validateTokenName('<script>alert(1)</script>')).toBe(false)
+  })
+
+  it('rejects a name with angle brackets', () => {
+    expect(validateTokenName('Token<Name>')).toBe(false)
+  })
+
+  it('rejects a name with ampersand', () => {
+    expect(validateTokenName('Token&Name')).toBe(false)
+  })
+
+  it('rejects a name with quotes', () => {
+    expect(validateTokenName('Token"Name')).toBe(false)
   })
 })
 
@@ -189,12 +213,28 @@ describe('validateTokenSymbol', () => {
     expect(validateTokenSymbol('A'.repeat(12))).toBe(true)
   })
 
+  it('strips leading/trailing whitespace before validating', () => {
+    expect(validateTokenSymbol('  MTK  ')).toBe(true)
+  })
+
   it('rejects an empty symbol', () => {
     expect(validateTokenSymbol('')).toBe(false)
   })
 
   it('rejects a symbol over 12 characters', () => {
     expect(validateTokenSymbol('A'.repeat(13))).toBe(false)
+  })
+
+  it('rejects a symbol with special characters', () => {
+    expect(validateTokenSymbol('MT<K>')).toBe(false)
+  })
+
+  it('rejects a symbol with spaces', () => {
+    expect(validateTokenSymbol('MT K')).toBe(false)
+  })
+
+  it('rejects a symbol with HTML entities', () => {
+    expect(validateTokenSymbol('MT&K')).toBe(false)
   })
 })
 

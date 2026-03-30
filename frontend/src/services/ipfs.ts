@@ -2,30 +2,21 @@
 
 import { IPFS_CONFIG } from '../config/ipfs'
 import { withRetry, isTransientError } from '../utils/retry'
+import { isValidImageFile } from '../utils/validation'
 import { IPFSConfigError, IPFSUploadError } from './ipfs-errors'
 
 export { IPFSConfigError, IPFSUploadError } from './ipfs-errors'
 
-const MAX_FILE_SIZE = 5 * 1024 * 1024 // 5MB
-const ALLOWED_TYPES = ['image/jpeg', 'image/png', 'image/gif']
+export interface TokenMetadata {
+  name: string
+  description: string
+  image: string // ipfs:// URI
+}
 
 function validateConfig(): void {
   if (!IPFS_CONFIG.apiKey || !IPFS_CONFIG.apiSecret) {
     throw new IPFSConfigError(
       'Pinata API credentials are not configured. Please set VITE_IPFS_API_KEY and VITE_IPFS_API_SECRET in your .env file.',
-    )
-  }
-}
-
-function validateImage(image: File): void {
-  if (!ALLOWED_TYPES.includes(image.type)) {
-    throw new IPFSUploadError(
-      `Unsupported file type "${image.type}". Only JPEG, PNG, and GIF are allowed.`,
-    )
-  }
-  if (image.size > MAX_FILE_SIZE) {
-    throw new IPFSUploadError(
-      `File size ${(image.size / 1024 / 1024).toFixed(2)}MB exceeds the 5MB limit.`,
     )
   }
 }
@@ -50,7 +41,11 @@ export class IPFSService {
     onProgress?: (percent: number) => void,
   ): Promise<string> {
     validateConfig()
-    validateImage(image)
+
+    const validation = isValidImageFile(image)
+    if (!validation.valid) {
+      throw new IPFSUploadError(validation.error ?? 'Invalid image file.')
+    }
 
     // Step 1: Upload image file (progress 0 → 75)
     onProgress?.(0)
@@ -58,7 +53,7 @@ export class IPFSService {
 
     // Step 2: Build and upload metadata JSON (progress 75 → 100)
     onProgress?.(75)
-    const metadata = {
+    const metadata: TokenMetadata = {
       name: tokenName,
       description,
       image: `ipfs://${imageCid}`,
@@ -74,7 +69,7 @@ export class IPFSService {
    *
    * @throws {IPFSUploadError} On invalid URI, network errors, or non-JSON responses
    */
-  async getMetadata(uri: string): Promise<Record<string, unknown>> {
+  async getMetadata(uri: string): Promise<TokenMetadata> {
     if (!uri.startsWith('ipfs://')) {
       throw new IPFSUploadError(`Invalid IPFS URI: "${uri}". Expected format: ipfs://<CID>`)
     }
@@ -85,10 +80,7 @@ export class IPFSService {
     let response: Response
     try {
       response = await withRetry(() => fetch(url), {
-        shouldRetry: (err) => {
-          // Also retry on HTTP 5xx / 429 by wrapping the response error
-          return isTransientError(err)
-        },
+        shouldRetry: (err) => isTransientError(err),
       })
     } catch {
       throw new IPFSUploadError(
@@ -103,7 +95,7 @@ export class IPFSService {
     }
 
     try {
-      return (await response.json()) as Record<string, unknown>
+      return (await response.json()) as TokenMetadata
     } catch {
       throw new IPFSUploadError('Metadata response is not valid JSON.')
     }
@@ -111,11 +103,6 @@ export class IPFSService {
 
   // ── Private helpers ──────────────────────────────────────────────────────────
 
-  /**
-   * Upload a file to Pinata's pinFileToIPFS endpoint using XHR for progress tracking.
-   * Retries are not applied here because XHR progress events don't compose well
-   * with retry wrappers; the caller should handle retry at a higher level if needed.
-   */
   private _uploadFile(file: File, onProgress?: (percent: number) => void): Promise<string> {
     const formData = new FormData()
     formData.append('file', file)
@@ -127,7 +114,6 @@ export class IPFSService {
 
       xhr.upload.addEventListener('progress', (e) => {
         if (e.lengthComputable && onProgress) {
-          // Map XHR upload progress to 0–75% of the overall flow
           onProgress(Math.round((e.loaded / e.total) * 75))
         }
       })
@@ -174,10 +160,6 @@ export class IPFSService {
     })
   }
 
-  /**
-   * Upload a JSON object to Pinata's pinJSONToIPFS endpoint.
-   * Retries on transient network/server errors via withRetry.
-   */
   private async _uploadJSON(json: object, name: string): Promise<string> {
     const body = {
       pinataContent: json,
