@@ -140,7 +140,7 @@ impl TokenFactory {
 
         env.storage().instance().set(&DataKey::State, &state);
         env.storage().instance().extend_ttl(MIN_TTL, MAX_TTL);
-        env.events().publish((symbol_short!("init"),), (admin,));
+        env.events().publish((symbol_short!("factory"), symbol_short!("init")), (admin,));
         Ok(())
     }
 
@@ -337,7 +337,7 @@ impl TokenFactory {
         Self::extend_token_ttl(env, &token_address, index);
 
         env.events()
-            .publish((symbol_short!("created"),), (token_address.clone(), creator, token_name, token_symbol));
+            .publish((symbol_short!("factory"), symbol_short!("created")), (token_address.clone(), creator, token_name, token_symbol));
         Ok(token_address)
     }
 
@@ -408,7 +408,7 @@ impl TokenFactory {
         Self::extend_token_ttl(env, &token_address, index);
 
         env.events()
-            .publish((symbol_short!("created"),), (token_address.clone(), creator.clone(), token_name, token_symbol));
+            .publish((symbol_short!("factory"), symbol_short!("created")), (token_address.clone(), creator.clone(), token_name, token_symbol));
         Ok(token_address)
     }
 
@@ -510,7 +510,7 @@ impl TokenFactory {
         env.storage().instance().extend_ttl(MIN_TTL, MAX_TTL);
 
         env.events()
-            .publish((symbol_short!("meta"),), (token_address, metadata_uri));
+            .publish((symbol_short!("factory"), symbol_short!("meta")), (token_address, metadata_uri));
         Ok(())
     }
 
@@ -570,7 +570,7 @@ impl TokenFactory {
         token::StellarAssetClient::new(&env, &token_address).mint(&to, &amount);
 
         env.events()
-            .publish((symbol_short!("minted"),), (token_address, to, amount));
+            .publish((symbol_short!("factory"), symbol_short!("mint")), (token_address, to, amount));
         Ok(())
     }
 
@@ -606,7 +606,7 @@ impl TokenFactory {
         token.burn(&from, &amount);
 
         env.events()
-            .publish((symbol_short!("burned"),), (token_address, from, amount));
+            .publish((symbol_short!("factory"), symbol_short!("burn")), (token_address, from, amount));
         Ok(())
     }
 
@@ -654,6 +654,7 @@ impl TokenFactory {
         }
         state.paused = true;
         Self::save_state(&env, &state);
+        env.events().publish((symbol_short!("factory"), symbol_short!("pause")), (admin,));
         Ok(())
     }
 
@@ -665,6 +666,7 @@ impl TokenFactory {
         }
         state.paused = false;
         Self::save_state(&env, &state);
+        env.events().publish((symbol_short!("factory"), symbol_short!("unpause")), (admin,));
         Ok(())
     }
 
@@ -721,7 +723,7 @@ impl TokenFactory {
         }
         Self::save_state(&env, &state);
         env.events()
-            .publish((symbol_short!("fees"),), (base_fee, metadata_fee));
+            .publish((symbol_short!("factory"), symbol_short!("fees")), (base_fee, metadata_fee));
         Ok(())
     }
 
@@ -765,7 +767,7 @@ impl TokenFactory {
         state.admin = new_admin.clone();
         Self::save_state(&env, &state);
         env.events()
-            .publish((symbol_short!("adm_upd"),), (current_admin, new_admin));
+            .publish((symbol_short!("factory"), symbol_short!("admin_update")), (current_admin, new_admin));
         Ok(())
     }
 

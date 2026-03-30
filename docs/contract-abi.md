@@ -525,13 +525,16 @@ get_tokens_by_creator(creator) -> Vec<u32>
 
 All events are published via `env.events().publish(topics, data)`.
 
-| Topic        | Data                                                    | Emitted By        |
-|--------------|---------------------------------------------------------|-------------------|
-| `"init"`     | `(admin: Address)`                                      | `initialize`      |
-| `"created"`  | `(token_address: Address, creator: Address, index: u32)`| `create_token`    |
-| `"meta"`     | `(token_address: Address, metadata_uri: String)`        | `set_metadata`    |
-| `"minted"`   | `(token_address: Address, to: Address, amount: i128)`   | `mint_tokens`     |
-| `"burned"`   | `(token_address: Address, from: Address, amount: i128)` | `burn`            |
-| `"fees"`     | `(base_fee: Option<i128>, metadata_fee: Option<i128>)`  | `update_fees`     |
+| Topic                  | Data                                                                 | Emitted By        |
+|------------------------|----------------------------------------------------------------------|-------------------|
+| `("factory", "init")`  | `(admin: Address)`                                                   | `initialize`      |
+| `("factory", "created")` | `(token_address: Address, creator: Address, name: String, symbol: String)` | `create_token`    |
+| `("factory", "meta")`  | `(token_address: Address, metadata_uri: String)`                     | `set_metadata`    |
+| `("factory", "mint")`  | `(token_address: Address, to: Address, amount: i128)`                | `mint_tokens`     |
+| `("factory", "burn")`  | `(token_address: Address, from: Address, amount: i128)`              | `burn`            |
+| `("factory", "fees")`  | `(base_fee: Option<i128>, metadata_fee: Option<i128>)`               | `update_fees`     |
+| `("factory", "pause")` | `(admin: Address)`                                                   | `pause`           |
+| `("factory", "unpause")` | `(admin: Address)`                                                 | `unpause`         |
+| `("factory", "admin_update")` | `(current_admin: Address, new_admin: Address)`                   | `update_admin`    |
 
 Events can be queried from Horizon using the contract ID and topic filters. Topic symbols are encoded as `ScVal::Symbol` in XDR.

@@ -31,7 +31,7 @@ async function fetchAllTokens(creator?: string): Promise<TokenInfo[]> {
     return stellarService.getTokensByCreator(creator)
   }
 
-  // Fetch all: collect unique token addresses from token_created events,
+  // Fetch all: collect unique token addresses from created events,
   // then resolve each in parallel (failed resolutions are silently dropped).
   const { events } = await stellarService.getContractEvents(contractId, 100)
   const addresses = [

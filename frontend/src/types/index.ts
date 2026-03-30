@@ -77,11 +77,15 @@ export interface AppError {
 
 export type SortOrder = 'newest' | 'oldest' | 'alphabetical'
 export type ContractEventType =
-  | 'token_created'
-  | 'tokens_minted'
-  | 'tokens_burned'
-  | 'metadata_set'
-  | 'fees_updated'
+  | 'init'
+  | 'created'
+  | 'meta'
+  | 'mint'
+  | 'burn'
+  | 'fees'
+  | 'pause'
+  | 'unpause'
+  | 'admin_update'
 
 export interface ContractEvent {
   id: string

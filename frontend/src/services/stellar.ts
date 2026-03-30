@@ -264,17 +264,21 @@ function scValToString(val: xdr.ScVal): string {
 // ── Event parsing ─────────────────────────────────────────────────────────────
 
 const EVENT_TOPICS: ContractEventType[] = [
-  'token_created',
-  'tokens_minted',
-  'tokens_burned',
-  'metadata_set',
-  'fees_updated',
+  'init',
+  'created',
+  'meta',
+  'mint',
+  'burn',
+  'fees',
+  'pause',
+  'unpause',
+  'admin_update',
 ]
 
 async function parseRpcEvent(raw: RpcEventResponse): Promise<ContractEvent | null> {
   try {
-    if (!raw.topic?.length) return null
-    const topicVal = xdr.ScVal.fromXDR(raw.topic[0], 'base64')
+    if (!raw.topic?.length || raw.topic.length < 2) return null
+    const topicVal = xdr.ScVal.fromXDR(raw.topic[1], 'base64') // second topic is the action
     const eventType = scValToString(topicVal) as ContractEventType
     if (!EVENT_TOPICS.includes(eventType)) return null
 
@@ -282,27 +286,42 @@ async function parseRpcEvent(raw: RpcEventResponse): Promise<ContractEvent | nul
     const data: Record<string, string> = {}
 
     switch (eventType) {
-      case 'token_created':
+      case 'init':
+        data.admin = scValToString(items[0])
+        break
+      case 'created':
         data.tokenAddress = scValToString(items[0])
         data.creator = scValToString(items[1])
+        data.name = scValToString(items[2])
+        data.symbol = scValToString(items[3])
         break
-      case 'tokens_minted':
+      case 'meta':
+        data.tokenAddress = scValToString(items[0])
+        data.metadataUri = scValToString(items[1])
+        break
+      case 'mint':
         data.tokenAddress = scValToString(items[0])
         data.to = scValToString(items[1])
         data.amount = scValToString(items[2])
         break
-      case 'tokens_burned':
+      case 'burn':
         data.tokenAddress = scValToString(items[0])
         data.from = scValToString(items[1])
         data.amount = scValToString(items[2])
         break
-      case 'metadata_set':
-        data.tokenAddress = scValToString(items[0])
-        data.metadataUri = scValToString(items[1])
-        break
-      case 'fees_updated':
+      case 'fees':
         data.baseFee = scValToString(items[0])
         data.metadataFee = scValToString(items[1])
+        break
+      case 'pause':
+        data.admin = scValToString(items[0])
+        break
+      case 'unpause':
+        data.admin = scValToString(items[0])
+        break
+      case 'admin_update':
+        data.currentAdmin = scValToString(items[0])
+        data.newAdmin = scValToString(items[1])
         break
     }
 

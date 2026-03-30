@@ -65,11 +65,11 @@ export function useTokenDashboard(): UseTokenDashboardResult {
           return
         }
 
-        // Step 2: build index→address map from token_created events
+        // Step 2: build index→address map from created events
         const { events } = await stellarService.getContractEvents(contractId, 200)
         const indexToAddress = new Map<number, string>()
         for (const e of events) {
-          if (e.type === 'token_created' && e.data.tokenAddress) {
+          if (e.type === 'created' && e.data.tokenAddress) {
             const idx = e.data.index !== undefined ? Number(e.data.index) : -1
             if (idx >= 0) indexToAddress.set(idx, e.data.tokenAddress)
           }
