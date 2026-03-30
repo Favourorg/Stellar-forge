@@ -137,21 +137,44 @@ If all commands pass, your environment is ready for development.
 
 ## Development Workflow
 
-### Creating a Feature Branch
+### Branch Naming Conventions
 
-Always create a new branch for your work:
+Always create a new branch for your work. Use these prefixes to categorize your changes:
 
+| Prefix | Purpose | Example |
+|--------|---------|---------|
+| `feature/` | New features or enhancements | `feature/add-token-burn` |
+| `fix/` | Bug fixes | `fix/wallet-connection-timeout` |
+| `docs/` | Documentation updates | `docs/update-readme` |
+| `refactor/` | Code refactoring (no behavior change) | `refactor/simplify-validation` |
+| `test/` | Test additions or updates | `test/add-mint-tests` |
+| `chore/` | Maintenance tasks (deps, config) | `chore/update-dependencies` |
+| `perf/` | Performance improvements | `perf/optimize-event-queries` |
+| `style/` | Code style/formatting changes | `style/fix-linting-errors` |
+
+**Branch naming rules:**
+- Use lowercase with hyphens (kebab-case)
+- Be descriptive but concise
+- Include issue number if applicable: `fix/123-wallet-timeout`
+
+**Examples:**
 ```bash
-git checkout -b feature/your-feature-name
+git checkout -b feature/token-history-pagination
+git checkout -b fix/42-ipfs-upload-error
+git checkout -b docs/deployment-guide
+git checkout -b refactor/stellar-service-cleanup
 ```
 
-Branch naming conventions:
-- `feature/` - New features (e.g., `feature/add-token-burn`)
-- `fix/` - Bug fixes (e.g., `fix/wallet-connection-timeout`)
-- `docs/` - Documentation updates (e.g., `docs/update-readme`)
-- `refactor/` - Code refactoring (e.g., `refactor/simplify-validation`)
-- `test/` - Test additions or updates (e.g., `test/add-mint-tests`)
-- `chore/` - Maintenance tasks (e.g., `chore/update-dependencies`)
+### Creating a Feature Branch
+
+```bash
+# Make sure you're on main and up to date
+git checkout main
+git pull origin main
+
+# Create your feature branch
+git checkout -b feature/your-feature-name
+```
 
 ### Making Changes
 
