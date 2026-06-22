@@ -11,6 +11,7 @@ import type { TokenInfo, IPFSMetadata } from '../types'
 import { Card, Button, Input, Spinner } from './UI'
 import { CopyButton } from './CopyButton'
 import { PaginationControls } from './UI/PaginationControls'
+import { useDebounce } from '../hooks/useDebounce'
 
 interface TokenWithMetadata extends TokenInfo {
   address: string
@@ -23,6 +24,10 @@ export const TokenExplorer: React.FC = () => {
   const { addToast } = useToast()
 
   const [searchInput, setSearchInput] = useState('')
+  const [creatorFilter, setCreatorFilter] = useState('')
+  const debouncedSearchInput = useDebounce(searchInput, 300)
+  const debouncedCreatorFilter = useDebounce(creatorFilter, 300)
+  
   const [searchResult, setSearchResult] = useState<TokenWithMetadata | null>(null)
   const [searching, setSearching] = useState(false)
   const [searchError, setSearchError] = useState<string | null>(null)
@@ -97,6 +102,15 @@ export const TokenExplorer: React.FC = () => {
     } catch {
       return null
     }
+  }
+
+  const getFilteredTokens = (): TokenWithMetadata[] => {
+    if (!debouncedCreatorFilter) return tokens
+    
+    const filterLower = debouncedCreatorFilter.toLowerCase()
+    return tokens.filter(t => 
+      t.creator && t.creator.toLowerCase().includes(filterLower)
+    )
   }
 
   const handleSearch = async (e: React.FormEvent) => {
@@ -189,6 +203,13 @@ export const TokenExplorer: React.FC = () => {
             placeholder={t('tokenExplorer.searchPlaceholder', 'Enter token address (C...) or index (0, 1, 2...)')}
             disabled={searching}
           />
+          <Input
+            label={t('tokenExplorer.filterByCreator', 'Filter by Creator Address')}
+            value={creatorFilter}
+            onChange={(e) => setCreatorFilter(e.target.value)}
+            placeholder={t('tokenExplorer.creatorPlaceholder', 'Enter creator address to filter tokens (optional)')}
+            disabled={searching}
+          />
           {searchError && (
             <p className="text-sm text-red-600 dark:text-red-400" role="alert">
               {searchError}
@@ -219,15 +240,17 @@ export const TokenExplorer: React.FC = () => {
           <div className="flex justify-center py-12">
             <Spinner size="lg" label={t('tokenExplorer.loadingTokens', 'Loading tokens...')} />
           </div>
-        ) : tokens.length === 0 ? (
+        ) : getFilteredTokens().length === 0 ? (
           <Card>
             <p className="text-center text-gray-500 dark:text-gray-400 py-8">
-              {t('tokenExplorer.noTokens', 'No tokens have been deployed yet')}
+              {debouncedCreatorFilter
+                ? t('tokenExplorer.noTokensForCreator', 'No tokens found for this creator address')
+                : t('tokenExplorer.noTokens', 'No tokens have been deployed yet')}
             </p>
           </Card>
         ) : (
           <div className="space-y-4">
-            {tokens.map((token, index) => (
+            {getFilteredTokens().map((token, index) => (
               <Card key={`${token.address}-${index}`}>
                 <TokenDisplay token={token} showIndex index={(currentPage - 1) * tokensPerPage + index} />
               </Card>
@@ -235,7 +258,7 @@ export const TokenExplorer: React.FC = () => {
           </div>
         )}
 
-        {totalPages > 1 && !loadingTokens && (
+        {totalPages > 1 && !loadingTokens && !debouncedCreatorFilter && (
           <PaginationControls
             page={currentPage}
             totalPages={totalPages}
