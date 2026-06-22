@@ -366,6 +366,8 @@ npm run build
 
 ⚠️ **Warning**: Mainnet deployment involves real money. Test thoroughly on testnet first!
 
+Before switching to mainnet, complete the [mainnet deployment checklist](./docs/mainnet-deployment-checklist.md).
+
 The process is identical to testnet, but:
 1. Use `--network mainnet` instead of `--network testnet`
 2. Fund your account with real XLM (buy from an exchange)

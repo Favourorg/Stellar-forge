@@ -1,0 +1,72 @@
+name: Mainnet Deployment
+description: Track readiness and sign-off before deploying Stellar Forge to mainnet.
+title: "Mainnet deployment: "
+labels:
+  - deployment
+  - mainnet
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Complete the [mainnet deployment checklist](../../docs/mainnet-deployment-checklist.md) before opening this tracker for final approval.
+  - type: input
+    id: release
+    attributes:
+      label: Release commit or tag
+      description: Exact commit SHA or release tag planned for mainnet.
+      placeholder: v1.2.3 or 0123abcd
+    validations:
+      required: true
+  - type: input
+    id: network
+    attributes:
+      label: Network
+      description: Confirm the target Stellar network.
+      placeholder: mainnet
+    validations:
+      required: true
+  - type: textarea
+    id: contracts
+    attributes:
+      label: Contract IDs and artifact hashes
+      description: List each contract ID, WASM hash, and build artifact location.
+    validations:
+      required: true
+  - type: textarea
+    id: smoke-tests
+    attributes:
+      label: Testnet smoke-test evidence
+      description: Link testnet transactions, screenshots, logs, or release notes that prove the deployment path was exercised.
+    validations:
+      required: true
+  - type: textarea
+    id: rollback
+    attributes:
+      label: Rollback plan
+      description: Summarize the rollback trigger, operator, and steps.
+    validations:
+      required: true
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist confirmation
+      options:
+        - label: Contract audit status has been reviewed.
+          required: true
+        - label: WASM optimization and artifact hashes have been verified.
+          required: true
+        - label: Fee configuration and admin addresses have been reviewed.
+          required: true
+        - label: Admin key security has been approved.
+          required: true
+        - label: CSP headers and frontend mainnet configuration have been verified.
+          required: true
+        - label: Rollback owner and steps are documented.
+          required: true
+  - type: textarea
+    id: signoff
+    attributes:
+      label: Sign-off
+      description: List deployment, security, and operations reviewers.
+    validations:
+      required: true
