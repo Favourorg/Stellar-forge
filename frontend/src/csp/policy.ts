@@ -93,14 +93,3 @@ export function buildCSPString(directives: CSPDirectives): string {
     )
     .join('; ')
 }
-
-/**
- * Returns the value for a <meta http-equiv="Content-Security-Policy"> tag.
- *
- * NOTE: meta tags cannot enforce frame-ancestors or X-Frame-Options.
- * This output is for development only. Production security depends on
- * HTTP headers set in vercel.json / public/_headers.
- */
-export function buildCSPMeta(directives: CSPDirectives): string {
-  return buildCSPString(directives)
-}
