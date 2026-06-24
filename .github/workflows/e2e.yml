@@ -19,6 +19,9 @@ jobs:
       VITE_IPFS_API_KEY: ${{ secrets.E2E_IPFS_API_KEY }}
       VITE_IPFS_API_SECRET: ${{ secrets.E2E_IPFS_API_SECRET }}
       E2E_TOKEN_ADDRESS: ${{ secrets.E2E_TOKEN_ADDRESS }}
+      E2E_TESTNET_WALLET_SECRET: ${{ secrets.E2E_TESTNET_WALLET_SECRET }}
+      # Expose a standardized variable name to tests
+      TESTNET_SECRET: ${{ secrets.E2E_TESTNET_WALLET_SECRET }}
 
     steps:
       - uses: actions/checkout@v7
