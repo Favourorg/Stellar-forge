@@ -7,6 +7,7 @@ import { useToast } from '../context/ToastContext'
 import { useStellarContext } from '../context/StellarContext'
 import { useBalanceCheck } from '../hooks/useBalanceCheck'
 import { useNetwork } from '../context/NetworkContext'
+import { useTos } from '../context/TosContext'
 import { isIpfsConfigured } from '../config/env'
 import { ExplorerLink } from './ExplorerLink'
 import { useFactoryState } from '../hooks/useFactoryState'
@@ -25,6 +26,7 @@ export const MetadataForm: React.FC<MetadataFormProps> = ({ initialTokenAddress 
   const { ipfsService, stellarService } = useStellarContext()
   const { addToast } = useToast()
   const { network } = useNetwork()
+  const { requireTos } = useTos()
   const { state: factoryState } = useFactoryState()
 
   const metadataFeeXlm = factoryState?.metadataFee
@@ -99,9 +101,15 @@ export const MetadataForm: React.FC<MetadataFormProps> = ({ initialTokenAddress 
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    if (!imageFile) { addToast('Please select an image file', 'error'); return }
-    if (!tokenAddress.trim()) { addToast('Please enter a token address', 'error'); return }
-    setPendingConfirm(true)
+    if (!imageFile) {
+      addToast('Please select an image file', 'error')
+      return
+    }
+    if (!tokenAddress.trim()) {
+      addToast('Please enter a token address', 'error')
+      return
+    }
+    requireTos(() => setPendingConfirm(true))
   }
 
   const handleConfirm = async () => {
@@ -114,11 +122,8 @@ export const MetadataForm: React.FC<MetadataFormProps> = ({ initialTokenAddress 
     setStep('uploading-ipfs')
     let metadataUri: string
     try {
-      metadataUri = await ipfsService.uploadMetadata(
-        imageFile!,
-        description,
-        tokenAddress,
-        (p) => setUploadProgress(p),
+      metadataUri = await ipfsService.uploadMetadata(imageFile!, description, tokenAddress, (p) =>
+        setUploadProgress(p),
       )
       setFinalUri(metadataUri)
     } catch (err) {
@@ -145,10 +150,7 @@ export const MetadataForm: React.FC<MetadataFormProps> = ({ initialTokenAddress 
       const msg = err instanceof Error ? err.message : 'Stellar transaction failed'
       setErrorMsg(msg)
       // Metadata is pinned but not linked — surface this clearly
-      addToast(
-        `Metadata pinned at ${metadataUri} but on-chain linking failed: ${msg}`,
-        'error',
-      )
+      addToast(`Metadata pinned at ${metadataUri} but on-chain linking failed: ${msg}`, 'error')
     }
   }
 
@@ -169,9 +171,13 @@ export const MetadataForm: React.FC<MetadataFormProps> = ({ initialTokenAddress 
     return (
       <div className="rounded-lg bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-300 dark:border-yellow-700 p-4 text-sm text-yellow-800 dark:text-yellow-300">
         IPFS upload is disabled. Set{' '}
-        <code className="font-mono bg-yellow-100 dark:bg-yellow-900 px-1 rounded">VITE_IPFS_API_KEY</code>{' '}
+        <code className="font-mono bg-yellow-100 dark:bg-yellow-900 px-1 rounded">
+          VITE_IPFS_API_KEY
+        </code>{' '}
         and{' '}
-        <code className="font-mono bg-yellow-100 dark:bg-yellow-900 px-1 rounded">VITE_IPFS_API_SECRET</code>{' '}
+        <code className="font-mono bg-yellow-100 dark:bg-yellow-900 px-1 rounded">
+          VITE_IPFS_API_SECRET
+        </code>{' '}
         to enable metadata uploads.
       </div>
     )
@@ -182,7 +188,9 @@ export const MetadataForm: React.FC<MetadataFormProps> = ({ initialTokenAddress 
     return (
       <div className="space-y-4">
         <div className="rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-300 dark:border-green-700 p-4 space-y-2">
-          <p className="font-semibold text-green-800 dark:text-green-300">✓ Metadata set successfully!</p>
+          <p className="font-semibold text-green-800 dark:text-green-300">
+            ✓ Metadata set successfully!
+          </p>
           <p className="text-sm text-green-700 dark:text-green-400 break-all">
             <span className="font-medium">IPFS URI:</span> {finalUri}
           </p>
@@ -204,7 +212,7 @@ export const MetadataForm: React.FC<MetadataFormProps> = ({ initialTokenAddress 
   }
 
   // ── In-progress / error state ────────────────────────────────────────────────
-  if (isSubmitting || (step === 'error')) {
+  if (isSubmitting || step === 'error') {
     return (
       <div className="space-y-4">
         <ProgressIndicator steps={progressSteps} />
@@ -230,7 +238,9 @@ export const MetadataForm: React.FC<MetadataFormProps> = ({ initialTokenAddress 
               <div className="rounded-md bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700 p-3 text-sm text-blue-800 dark:text-blue-300">
                 <p className="font-medium">Metadata pinned but not yet linked on-chain.</p>
                 <p className="break-all mt-1">IPFS URI: {finalUri}</p>
-                <p className="mt-1 text-xs">You can retry the Stellar step or set this URI manually.</p>
+                <p className="mt-1 text-xs">
+                  You can retry the Stellar step or set this URI manually.
+                </p>
               </div>
             )}
             {errorMsg && (
@@ -262,7 +272,8 @@ export const MetadataForm: React.FC<MetadataFormProps> = ({ initialTokenAddress 
         {/* Image upload */}
         <div>
           <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-            Token Image <span className="text-gray-400 font-normal">(JPEG, PNG, GIF · max 5 MB)</span>
+            Token Image{' '}
+            <span className="text-gray-400 font-normal">(JPEG, PNG, GIF · max 5 MB)</span>
           </label>
           <input
             ref={fileInputRef}
@@ -284,7 +295,9 @@ export const MetadataForm: React.FC<MetadataFormProps> = ({ initialTokenAddress 
                 className="w-20 h-20 object-contain rounded-md border border-gray-300 dark:border-gray-600 shrink-0"
               />
               <div className="text-sm text-gray-600 dark:text-gray-400 space-y-0.5">
-                <p className="font-medium text-gray-800 dark:text-gray-200 break-all">{imageFile?.name}</p>
+                <p className="font-medium text-gray-800 dark:text-gray-200 break-all">
+                  {imageFile?.name}
+                </p>
                 <p>{imageFile ? (imageFile.size / 1024).toFixed(0) : 0} KB</p>
                 <button
                   type="button"
@@ -317,7 +330,9 @@ export const MetadataForm: React.FC<MetadataFormProps> = ({ initialTokenAddress 
         {/* Fee preview */}
         <div className="rounded-md bg-gray-50 dark:bg-gray-700/50 border border-gray-200 dark:border-gray-600 px-4 py-3 text-sm flex justify-between">
           <span className="text-gray-600 dark:text-gray-400">Estimated fee</span>
-          <span className="font-semibold text-gray-900 dark:text-white">{metadataFeeXlm.toFixed(7)} XLM</span>
+          <span className="font-semibold text-gray-900 dark:text-white">
+            {metadataFeeXlm.toFixed(7)} XLM
+          </span>
         </div>
 
         {!hasSufficientBalance && (

@@ -4,12 +4,17 @@ import { Button } from './Button'
 interface TermsModalProps {
   isOpen: boolean
   onAccept: () => void
+  onDecline?: () => void
 }
 
-export const TermsModal: React.FC<TermsModalProps> = ({ isOpen, onAccept }) => {
+export const TermsModal: React.FC<TermsModalProps> = ({ isOpen, onAccept, onDecline }) => {
   const [checked, setChecked] = useState(false)
 
-  // Block Escape key — modal is non-dismissible
+  useEffect(() => {
+    if (!isOpen) setChecked(false)
+  }, [isOpen])
+
+  // Block Escape key so users choose Accept or Decline explicitly.
   useEffect(() => {
     if (!isOpen) return
     const block = (e: KeyboardEvent) => {
@@ -27,7 +32,7 @@ export const TermsModal: React.FC<TermsModalProps> = ({ isOpen, onAccept }) => {
       role="dialog"
       aria-modal="true"
       aria-labelledby="tos-modal-title"
-      // Swallow backdrop clicks — non-dismissible
+      // Swallow backdrop clicks so users choose Accept or Decline explicitly.
       onClick={(e) => e.stopPropagation()}
     >
       <div
@@ -90,9 +95,14 @@ export const TermsModal: React.FC<TermsModalProps> = ({ isOpen, onAccept }) => {
           >
             Read full terms document
           </a>
-          <Button onClick={onAccept} disabled={!checked}>
-            Accept
-          </Button>
+          <div className="flex items-center gap-3">
+            <Button type="button" variant="outline" onClick={onDecline}>
+              Decline
+            </Button>
+            <Button type="button" onClick={onAccept} disabled={!checked}>
+              Accept
+            </Button>
+          </div>
         </div>
       </div>
     </div>

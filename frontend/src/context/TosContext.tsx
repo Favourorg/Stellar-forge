@@ -7,21 +7,24 @@ const TOS_KEY = 'stellar_forge_tos_accepted'
 interface TosContextValue {
   /** Call before any transaction. Runs `proceed` immediately if ToS already accepted,
    *  otherwise shows the modal and runs `proceed` after acceptance. */
-  requireTos: (proceed: () => void) => void
+  requireTos: (proceed: () => void, onDecline?: () => void) => void
 }
 
 const TosContext = createContext<TosContextValue | null>(null)
 
 export const TosProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [accepted, setAccepted] = useLocalStorage<boolean>(TOS_KEY, false)
-  const [pendingCallback, setPendingCallback] = useState<(() => void) | null>(null)
+  const [pendingAction, setPendingAction] = useState<{
+    proceed: () => void
+    onDecline?: () => void
+  } | null>(null)
 
   const requireTos = useCallback(
-    (proceed: () => void) => {
+    (proceed: () => void, onDecline?: () => void) => {
       if (accepted) {
         proceed()
       } else {
-        setPendingCallback(() => proceed)
+        setPendingAction(onDecline ? { proceed, onDecline } : { proceed })
       }
     },
     [accepted],
@@ -29,14 +32,23 @@ export const TosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const handleAccept = () => {
     setAccepted(true)
-    pendingCallback?.()
-    setPendingCallback(null)
+    pendingAction?.proceed()
+    setPendingAction(null)
+  }
+
+  const handleDecline = () => {
+    pendingAction?.onDecline?.()
+    setPendingAction(null)
   }
 
   return (
     <TosContext.Provider value={{ requireTos }}>
       {children}
-      <TermsModal isOpen={pendingCallback !== null} onAccept={handleAccept} />
+      <TermsModal
+        isOpen={pendingAction !== null}
+        onAccept={handleAccept}
+        onDecline={handleDecline}
+      />
     </TosContext.Provider>
   )
 }
