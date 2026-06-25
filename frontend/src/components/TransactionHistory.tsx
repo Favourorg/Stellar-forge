@@ -1,7 +1,7 @@
 import React from 'react'
 import { useTransactionHistory } from '../hooks/useTransactionHistory'
 import { useNetwork } from '../context/NetworkContext'
-import { stellarExplorerUrl, formatTimestamp } from '../utils/formatting'
+import { formatTimestamp } from '../utils/formatting'
 import { ExplorerLink } from './ExplorerLink'
 import { CopyButton } from './CopyButton'
 import { useTranslation } from 'react-i18next'
@@ -41,6 +41,7 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
   contractIds,
 }) => {
   const { t } = useTranslation()
+  const { network } = useNetwork()
   const resolvedContractIds = contractId ? [contractId, ...(contractIds ?? [])] : contractIds
   const { transactions, loading, error, hasMore, loadMore, lastUpdated, refresh } =
     useTransactionHistory(publicKey, {
@@ -143,15 +144,14 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
                   <span>{formatTimestamp(new Date(tx.date).getTime() / 1000)}</span>
                 </div>
                 <div className="flex items-center gap-2 pt-1 border-t border-gray-100 dark:border-gray-700">
-                  <a
-                    href={`https://stellar.expert/explorer/public/tx/${tx.hash}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
+                  <ExplorerLink
+                    type="tx"
+                    value={tx.hash}
+                    network={network}
+                    label="View tx"
+                    ariaLabel={`View transaction ${tx.hash} on Stellar Explorer`}
                     className="text-blue-600 underline text-xs"
-                    aria-label={`View transaction ${tx.hash} on Stellar Explorer`}
-                  >
-                    View tx
-                  </a>
+                  />
                   <CopyButton value={tx.hash} ariaLabel={`Copy transaction hash ${tx.hash}`} />
                 </div>
               </div>
@@ -211,15 +211,14 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
                     </td>
                     <td className="px-4 py-2">
                       <div className="inline-flex items-center gap-2">
-                        <a
-                          href={`https://stellar.expert/explorer/public/tx/${tx.hash}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
+                        <ExplorerLink
+                          type="tx"
+                          value={tx.hash}
+                          network={network}
+                          label="View"
+                          ariaLabel={`View transaction ${tx.hash} on Stellar Explorer`}
                           className="text-blue-600 underline text-sm"
-                          aria-label={`View transaction ${tx.hash} on Stellar Explorer`}
-                        >
-                          View
-                        </a>
+                        />
                         <CopyButton
                           value={tx.hash}
                           ariaLabel={`Copy transaction hash ${tx.hash}`}

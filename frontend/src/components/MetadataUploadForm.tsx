@@ -4,6 +4,7 @@ import { Input, Button } from './UI'
 import { useToast } from '../context/ToastContext'
 import { ipfsService } from '../services/ipfs'
 import { isIpfsConfigured } from '../config/env'
+import { isValidImageFile } from '../utils/validation'
 import { DropZone } from './DropZone'
 
 interface MetadataUploadFormProps {
@@ -28,14 +29,7 @@ export const MetadataUploadForm: React.FC<MetadataUploadFormProps> = ({
 
   const [imagePreview, setImagePreview] = useState<string | null>(null)
 
-  const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) {
-      setImageFile(null)
-      setImagePreview(null)
-      return
-    }
-
+  const handleImageSelect = (file: File) => {
     const validation = isValidImageFile(file)
     if (!validation.valid) {
       addToast(validation.error || 'Invalid image file', 'error')
@@ -153,9 +147,10 @@ export const MetadataUploadForm: React.FC<MetadataUploadFormProps> = ({
       </div>
 
       <div>
-        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+        {/* Not a <label> — DropZone is a role="button" div with its own aria-label, not a labelable form control */}
+        <p className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
           Token Image (JPEG, PNG, GIF — max 5MB)
-        </label>
+        </p>
         <DropZone
           onFileSelect={handleImageSelect}
           acceptedTypes={['image/jpeg', 'image/png', 'image/gif']}

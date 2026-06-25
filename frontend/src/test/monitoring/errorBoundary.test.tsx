@@ -2,7 +2,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { ErrorBoundary } from '../../lib/monitoring/errorBoundary'
 
-const mockCaptureException = vi.fn()
+const { mockCaptureException } = vi.hoisted(() => ({
+  mockCaptureException: vi.fn(),
+}))
 vi.mock('../../lib/monitoring/sentry', () => ({
   captureException: mockCaptureException,
 }))
@@ -52,11 +54,12 @@ describe('ErrorBoundary', () => {
   })
 
   it('allows a route fallback to reset the boundary and display recovered content', async () => {
-    let throwOnce = true
+    // A ref (not a render-time mutation) so React's concurrent-render retry
+    // can't silently "absorb" the throw by re-invoking with different state.
+    const shouldThrow = { current: true }
 
     function FlakyRoute(): JSX.Element {
-      if (throwOnce) {
-        throwOnce = false
+      if (shouldThrow.current) {
         throw new Error('boom-once')
       }
       return <div>route restored</div>
@@ -65,7 +68,14 @@ describe('ErrorBoundary', () => {
     const RouteFallback = ({ resetErrorBoundary }: { resetErrorBoundary?: () => void }) => (
       <div>
         <div>route error</div>
-        <button onClick={resetErrorBoundary}>Try again</button>
+        <button
+          onClick={() => {
+            shouldThrow.current = false
+            resetErrorBoundary?.()
+          }}
+        >
+          Try again
+        </button>
       </div>
     )
 

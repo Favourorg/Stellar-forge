@@ -171,11 +171,16 @@ export const TokenCreateForm: React.FC = () => {
     ])
 
     try {
-      await execute()
+      const result = await execute()
       updateStep(0, 'completed')
       updateStep(1, 'completed')
       updateStep(2, 'completed')
       addToast('Token deployed successfully!', 'success')
+      setDeployedToken({
+        address: result.tokenAddress,
+        name: params.name,
+        symbol: params.symbol,
+      })
       setName('')
       setSymbol('')
       setDecimals('7')

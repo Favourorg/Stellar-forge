@@ -1,5 +1,5 @@
 import React from 'react'
-import { useTransaction } from '../hooks/useTransaction'
+import { useTransactionPolling } from '../hooks/useTransactionPolling'
 import { useNetwork } from '../context/NetworkContext'
 import { stellarExplorerUrl } from '../utils/stellarExplorer'
 import { Spinner } from './UI/Spinner'
@@ -16,7 +16,7 @@ export const TransactionStatus: React.FC<TransactionStatusProps> = ({
   onSuccess,
   onError,
 }) => {
-  const { status, error } = useTransaction(txHash)
+  const { status, error } = useTransactionPolling(txHash)
   const { network } = useNetwork()
 
   React.useEffect(() => {
@@ -54,9 +54,10 @@ export const TransactionStatus: React.FC<TransactionStatusProps> = ({
           <span className="font-bold text-lg text-gray-800">Transaction Successful</span>
           <div className="inline-flex items-center gap-2">
             <a
-              href={`https://stellar.expert/explorer/testnet/tx/${txHash}`}
+              href={stellarExplorerUrl('transaction', txHash, network)}
               target="_blank"
               rel="noopener noreferrer"
+              aria-label="View on Stellar Expert"
               className="text-sm font-mono text-blue-500 hover:text-blue-700 underline truncate max-w-xs"
               title={txHash}
             >
