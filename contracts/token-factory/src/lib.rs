@@ -3,6 +3,10 @@
 #![cfg_attr(not(test), deny(clippy::expect_used))]
 #![cfg_attr(not(test), deny(clippy::panic))]
 #![cfg_attr(not(test), deny(clippy::arithmetic_side_effects))]
+// `Events::publish` and `DeployerWithAddress::deploy` are deprecated in favor of newer
+// soroban-sdk APIs (`#[contractevent]`, `deploy_v2`). Migrating changes the contract's
+// emitted-event wire format and deployment call shape, so it's deferred; suppress for now.
+#![allow(deprecated)]
 
 use soroban_sdk::{
     contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, token, vec,
@@ -239,6 +243,7 @@ impl TokenFactory {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn create_token(
         env: Env,
         creator: Address,
@@ -278,6 +283,7 @@ impl TokenFactory {
         result
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn create_token_inner(
         env: &Env,
         creator: Address,
@@ -289,11 +295,11 @@ impl TokenFactory {
         fee_payment: i128,
         state: &mut FactoryState,
     ) -> Result<Address, Error> {
-        if name.len() == 0 || name.len() > 32 {
+        if name.is_empty() || name.len() > 32 {
             state.locked = false;
             return Err(Error::InvalidTokenParams);
         }
-        if symbol.len() == 0 || symbol.len() > 12 {
+        if symbol.is_empty() || symbol.len() > 12 {
             state.locked = false;
             return Err(Error::InvalidTokenParams);
         }
@@ -373,10 +379,10 @@ impl TokenFactory {
     }
 
     fn validate_batch_params(p: &BatchTokenParams) -> Result<(), Error> {
-        if p.name.len() == 0 || p.name.len() > 32 {
+        if p.name.is_empty() || p.name.len() > 32 {
             return Err(Error::InvalidParameters);
         }
-        if p.symbol.len() == 0 || p.symbol.len() > 12 {
+        if p.symbol.is_empty() || p.symbol.len() > 12 {
             return Err(Error::InvalidParameters);
         }
         if let Some(cap) = p.max_supply {
