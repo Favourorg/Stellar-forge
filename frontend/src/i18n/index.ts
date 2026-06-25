@@ -3,12 +3,14 @@ import { initReactI18next } from 'react-i18next'
 import en from './en.json'
 import es from './es.json'
 import pt from './pt.json'
+import fr from './fr.json'
 
 i18n.use(initReactI18next).init({
   resources: {
     en: { translation: en },
     es: { translation: es },
     pt: { translation: pt },
+    fr: { translation: fr },
   },
   lng: localStorage.getItem('language') ?? 'en',
   fallbackLng: 'en',

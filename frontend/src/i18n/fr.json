@@ -1,0 +1,175 @@
+{
+  "app": {
+    "title": "StellarForge",
+    "subtitle": "Déployeur de Tokens Stellar",
+    "skipToMain": "Aller au contenu principal",
+    "toggleDarkMode": "Basculer le mode sombre",
+    "factoryWarning": "Contrat de fabrique non configuré. Veuillez définir VITE_FACTORY_CONTRACT_ID dans votre fichier .env."
+  },
+  "nav": {
+    "home": "Accueil",
+    "create": "Créer",
+    "mint": "Émettre",
+    "burn": "Brûler",
+    "tokens": "Jetons",
+    "ariaLabel": "Principal",
+    "openMenu": "Ouvrir le menu de navigation",
+    "closeMenu": "Fermer le menu de navigation",
+    "admin": "Admin"
+  },
+  "wallet": {
+    "connect": "Connecter le portefeuille",
+    "connecting": "Connexion en cours...",
+    "disconnect": "Déconnecter",
+    "installFreighter": "Installer Freighter",
+    "connected": "Portefeuille connecté",
+    "disconnected": "Portefeuille déconnecté",
+    "connectFailed": "Échec de connexion du portefeuille"
+  },
+  "home": {
+    "welcome": "Bienvenue sur Nova Launch",
+    "description": "Déployez vos jetons personnalisés sur la blockchain Stellar",
+    "getStarted": "Commencer",
+    "navHint": "Utilisez la navigation ci-dessus pour accéder à Créer, Émettre, Brûler ou Jetons.",
+    "welcomeToast": "Bienvenue ! Déployons votre jeton."
+  },
+  "createToken": {
+    "title": "Créer un jeton",
+    "placeholder": "Emplacement pour la page Créer un jeton",
+    "description": "Implémentation future : formulaire d'émission de jeton et flux de déploiement on-chain."
+  },
+  "tokenForm": {
+    "tokenName": "Nom du jeton",
+    "tokenNamePlaceholder": "Mon Jeton",
+    "tokenSymbol": "Symbole du jeton",
+    "tokenSymbolPlaceholder": "MTK",
+    "decimals": "Décimales",
+    "initialSupply": "Offre initiale",
+    "initialSupplyPlaceholder": "1000000",
+    "descriptionLabel": "Description (Optionnelle)",
+    "descriptionPlaceholder": "Décrivez votre jeton...",
+    "deploy": "Déployer le jeton",
+    "deploying": "Déploiement en cours...",
+    "deploySuccess": "Jeton déployé avec succès !",
+    "deployFailed": "Échec du déploiement du jeton",
+    "deployError": "Une erreur est survenue lors du déploiement",
+    "invalidName": "Nom du jeton invalide",
+    "invalidSymbol": "Symbole du jeton invalide",
+    "invalidDecimals": "Les décimales doivent être comprises entre 0 et 18",
+    "nameLabel": "Nom du jeton",
+    "namePlaceholder": "Mon Jeton",
+    "symbolLabel": "Symbole du jeton",
+    "symbolPlaceholder": "MTK",
+    "decimalsLabel": "Décimales",
+    "initialSupplyLabel": "Offre initiale",
+    "estimatedFee": "Frais estimés",
+    "feeDescription": "Frais de création de jeton sur Stellar",
+    "network": "Réseau",
+    "connectWalletFirst": "Veuillez connecter votre portefeuille pour déployer un jeton",
+    "walletNotConnected": "Le portefeuille n'est pas connecté",
+    "validationFailed": "Veuillez corriger les erreurs du formulaire",
+    "submitError": "Échec de l'envoi du formulaire",
+    "deployedSuccessfully": "déployé avec succès !"
+  },
+  "mintForm": {
+    "tokenAddress": "Adresse du jeton",
+    "tokenAddressPlaceholder": "G...",
+    "amount": "Montant",
+    "amountPlaceholder": "0",
+    "mint": "Émettre",
+    "tokenFound": "Jeton trouvé :"
+  },
+  "burnForm": {
+    "tokenAddress": "Adresse du jeton",
+    "tokenAddressPlaceholder": "G...",
+    "amount": "Montant",
+    "amountPlaceholder": "0",
+    "burn": "Brûler",
+    "tokenFound": "Jeton trouvé :"
+  },
+  "setMetadata": {
+    "tokenAddress": "Adresse du jeton",
+    "tokenAddressPlaceholder": "G...",
+    "metadataUri": "URI des métadonnées",
+    "metadataUriPlaceholder": "ipfs://Qm...",
+    "submit": "Définir les métadonnées",
+    "submitting": "Envoi en cours...",
+    "success": "Métadonnées mises à jour avec succès",
+    "invalidUri": "L'URI des métadonnées doit être une URI IPFS valide (ex. ipfs://Qm...)"
+  },
+  "dashboard": {
+    "searchLabel": "Rechercher des jetons",
+    "searchPlaceholder": "Rechercher par adresse ou nom...",
+    "recentActivity": "Activité récente",
+    "copyError": "Impossible de copier l'adresse du jeton. Vérifiez les autorisations du presse-papiers et réessayez.",
+    "refresh": "Actualiser",
+    "noTokens": "Aucun jeton n'a encore été déployé.",
+    "noSearchMatch": "Aucun jeton ne correspond à votre recherche.",
+    "creatorPrefix": "Créateur :"
+  },
+  "tokenDetail": {
+    "title": "Détail du jeton",
+    "loading": "Chargement du jeton {{address}}...",
+    "loadError": "Impossible de charger le jeton"
+  },
+  "transactionHistory": {
+    "noEvents": "Aucun événement trouvé.",
+    "loadMore": "Charger plus",
+    "retry": "Réessayer",
+    "loadFailed": "Échec du chargement des événements",
+    "loadMoreFailed": "Échec du chargement d'autres événements",
+    "eventLabels": {
+      "token_created": "Jeton créé",
+      "tokens_minted": "Jetons émis",
+      "tokens_burned": "Jetons brûlés",
+      "metadata_set": "Métadonnées définies",
+      "fees_updated": "Frais mis à jour",
+      "create": "Créé",
+      "mint": "Émis",
+      "burn": "Brûlé"
+    },
+    "dataLabels": {
+      "token": "Jeton",
+      "creator": "Créateur",
+      "to": "À",
+      "from": "De",
+      "amount": "Montant",
+      "uri": "URI",
+      "baseFee": "Frais de base",
+      "metadataFee": "Frais de métadonnées",
+      "tx": "tx"
+    }
+  },
+  "networkSwitcher": {
+    "ariaLabel": "Réseau actif : {{network}}. Cliquez pour changer.",
+    "selectNetwork": "Sélectionner le réseau",
+    "testnet": "Testnet",
+    "mainnet": "Mainnet",
+    "switchToMainnet": "Passer au Mainnet ?",
+    "switchWarning": "Vous passez au mainnet. Des fonds réels seront utilisés. Assurez-vous de savoir ce que vous faites.",
+    "confirm": "Passer au Mainnet",
+    "cancel": "Annuler"
+  },
+  "mainnetModal": {
+    "title": "Révision du déploiement Mainnet",
+    "warning": "⚠️ Cette action est irréversible et coûtera de vrais XLM",
+    "tokenParams": "Paramètres du jeton",
+    "name": "Nom :",
+    "symbol": "Symbole :",
+    "decimals": "Décimales :",
+    "initialSupply": "Offre initiale :",
+    "description": "Description :",
+    "image": "Image :",
+    "confirmLabel": "Tapez \"{{symbol}}\" pour confirmer le déploiement",
+    "confirmHelp": "Cette confirmation garantit que vous avez examiné tous les paramètres attentivement.",
+    "cancel": "Annuler",
+    "deploy": "Déployer sur Mainnet"
+  },
+  "errors": {
+    "title": "Erreur"
+  },
+  "language": {
+    "label": "Langue",
+    "en": "Anglais"
+  }
+}

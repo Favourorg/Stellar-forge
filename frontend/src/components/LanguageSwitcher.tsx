@@ -6,6 +6,7 @@ const LANGUAGES: { code: string; label: string }[] = [
   { code: 'en', label: 'English' },
   { code: 'es', label: 'Español' },
   { code: 'pt', label: 'Português' },
+  { code: 'fr', label: 'Français' },
 ]
 
 export const LanguageSwitcher: React.FC = () => {
