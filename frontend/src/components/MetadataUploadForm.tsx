@@ -6,6 +6,7 @@ import { ipfsService } from '../services/ipfs'
 import { isIpfsConfigured } from '../config/env'
 import { isValidImageFile } from '../utils/validation'
 import { DropZone } from './DropZone'
+import { logger } from '../utils/logger'
 
 interface MetadataUploadFormProps {
   onUploadComplete: (metadataUri: string) => void
@@ -92,7 +93,7 @@ export const MetadataUploadForm: React.FC<MetadataUploadFormProps> = ({
       setImageFile(null)
       setUploadProgress(0)
     } catch (error) {
-      console.error('Upload error:', error)
+      logger.error('Upload error:', error)
       addToast(error instanceof Error ? error.message : 'Failed to upload metadata', 'error')
     } finally {
       setIsUploading(false)

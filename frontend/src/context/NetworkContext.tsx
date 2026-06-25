@@ -3,7 +3,7 @@ import { STELLAR_CONFIG } from '../config/stellar'
 import { useLocalStorage } from '../hooks/useLocalStorage'
 import { useNetworkMismatch, type NetworkMismatchState } from '../hooks/useNetworkMismatch'
 
-export type Network = 'testnet' | 'mainnet'
+export type Network = 'testnet' | 'mainnet' | 'standalone'
 
 const STORAGE_KEY = 'stellarforge_network'
 

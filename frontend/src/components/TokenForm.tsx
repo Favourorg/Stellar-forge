@@ -8,6 +8,7 @@ import { useNetwork } from '../context/NetworkContext'
 import { validateTokenParams } from '../utils/validation'
 import { formatXLM, stroopsToXLM } from '../utils/formatting'
 import { useFactoryState } from '../hooks/useFactoryState'
+import { logger } from '../utils/logger'
 
 interface TokenFormProps {
   onSubmit: (params: {
@@ -118,7 +119,7 @@ export const TokenForm: React.FC<TokenFormProps> = ({
     try {
       await onSubmit(formData)
     } catch (error) {
-      console.error('Form submission error:', error)
+      logger.error('Form submission error:', error)
       addToast(error instanceof Error ? error.message : t('tokenForm.submitError'), 'error')
     }
   }

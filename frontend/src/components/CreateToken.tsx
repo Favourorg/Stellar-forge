@@ -8,6 +8,7 @@ import { ShareButton } from './ShareButton'
 import { CopyButton } from './CopyButton'
 import { STELLAR_CONFIG } from '../config/stellar'
 import ErrorBoundary from './ErrorBoundary'
+import { logger } from '../utils/logger'
 
 interface DeployedToken {
   address: string
@@ -54,7 +55,7 @@ export const CreateToken: React.FC = () => {
         addToast(t('tokenForm.deployFailed'), 'error')
       }
     } catch (error) {
-      console.error('Deployment error:', error)
+      logger.error('Deployment error:', error)
       addToast(error instanceof Error ? error.message : t('tokenForm.deployError'), 'error')
     } finally {
       setIsDeploying(false)

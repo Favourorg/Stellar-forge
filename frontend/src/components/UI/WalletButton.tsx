@@ -58,7 +58,7 @@ export const WalletButton: React.FC = () => {
           className="hidden md:block font-mono text-sm text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-slate-700 px-2 py-1 rounded"
           title={wallet.address}
         >
-          {truncateAddress(wallet.address)}
+          {truncateAddress(wallet.address, 4, 6)}
         </span>
         <Button
           onClick={disconnect}

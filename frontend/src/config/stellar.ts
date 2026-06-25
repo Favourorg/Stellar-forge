@@ -1,7 +1,7 @@
 // Stellar network configuration
 import { ENV } from './env'
 
-export type Network = 'testnet' | 'mainnet'
+export type Network = 'testnet' | 'mainnet' | 'standalone'
 
 export interface NetworkConfig {
   networkPassphrase: string
@@ -19,6 +19,11 @@ export const NETWORK_CONFIGS: Record<Network, NetworkConfig> = {
     networkPassphrase: 'Public Global Stellar Network ; September 2015',
     horizonUrl: 'https://horizon.stellar.org',
     sorobanRpcUrl: 'https://soroban-mainnet.stellar.org',
+  },
+  standalone: {
+    networkPassphrase: 'Standalone Network ; February 2017',
+    horizonUrl: 'http://localhost:8000',
+    sorobanRpcUrl: 'http://localhost:8000/soroban/rpc',
   },
 }
 
