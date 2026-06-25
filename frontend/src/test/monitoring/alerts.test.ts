@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-const mockCaptureException = vi.fn()
-const mockSetTag = vi.fn()
+const { mockCaptureException, mockSetTag } = vi.hoisted(() => ({
+  mockCaptureException: vi.fn(),
+  mockSetTag: vi.fn(),
+}))
 
 vi.mock('../../lib/monitoring/sentry', () => ({
   captureException: mockCaptureException,

@@ -63,8 +63,8 @@ describe('formatXLM', () => {
 
 describe('formatDate', () => {
   it('formats a known timestamp to MMM DD, YYYY', () => {
-    // 2026-03-19T00:00:00Z
-    expect(formatDate(1742342400)).toBe('Mar 19, 2026')
+    // 2025-03-19T00:00:00Z
+    expect(formatDate(1742342400)).toBe('Mar 19, 2025')
   })
 
   it('does not throw for timestamp 0', () => {
@@ -84,7 +84,7 @@ describe('truncateAddress', () => {
   })
 
   it('respects custom chars param', () => {
-    expect(truncateAddress(ADDR, 6)).toBe('GAAZI4...CCWN')
+    expect(truncateAddress(ADDR, 6)).toBe('GAAZI4...KOCCWN')
   })
 
   it('returns address unchanged when shorter than 2*chars', () => {

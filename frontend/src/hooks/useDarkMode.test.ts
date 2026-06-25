@@ -12,7 +12,7 @@ describe('useDarkMode', () => {
     Object.defineProperty(window, 'matchMedia', {
       writable: true,
       configurable: true,
-      value: (query: string) => ({
+      value: () => ({
         matches,
         addEventListener: () => {},
         removeEventListener: () => {},
