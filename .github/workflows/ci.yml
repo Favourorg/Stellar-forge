@@ -134,12 +134,23 @@ jobs:
             sleep 15
           done
 
+      - name: Build frontend
+        run: npm run build
+        working-directory: frontend
+        env:
+          VITE_NETWORK: standalone
+          # placeholder — no factory contract is deployed onto the local network in this job
+          VITE_FACTORY_CONTRACT_ID: CCN6L3B2R6G2H5J4J4J4J4J4J4J4J4J4J4J4J4J4J4J4J4J4J4
+          VITE_IPFS_API_KEY: mock-key
+          VITE_IPFS_API_SECRET: mock-secret
+
       - name: Run E2E tests
         run: npm run test:e2e
         working-directory: frontend
         env:
           VITE_NETWORK: standalone
-          VITE_FACTORY_CONTRACT_ID: CCN6L3B2R6G2H5J4J4J4J4J4J4J4J4J4J4J4J4J4J4J4J4J4J4 // placeholder
+          # placeholder — no factory contract is deployed onto the local network in this job
+          VITE_FACTORY_CONTRACT_ID: CCN6L3B2R6G2H5J4J4J4J4J4J4J4J4J4J4J4J4J4J4J4J4J4J4
           VITE_IPFS_API_KEY: mock-key
           VITE_IPFS_API_SECRET: mock-secret
 
