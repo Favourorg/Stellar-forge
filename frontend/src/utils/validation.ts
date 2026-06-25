@@ -24,7 +24,8 @@ const TOKEN_DECIMALS_MAX = 18
 const isTokenNameLengthValid = (trimmedName: string): boolean =>
   trimmedName.length >= TOKEN_NAME_MIN_LENGTH && trimmedName.length <= TOKEN_NAME_MAX_LENGTH
 
-const isTokenNamePatternValid = (trimmedName: string): boolean => TOKEN_NAME_PATTERN.test(trimmedName)
+const isTokenNamePatternValid = (trimmedName: string): boolean =>
+  TOKEN_NAME_PATTERN.test(trimmedName)
 
 const isValidTokenNameValue = (trimmedName: string): boolean =>
   isTokenNameLengthValid(trimmedName) && isTokenNamePatternValid(trimmedName)
@@ -32,7 +33,8 @@ const isValidTokenNameValue = (trimmedName: string): boolean =>
 const isTokenSymbolLengthValid = (trimmedSymbol: string): boolean =>
   trimmedSymbol.length >= TOKEN_SYMBOL_MIN_LENGTH && trimmedSymbol.length <= TOKEN_SYMBOL_MAX_LENGTH
 
-const isTokenSymbolPatternValid = (trimmedSymbol: string): boolean => TOKEN_SYMBOL_PATTERN.test(trimmedSymbol)
+const isTokenSymbolPatternValid = (trimmedSymbol: string): boolean =>
+  TOKEN_SYMBOL_PATTERN.test(trimmedSymbol)
 
 const isValidTokenSymbolValue = (trimmedSymbol: string): boolean =>
   isTokenSymbolLengthValid(trimmedSymbol) && isTokenSymbolPatternValid(trimmedSymbol)
@@ -105,7 +107,8 @@ export const isValidImageFile = (file: File): { valid: boolean; error?: string }
 
 export const validateTokenName = (name: string): boolean => isValidTokenNameValue(name.trim())
 
-export const validateTokenSymbol = (symbol: string): boolean => isValidTokenSymbolValue(symbol.trim())
+export const validateTokenSymbol = (symbol: string): boolean =>
+  isValidTokenSymbolValue(symbol.trim())
 
 export const sanitizeTokenInput = (input: string): string => {
   return input.trim()
