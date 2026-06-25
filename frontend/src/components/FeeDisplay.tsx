@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react'
 
 import { stellarService, type FactoryState } from '../services/stellar'
 import { stroopsToXLM, formatXLM } from '../utils/formatting'
+import { useXlmPrice } from '../hooks/useXlmPrice'
 
 interface FeeDisplayProps {
   feeType: 'base' | 'metadata'
@@ -34,6 +35,7 @@ export const FeeDisplay: React.FC<FeeDisplayProps> = ({
 }: FeeDisplayProps) => {
   const [xlm, setXlm] = useState<number | null>(null)
   const [error, setError] = useState(false)
+  const { price: xlmUsdPrice } = useXlmPrice()
 
   useEffect(() => {
     let cancelled = false
@@ -68,9 +70,12 @@ export const FeeDisplay: React.FC<FeeDisplayProps> = ({
     )
   }
 
+  const usdAmount = xlmUsdPrice !== null ? (xlm * xlmUsdPrice).toFixed(2) : null
+
   return (
     <span className={`text-sm text-gray-700 ${className}`}>
       {label}: {formatXLM(xlm)}
+      {usdAmount !== null && <span className="text-gray-400 ml-1">≈ ${usdAmount} USD</span>}
     </span>
   )
 }
