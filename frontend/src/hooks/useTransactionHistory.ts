@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { STELLAR_CONFIG } from '../config/stellar';
 
 export type TransactionType = 'create' | 'mint' | 'burn' | 'other';
 
@@ -30,8 +31,17 @@ export function useTransactionHistory(
   const [page, setPage] = useState(1);
   const cacheRef = useRef<{ [key: string]: TransactionHistoryItem[] }>({});
   const debounceRef = useRef<number | null>(null);
+  // Tracks the paging_token of the last fetched record for cursor-based pagination
+  const cursorRef = useRef<string>('');
 
   const pageSize = options.pageSize || 10;
+
+  // Stable string key derived from filter values so the cache is filter-aware
+  const filterKey = JSON.stringify({
+    assetCodes: options.assetCodes ? [...options.assetCodes].sort() : null,
+    issuer: options.issuer ?? null,
+    contractIds: options.contractIds ? [...options.contractIds].sort() : null,
+  });
 
   const fetchTransactions = useCallback(
     async (reset = false) => {
@@ -39,22 +49,30 @@ export function useTransactionHistory(
       setLoading(true);
       setError(null);
       try {
-        const cacheKey = `${publicKey}-${page}`;
-        if (cacheRef.current[cacheKey]) {
+        const cacheKey = `${publicKey}-${page}-${filterKey}`;
+        const cached = cacheRef.current[cacheKey];
+        if (cached) {
           setTransactions((prev: TransactionHistoryItem[]) =>
-            reset ? cacheRef.current[cacheKey] : [...prev, ...cacheRef.current[cacheKey]]
+            reset ? cached : [...prev, ...cached]
           );
-          setHasMore(cacheRef.current[cacheKey].length === pageSize);
+          setHasMore(cached.length === pageSize);
           setLoading(false);
           return;
         }
-        const url = `https://horizon.stellar.org/accounts/${publicKey}/operations?order=desc&limit=${pageSize}&cursor=`;
+        const network = STELLAR_CONFIG.network as 'testnet' | 'mainnet';
+        const { horizonUrl } = STELLAR_CONFIG[network];
+        const cursor = reset ? '' : cursorRef.current;
+        const url = `${horizonUrl}/accounts/${publicKey}/operations?order=desc&limit=${pageSize}&cursor=${cursor}`;
         const resp = await fetch(url);
         if (!resp.ok) throw new Error('Failed to fetch transactions');
         const data = await resp.json();
-        const items: TransactionHistoryItem[] = (data._embedded?.records || [])
+        const records: any[] = data._embedded?.records ?? [];
+        const items: TransactionHistoryItem[] = records
           .map((op: any) => parseOperation(op, options))
-          .filter((item: TransactionHistoryItem | null) => item !== null);
+          .filter((item): item is TransactionHistoryItem => item !== null);
+        if (records.length > 0) {
+          cursorRef.current = records[records.length - 1].paging_token ?? '';
+        }
         cacheRef.current[cacheKey] = items;
         setTransactions((prev: TransactionHistoryItem[]) => (reset ? items : [...prev, ...items]));
         setHasMore(items.length === pageSize);
@@ -64,7 +82,8 @@ export function useTransactionHistory(
         setLoading(false);
       }
     },
-    [publicKey, page, pageSize, options]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [publicKey, page, pageSize, filterKey]
   );
 
   // Debounce on publicKey change
@@ -72,6 +91,7 @@ export function useTransactionHistory(
     if (!publicKey) return;
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
+      cursorRef.current = '';
       setPage(1);
       setTransactions([]);
       fetchTransactions(true);
