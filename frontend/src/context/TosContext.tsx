@@ -53,6 +53,7 @@ export const TosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   )
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export const useTos = (): TosContextValue => {
   const ctx = useContext(TosContext)
   if (!ctx) throw new Error('useTos must be used within TosProvider')

@@ -6,8 +6,6 @@ import { useTokenDashboard } from '../hooks/useTokenDashboard'
 import { Input } from './UI/Input'
 import { Card } from './UI/Card'
 import { TokenCardSkeleton } from './UI/Skeleton'
-import { TokenCard } from './TokenCard'
-import { PaginationControls } from './UI/PaginationControls'
 
 interface DashboardProps {
   tokens?: never // legacy prop — data is now fetched internally
@@ -24,7 +22,7 @@ interface DashboardProps {
  * across renders, which is important if they are ever passed to memoized children.
  */
 const Dashboard: React.FC<DashboardProps> = memo(() => {
-  const { rows, isLoading, error, page, totalPages, setPage, refresh } = useTokenDashboard()
+  const { rows, isLoading, refresh } = useTokenDashboard()
 
   const [searchQuery, setSearchQuery] = useState('')
   const [creatorFilter, setCreatorFilter] = useState('')

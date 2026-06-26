@@ -87,7 +87,7 @@ describe('stellarExplorerUrl', () => {
         fc.constantFrom('tx' as const, 'contract' as const, 'account' as const),
         // Use alphanumeric identifiers to avoid URL normalization edge cases
         // (e.g. '.' and '..' are normalized by the URL parser as path segments)
-        fc.stringMatching(/^[a-zA-Z0-9_\-]+$/).filter((s) => s.length >= 1),
+        fc.stringMatching(/^[a-zA-Z0-9_-]+$/).filter((s) => s.length >= 1),
         fc.constantFrom('testnet' as const, 'mainnet' as const),
         (type, id, network) => {
           const url = stellarExplorerUrl(type, id, network)
@@ -102,11 +102,12 @@ describe('stellarExplorerUrl', () => {
 
 describe('formatXLM', () => {
   it('formats a number to 7 decimal places with XLM suffix', () => {
-    expect(formatXLM(1)).toBe('1.0000000 XLM')
+    // formatXLM takes a raw stroop amount; 10,000,000 stroops = 1 XLM
+    expect(formatXLM(10000000)).toBe('1.0000000 XLM')
   })
 
   it('handles a string input', () => {
-    expect(formatXLM('2.5')).toBe('2.5000000 XLM')
+    expect(formatXLM('25000000')).toBe('2.5000000 XLM')
   })
 
   it('handles zero', () => {
@@ -116,17 +117,17 @@ describe('formatXLM', () => {
 
 describe('truncateAddress', () => {
   it('truncates a long address with defaults', () => {
-    // 58-char string: 6 start + '...' + 4 end = 'GABCDE...WXYZ'
+    // default chars=4: 4 start + '...' + 4 end = 'GABC...WXYZ'
     const addr = 'GABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ'
-    expect(truncateAddress(addr)).toBe('GABCDE...WXYZ')
+    expect(truncateAddress(addr)).toBe('GABC...WXYZ')
   })
 
   it('returns the address unchanged if short enough', () => {
-    expect(truncateAddress('GABCD', 6, 4)).toBe('GABCD')
+    expect(truncateAddress('GABCD', 6)).toBe('GABCD')
   })
 
-  it('respects custom startChars and endChars', () => {
-    expect(truncateAddress('GABCDEFGHIJ', 3, 3)).toBe('GAB...HIJ')
+  it('respects a custom chars param', () => {
+    expect(truncateAddress('GABCDEFGHIJ', 3)).toBe('GAB...HIJ')
   })
 })
 
@@ -140,7 +141,7 @@ describe('stroopsToXLM', () => {
   })
 
   it('formats 70000000 stroops as readable XLM', () => {
-    expect(formatXLM(stroopsToXLM(70000000))).toBe('7.0000000 XLM')
+    expect(formatXLM(70000000)).toBe('7.0000000 XLM')
   })
 })
 
@@ -163,7 +164,7 @@ describe('round-trip conversion', () => {
   it('xlmToStroops(stroopsToXLM(x)) === x', () => {
     const testValues = [10000000, 5000000, 1000000, 100000, 10000, 1000, 100, 10, 1]
 
-    testValues.forEach(value => {
+    testValues.forEach((value) => {
       expect(xlmToStroops(stroopsToXLM(value))).toBe(value)
     })
   })
@@ -226,9 +227,9 @@ describe('timeAgo', () => {
     expect(timeAgo(86400)).toBe('2 days ago')
   })
 
-  it('returns just now for future timestamps', () => {
+  it('returns minutes for future timestamps over a minute away', () => {
     freeze(1000)
-    expect(timeAgo(2000)).toBe('in 1,000 seconds')
+    expect(timeAgo(2000)).toBe('in 17 minutes')
   })
 
   it('handles 0 without throwing', () => {

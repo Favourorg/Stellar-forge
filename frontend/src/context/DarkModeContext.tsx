@@ -44,9 +44,12 @@ export const DarkModeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     setIsDarkMode((prev) => !prev)
   }, [setIsDarkMode])
 
-  const setDarkMode = useCallback((isDark: boolean) => {
-    setIsDarkMode(isDark)
-  }, [setIsDarkMode])
+  const setDarkMode = useCallback(
+    (isDark: boolean) => {
+      setIsDarkMode(isDark)
+    },
+    [setIsDarkMode],
+  )
 
   return (
     <DarkModeContext.Provider value={{ isDarkMode, toggleDarkMode, setDarkMode }}>

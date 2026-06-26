@@ -3,7 +3,7 @@ services:
     image: stellar/quickstart:latest
     ports:
       - "8000:8000"
-    command: /start --local
+    command: --local
     environment:
       - ENABLE_SOROBAN_RPC=true
       - ENABLE_HORIZON=true

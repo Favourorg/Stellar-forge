@@ -23,15 +23,12 @@ export const DropZone: React.FC<DropZoneProps> = ({
   const [preview, setPreview] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  const handleError = useCallback(
-    (message: string) => {
-      setError(message)
-      setPreview(null)
-      // Return focus to the zone so screen readers announce the error
-      zoneRef.current?.focus()
-    },
-    [],
-  )
+  const handleError = useCallback((message: string) => {
+    setError(message)
+    setPreview(null)
+    // Return focus to the zone so screen readers announce the error
+    zoneRef.current?.focus()
+  }, [])
 
   const handleFileSelect = useCallback(
     (file: File) => {
@@ -77,7 +74,8 @@ export const DropZone: React.FC<DropZoneProps> = ({
 
   // ── Visual state classes ──────────────────────────────────────────────────
 
-  let zoneClasses = 'relative flex flex-col items-center justify-center rounded-lg p-6 cursor-pointer transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 '
+  let zoneClasses =
+    'relative flex flex-col items-center justify-center rounded-lg p-6 cursor-pointer transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 '
 
   if (preview) {
     zoneClasses += 'border-2 border-solid border-green-400 bg-green-50'
@@ -152,7 +150,8 @@ export const DropZone: React.FC<DropZoneProps> = ({
               {isDragOver ? 'Drop your image here' : 'Drag and drop or click to browse'}
             </p>
             <p className="mt-1 text-xs text-zinc-500">
-              {acceptedTypes.map((t) => t.split('/')[1]?.toUpperCase()).join(', ')} — max {maxSizeMB}MB
+              {acceptedTypes.map((t) => t.split('/')[1]?.toUpperCase()).join(', ')} — max{' '}
+              {maxSizeMB}MB
             </p>
           </>
         )}

@@ -20,7 +20,12 @@ function makeFile(type = 'image/jpeg', sizeBytes = 100): File {
 describe('useDropZone', () => {
   it('sets isDragOver true on dragEnter and false on dragLeave', () => {
     const { result } = renderHook(() =>
-      useDropZone({ acceptedTypes: ACCEPTED, maxSizeMB: MAX_MB, onFileSelect: vi.fn(), onError: vi.fn() }),
+      useDropZone({
+        acceptedTypes: ACCEPTED,
+        maxSizeMB: MAX_MB,
+        onFileSelect: vi.fn(),
+        onError: vi.fn(),
+      }),
     )
     act(() => result.current.dragHandlers.onDragEnter(makeDragEvent()))
     expect(result.current.isDragOver).toBe(true)
@@ -30,7 +35,12 @@ describe('useDropZone', () => {
 
   it('dragCounter fix: stays true when entering a child then leaving it', () => {
     const { result } = renderHook(() =>
-      useDropZone({ acceptedTypes: ACCEPTED, maxSizeMB: MAX_MB, onFileSelect: vi.fn(), onError: vi.fn() }),
+      useDropZone({
+        acceptedTypes: ACCEPTED,
+        maxSizeMB: MAX_MB,
+        onFileSelect: vi.fn(),
+        onError: vi.fn(),
+      }),
     )
     // Enter parent
     act(() => result.current.dragHandlers.onDragEnter(makeDragEvent()))

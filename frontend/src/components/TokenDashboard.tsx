@@ -10,7 +10,11 @@ import { PaginationControls } from './UI/PaginationControls'
 // ── Skeleton grid shown while loading ─────────────────────────────────────────
 
 const LoadingSkeleton: React.FC = () => (
-  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4" aria-busy="true" aria-label="Loading tokens">
+  <div
+    className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4"
+    aria-busy="true"
+    aria-label="Loading tokens"
+  >
     {Array.from({ length: 6 }).map((_, i) => (
       <SkeletonTokenCard key={i} />
     ))}
@@ -21,7 +25,9 @@ const LoadingSkeleton: React.FC = () => (
 
 const EmptyState: React.FC<{ onCreateToken: () => void }> = ({ onCreateToken }) => (
   <div className="flex flex-col items-center justify-center py-16 text-center gap-4">
-    <div className="text-5xl" aria-hidden="true">🪙</div>
+    <div className="text-5xl" aria-hidden="true">
+      🪙
+    </div>
     <h2 className="text-xl font-semibold text-gray-800 dark:text-gray-100">No tokens yet</h2>
     <p className="text-sm text-gray-500 dark:text-gray-400 max-w-xs">
       You haven't deployed any tokens from this wallet. Create your first token to get started.
@@ -34,10 +40,16 @@ const EmptyState: React.FC<{ onCreateToken: () => void }> = ({ onCreateToken }) 
 
 const ErrorState: React.FC<{ message: string; onRetry: () => void }> = ({ message, onRetry }) => (
   <div className="flex flex-col items-center justify-center py-16 text-center gap-4">
-    <div className="text-5xl" aria-hidden="true">⚠️</div>
-    <h2 className="text-xl font-semibold text-gray-800 dark:text-gray-100">Failed to load tokens</h2>
+    <div className="text-5xl" aria-hidden="true">
+      ⚠️
+    </div>
+    <h2 className="text-xl font-semibold text-gray-800 dark:text-gray-100">
+      Failed to load tokens
+    </h2>
     <p className="text-sm text-red-500 dark:text-red-400 max-w-sm break-words">{message}</p>
-    <Button variant="outline" onClick={onRetry}>Retry</Button>
+    <Button variant="outline" onClick={onRetry}>
+      Retry
+    </Button>
   </div>
 )
 
@@ -45,9 +57,13 @@ const ErrorState: React.FC<{ message: string; onRetry: () => void }> = ({ messag
 
 const NotConnected: React.FC = () => (
   <div className="flex flex-col items-center justify-center py-16 text-center gap-3">
-    <div className="text-5xl" aria-hidden="true">🔌</div>
+    <div className="text-5xl" aria-hidden="true">
+      🔌
+    </div>
     <h2 className="text-xl font-semibold text-gray-800 dark:text-gray-100">Wallet not connected</h2>
-    <p className="text-sm text-gray-500 dark:text-gray-400">Connect your Freighter wallet to view your tokens.</p>
+    <p className="text-sm text-gray-500 dark:text-gray-400">
+      Connect your Freighter wallet to view your tokens.
+    </p>
   </div>
 )
 
@@ -64,7 +80,7 @@ export const TokenDashboard: React.FC = () => {
   if (!wallet.isConnected) return <NotConnected />
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 token-list-container">
       {/* Header */}
       <div className="flex items-center justify-between gap-4 flex-wrap">
         <div>
@@ -78,7 +94,13 @@ export const TokenDashboard: React.FC = () => {
           )}
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" size="sm" onClick={refresh} disabled={isLoading} aria-label="Refresh token list">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={refresh}
+            disabled={isLoading}
+            aria-label="Refresh token list"
+          >
             Refresh
           </Button>
           <Button size="sm" onClick={handleCreateToken}>

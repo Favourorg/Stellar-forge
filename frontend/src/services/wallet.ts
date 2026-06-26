@@ -3,7 +3,7 @@ import {
   getAddress,
   signTransaction as freighterSignTransaction,
 } from '@stellar/freighter-api'
-import { NETWORK_CONFIGS } from '../config/stellar'
+import { NETWORK_CONFIGS, type Network } from '../config/stellar'
 
 interface HorizonBalance {
   asset_type: string
@@ -87,7 +87,7 @@ export class WalletService {
     this.clearAddress()
   }
 
-  async signTransaction(xdr: string, network: 'testnet' | 'mainnet'): Promise<string> {
+  async signTransaction(xdr: string, network: Network): Promise<string> {
     if (!(await this.isInstalled())) {
       throw new Error('Freighter wallet is not installed')
     }
@@ -120,7 +120,7 @@ export class WalletService {
     }
   }
 
-  async getBalance(address: string, network: 'testnet' | 'mainnet'): Promise<string> {
+  async getBalance(address: string, network: Network): Promise<string> {
     try {
       const horizonUrl = NETWORK_CONFIGS[network].horizonUrl
 

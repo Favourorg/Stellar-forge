@@ -7,6 +7,8 @@ import { WalletContext } from '../context/WalletContext'
 import { StellarContext } from '../context/StellarContext'
 import { ToastContext } from '../context/ToastContext'
 import type { FactoryState } from '../types'
+import type { TransactionStatus } from '../hooks/useTransaction'
+import type { StellarService } from '../services/stellar'
 
 // Mock hooks
 vi.mock('../hooks/useFactoryState', () => ({
@@ -44,7 +46,7 @@ const renderWithProviders = async (
     isConnected?: boolean
     factoryState?: FactoryState | null
     isLoading?: boolean
-    txStatus?: string
+    txStatus?: TransactionStatus
   } = {},
 ) => {
   const { useFactoryState } = await import('../hooks/useFactoryState')
@@ -59,7 +61,7 @@ const renderWithProviders = async (
 
   vi.mocked(useTransaction).mockReturnValue({
     execute: mockExecute,
-    status: txStatus as any,
+    status: txStatus,
     result: null,
     error: null,
     reset: vi.fn(),
@@ -84,7 +86,7 @@ const renderWithProviders = async (
         value={{
           stellarService: {
             updateFees: mockUpdateFees,
-          } as any,
+          } as unknown as StellarService,
         }}
       >
         <ToastContext.Provider

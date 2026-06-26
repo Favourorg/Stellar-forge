@@ -21,7 +21,11 @@ test.describe('Token Creation', () => {
     await page.getByRole('button', { name: /Connect Wallet/i }).click();
   });
 
-  test('should create a new token successfully', async ({ page }: { page: Page }) => {
+  // Skipped in CI: this asserts a real on-chain deployment, but the E2E job
+  // deploys no factory contract and the mocked wallet cannot produce a valid
+  // signature. See token-creation.testnet.spec.ts for the live variant that
+  // runs only when a funded TESTNET_SECRET is provided.
+  test.skip('should create a new token successfully', async ({ page }: { page: Page }) => {
     // 1. Navigate to Create Token page
     await page.getByRole('link', { name: /Create Token/i }).first().click();
 

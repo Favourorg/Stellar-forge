@@ -7,10 +7,9 @@ export interface ProgressStep {
 
 interface ProgressIndicatorProps {
   steps: ProgressStep[]
-  currentStep?: number
 }
 
-export const ProgressIndicator: React.FC<ProgressIndicatorProps> = ({ steps, currentStep = 0 }) => {
+export const ProgressIndicator: React.FC<ProgressIndicatorProps> = ({ steps }) => {
   const getStepIcon = (status: ProgressStep['status']) => {
     switch (status) {
       case 'completed':

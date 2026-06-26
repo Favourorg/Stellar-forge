@@ -46,13 +46,7 @@ export const ExplorerLink: React.FC<ExplorerLinkProps> = ({
   const displayText = label ?? (truncate ? truncateAddress(id) : id)
 
   return (
-    <a
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
-      aria-label={id}
-      className={className}
-    >
+    <a href={href} target="_blank" rel="noopener noreferrer" aria-label={id} className={className}>
       {displayText}
       {showIcon && <ExternalLinkIcon />}
     </a>

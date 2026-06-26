@@ -8,6 +8,7 @@ import { ShareButton } from './ShareButton'
 import { CopyButton } from './CopyButton'
 import { STELLAR_CONFIG } from '../config/stellar'
 import ErrorBoundary from './ErrorBoundary'
+import { logger } from '../utils/logger'
 
 interface DeployedToken {
   address: string
@@ -34,7 +35,8 @@ export const CreateToken: React.FC = () => {
     try {
       const deployParams = {
         ...params,
-        salt: Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15),
+        salt:
+          Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15),
         tokenWasmHash: STELLAR_CONFIG.tokenWasmHash || '',
         feePayment: '100000',
       }
@@ -53,11 +55,8 @@ export const CreateToken: React.FC = () => {
         addToast(t('tokenForm.deployFailed'), 'error')
       }
     } catch (error) {
-      console.error('Deployment error:', error)
-      addToast(
-        error instanceof Error ? error.message : t('tokenForm.deployError'),
-        'error',
-      )
+      logger.error('Deployment error:', error)
+      addToast(error instanceof Error ? error.message : t('tokenForm.deployError'), 'error')
     } finally {
       setIsDeploying(false)
     }
@@ -104,11 +103,7 @@ export const CreateToken: React.FC = () => {
 
       <div className="bg-white dark:bg-gray-800 rounded-lg p-4 sm:p-6 shadow-sm">
         <ErrorBoundary>
-          <TokenForm
-            onSubmit={handleTokenFormSubmit}
-            isLoading={isDeploying}
-            estimatedFee="0.01"
-          />
+          <TokenForm onSubmit={handleTokenFormSubmit} isLoading={isDeploying} estimatedFee="0.01" />
         </ErrorBoundary>
       </div>
     </div>

@@ -99,7 +99,10 @@ export const Modal: React.FC<ModalProps> = ({
       >
         {/* Header */}
         <div className="flex items-center justify-between p-4 sm:p-6 pb-3 sm:pb-4">
-          <h2 id={titleId} className="text-lg sm:text-2xl font-bold text-gray-900 dark:text-white pr-2">
+          <h2
+            id={titleId}
+            className="text-lg sm:text-2xl font-bold text-gray-900 dark:text-white pr-2"
+          >
             {title}
           </h2>
           <button
@@ -128,7 +131,11 @@ export const Modal: React.FC<ModalProps> = ({
         <div className="px-4 sm:px-6 pb-3 sm:pb-4">{children}</div>
 
         {/* Footer */}
-        {footer && <div className="px-4 sm:px-6 pb-4 sm:pb-6 flex gap-2 sm:gap-3 justify-end flex-wrap">{footer}</div>}
+        {footer && (
+          <div className="px-4 sm:px-6 pb-4 sm:pb-6 flex gap-2 sm:gap-3 justify-end flex-wrap">
+            {footer}
+          </div>
+        )}
       </div>
     </div>
   )

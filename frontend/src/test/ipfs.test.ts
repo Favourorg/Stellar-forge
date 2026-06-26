@@ -376,6 +376,75 @@ describe('IPFSService', () => {
       )
     })
 
+    it('retries image upload on transient 503 and succeeds on second attempt', async () => {
+      vi.useFakeTimers()
+      vi.resetModules()
+      const { IPFSService: Fresh } = await import('../services/ipfs')
+      const fresh = new Fresh()
+
+      let xhrCallCount = 0
+      vi.stubGlobal(
+        'XMLHttpRequest',
+        vi.fn().mockImplementation(function (this: XMLHttpRequest) {
+          const listeners: Record<string, EventListener> = {}
+          const uploadListeners: Record<string, EventListener> = {}
+
+          xhrCallCount++
+          this.open = vi.fn()
+          this.setRequestHeader = vi.fn()
+          this.addEventListener = vi.fn((event: string, cb: EventListener) => {
+            listeners[event] = cb
+          })
+          this.send = vi.fn().mockImplementation(() => {
+            Promise.resolve().then(() => {
+              if (xhrCallCount === 1) {
+                ;(this as unknown as Record<string, unknown>).status = 503
+                ;(this as unknown as Record<string, unknown>).responseText = JSON.stringify({})
+                listeners['load']?.({} as Event)
+              } else {
+                ;(this as unknown as Record<string, unknown>).status = 200
+                ;(this as unknown as Record<string, unknown>).responseText = JSON.stringify({
+                  IpfsHash: 'QmRetryCID',
+                })
+                listeners['load']?.({} as Event)
+              }
+            })
+          })
+
+          Object.defineProperty(this, 'upload', {
+            value: {
+              addEventListener: vi.fn((event: string, cb: EventListener) => {
+                uploadListeners[event] = cb
+              }),
+            },
+          })
+        }),
+      )
+
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          status: 200,
+          json: async () => ({ IpfsHash: 'QmMetaRetry' }),
+        }),
+      )
+
+      const retryCalls: number[] = []
+      const promise = fresh.uploadMetadata(makeFile(), 'desc', 'Token', undefined, (attempt) =>
+        retryCalls.push(attempt),
+      )
+
+      await vi.runAllTimersAsync()
+      const uri = await promise
+
+      expect(uri).toBe('ipfs://QmMetaRetry')
+      expect(xhrCallCount).toBe(2)
+      expect(retryCalls).toEqual([2])
+
+      vi.useRealTimers()
+    })
+
     it('throws IPFSUploadError when JSON upload response is missing IpfsHash', async () => {
       vi.resetModules()
       const { IPFSService: Fresh } = await import('../services/ipfs')
@@ -420,7 +489,11 @@ describe('IPFSService', () => {
         'fetch',
         vi.fn().mockImplementation(async (url: string) => {
           calledUrl = url
-          return { ok: true, status: 200, json: async () => ({}) }
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ name: 'T', description: 'D', image: 'ipfs://QmImg' }),
+          }
         }),
       )
 
@@ -463,6 +536,99 @@ describe('IPFSService', () => {
           json: async () => {
             throw new SyntaxError('Unexpected token')
           },
+        }),
+      )
+
+      await expect(service.getMetadata('ipfs://QmCID')).rejects.toBeInstanceOf(IPFSUploadError)
+    })
+
+    it('throws IPFSUploadError when metadata is missing name field', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          status: 200,
+          json: async () => ({ description: 'A token', image: 'ipfs://QmImg' }),
+        }),
+      )
+
+      await expect(service.getMetadata('ipfs://QmCID')).rejects.toBeInstanceOf(IPFSUploadError)
+    })
+
+    it('throws IPFSUploadError when metadata is missing description field', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          status: 200,
+          json: async () => ({ name: 'MyToken', image: 'ipfs://QmImg' }),
+        }),
+      )
+
+      await expect(service.getMetadata('ipfs://QmCID')).rejects.toBeInstanceOf(IPFSUploadError)
+    })
+
+    it('throws IPFSUploadError when metadata is missing image field', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          status: 200,
+          json: async () => ({ name: 'MyToken', description: 'A token' }),
+        }),
+      )
+
+      await expect(service.getMetadata('ipfs://QmCID')).rejects.toBeInstanceOf(IPFSUploadError)
+    })
+
+    it('throws IPFSUploadError when metadata fields have wrong types', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          status: 200,
+          json: async () => ({ name: 42, description: true, image: null }),
+        }),
+      )
+
+      await expect(service.getMetadata('ipfs://QmCID')).rejects.toBeInstanceOf(IPFSUploadError)
+    })
+
+    it('strips unexpected extra fields from the returned metadata', async () => {
+      const raw = {
+        name: 'MyToken',
+        description: 'A token',
+        image: 'ipfs://QmImg',
+        maliciousField: '<script>alert(1)</script>',
+        extra: { nested: 'data' },
+      }
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => raw }),
+      )
+
+      const result = await service.getMetadata('ipfs://QmCID')
+      expect(result).toEqual({ name: 'MyToken', description: 'A token', image: 'ipfs://QmImg' })
+      expect(result).not.toHaveProperty('maliciousField')
+      expect(result).not.toHaveProperty('extra')
+    })
+
+    it('throws IPFSUploadError when gateway returns an empty object', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({}) }),
+      )
+
+      await expect(service.getMetadata('ipfs://QmCID')).rejects.toBeInstanceOf(IPFSUploadError)
+    })
+
+    it('throws IPFSUploadError when gateway returns a non-object (array)', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          status: 200,
+          json: async () => ['name', 'description', 'image'],
         }),
       )
 

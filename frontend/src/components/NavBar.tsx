@@ -13,13 +13,18 @@ export const NavBar: React.FC<NavBarProps> = ({ onHelpClick, isAdmin = false }) 
 
   const getLinkClass = ({ isActive }: { isActive: boolean }) =>
     `block px-3 sm:px-4 py-2 sm:py-3 rounded-md text-xs sm:text-sm font-medium min-h-[44px] flex items-center justify-center dark:text-gray-300 ${
-      isActive ? 'bg-blue-600 text-white dark:bg-blue-500' : 'text-gray-700 hover:bg-gray-200 dark:text-white dark:hover:bg-slate-700'
+      isActive
+        ? 'bg-blue-600 text-white dark:bg-blue-500'
+        : 'text-gray-700 hover:bg-gray-200 dark:text-white dark:hover:bg-slate-700'
     }`
 
   const closeMenu = () => setMenuOpen(false)
 
   return (
-    <nav aria-label={t('nav.ariaLabel')} className="mt-3 sm:mt-4 mb-3 sm:mb-4 bg-white/50 dark:bg-slate-800/50 backdrop-blur-sm rounded-xl p-3 sm:p-4">
+    <nav
+      aria-label={t('nav.ariaLabel')}
+      className="mt-3 sm:mt-4 mb-3 sm:mb-4 bg-white/50 dark:bg-slate-800/50 backdrop-blur-sm rounded-xl p-3 sm:p-4"
+    >
       {/* Mobile: hamburger toggle */}
       <div className="flex items-center justify-between sm:hidden">
         <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Navigation</span>
@@ -31,12 +36,34 @@ export const NavBar: React.FC<NavBarProps> = ({ onHelpClick, isAdmin = false }) 
           className="p-2 rounded-md text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-slate-700 min-h-[44px] min-w-[44px] flex items-center justify-center"
         >
           {menuOpen ? (
-            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            <svg
+              className="w-5 h-5"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              aria-hidden="true"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M6 18L18 6M6 6l12 12"
+              />
             </svg>
           ) : (
-            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+            <svg
+              className="w-5 h-5"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              aria-hidden="true"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M4 6h16M4 12h16M4 18h16"
+              />
             </svg>
           )}
         </button>
@@ -91,7 +118,10 @@ export const NavBar: React.FC<NavBarProps> = ({ onHelpClick, isAdmin = false }) 
         )}
         {onHelpClick && (
           <button
-            onClick={() => { onHelpClick(); closeMenu() }}
+            onClick={() => {
+              onHelpClick()
+              closeMenu()
+            }}
             className="px-3 py-2 rounded-md text-xs sm:text-sm font-medium text-gray-500 hover:bg-gray-200 dark:text-gray-400 dark:hover:bg-slate-700 sm:ml-auto min-h-[44px] min-w-[44px] flex items-center justify-center"
             aria-label="Open tutorial"
           >

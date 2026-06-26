@@ -109,23 +109,23 @@ describe('withRetry', () => {
     const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const fn = vi.fn().mockRejectedValueOnce({ message: 'Network error' }).mockResolvedValue('ok')
 
-    // Mock import.meta.env.DEV = true
-    vi.stubGlobal('import', { meta: { env: { DEV: true } } })
+    vi.stubEnv('DEV', true)
 
-    await withRetry(fn, { baseDelayMs: 10 })
+    const promise = withRetry(fn, { baseDelayMs: 10 })
     await vi.runAllTimersAsync()
+    await promise
 
     expect(consoleSpy).toHaveBeenCalled()
 
     // Mock import.meta.env.DEV = false
     consoleSpy.mockClear()
-    vi.stubGlobal('import', { meta: { env: { DEV: false } } })
+    vi.stubEnv('DEV', false)
     const fn2 = vi.fn().mockRejectedValueOnce({ message: 'Network error' }).mockResolvedValue('ok')
 
-    await withRetry(fn2, { baseDelayMs: 10 })
+    const promise2 = withRetry(fn2, { baseDelayMs: 10 })
     await vi.runAllTimersAsync()
+    await promise2
 
     expect(consoleSpy).not.toHaveBeenCalled()
   })
 })
-

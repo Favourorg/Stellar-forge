@@ -21,10 +21,7 @@ export const AddressDisplay = ({
     <span className="inline-flex items-center gap-1 font-mono text-sm">
       <span title={address}>{truncateAddress(address)}</span>
 
-      {showCopy && (
-        <CopyButton value={address} ariaLabel="Copy address" />
-      )}
-
+      {showCopy && <CopyButton value={address} ariaLabel="Copy address" />}
 
       {showExplorer && (
         <a

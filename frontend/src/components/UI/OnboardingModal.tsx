@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { Button } from './Button'
 
 const STEPS = [
@@ -46,8 +46,16 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({ forceOpen, onC
   const [visible, setVisible] = useState(false)
   const closeRef = useRef<HTMLButtonElement>(null)
 
+  const handleClose = useCallback(() => {
+    localStorage.setItem(STORAGE_KEY, 'true')
+    setVisible(false)
+    setStep(0)
+    onClose?.()
+  }, [onClose])
+
   useEffect(() => {
     const done = localStorage.getItem(STORAGE_KEY)
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- show on mount based on persisted completion / forceOpen override
     if (forceOpen || !done) setVisible(true)
   }, [forceOpen])
 
@@ -59,15 +67,7 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({ forceOpen, onC
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible])
-
-  const handleClose = () => {
-    localStorage.setItem(STORAGE_KEY, 'true')
-    setVisible(false)
-    setStep(0)
-    onClose?.()
-  }
+  }, [visible, handleClose])
 
   if (!visible) return null
 

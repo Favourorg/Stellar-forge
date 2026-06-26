@@ -56,11 +56,16 @@ export const ConfirmModal: React.FC<ConfirmModalProps> = ({
             {title}
           </h2>
 
-          {description && <p className="text-xs sm:text-sm text-gray-600 dark:text-gray-400">{description}</p>}
+          {description && (
+            <p className="text-xs sm:text-sm text-gray-600 dark:text-gray-400">{description}</p>
+          )}
 
           <div className="bg-gray-50 dark:bg-gray-700 rounded-lg divide-y divide-gray-200 dark:divide-gray-600">
             {details.map(({ label, value }) => (
-              <div key={label} className="flex flex-col sm:flex-row sm:justify-between px-3 sm:px-4 py-2 text-xs sm:text-sm gap-1">
+              <div
+                key={label}
+                className="flex flex-col sm:flex-row sm:justify-between px-3 sm:px-4 py-2 text-xs sm:text-sm gap-1"
+              >
                 <span className="text-gray-500 dark:text-gray-400 font-medium">{label}</span>
                 <span className="font-medium text-gray-900 dark:text-gray-100 break-all">
                   {value}
@@ -70,7 +75,12 @@ export const ConfirmModal: React.FC<ConfirmModalProps> = ({
           </div>
 
           <div className="flex gap-2 sm:gap-3 justify-end pt-2 flex-wrap">
-            <Button ref={cancelRef} variant="outline" onClick={onCancel} className="flex-1 sm:flex-initial">
+            <Button
+              ref={cancelRef}
+              variant="outline"
+              onClick={onCancel}
+              className="flex-1 sm:flex-initial"
+            >
               Cancel
             </Button>
             <Button variant="primary" onClick={onConfirm} className="flex-1 sm:flex-initial">

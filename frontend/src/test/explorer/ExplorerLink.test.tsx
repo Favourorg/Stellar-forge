@@ -52,7 +52,9 @@ describe('ExplorerLink', () => {
   })
 
   it('shows custom label when provided, regardless of truncate', () => {
-    render(<ExplorerLink type="account" id={ID} network="mainnet" label="My Token" truncate={true} />)
+    render(
+      <ExplorerLink type="account" id={ID} network="mainnet" label="My Token" truncate={true} />,
+    )
     expect(screen.getByRole('link').textContent).toContain('My Token')
   })
 })

@@ -1,5 +1,12 @@
 import React, { useState, useCallback, useRef } from 'react'
-import { Input, Button, MainnetConfirmationModal, ConfirmModal, ProgressIndicator, InsufficientBalanceWarning } from './UI'
+import {
+  Input,
+  Button,
+  MainnetConfirmationModal,
+  ConfirmModal,
+  ProgressIndicator,
+  InsufficientBalanceWarning,
+} from './UI'
 import type { ProgressStep } from './UI'
 import { useMainnetConfirmation } from '../hooks/useMainnetConfirmation'
 import { useToast } from '../context/ToastContext'
@@ -33,7 +40,11 @@ export const TokenCreateForm: React.FC = () => {
   const [description, setDescription] = useState('')
   const [selectedImage, setSelectedImage] = useState<File | null>(null)
   const [imagePreview, setImagePreview] = useState<string | null>(null)
-  const [deployedToken, setDeployedToken] = useState<{ address: string; name: string; symbol: string } | null>(null)
+  const [deployedToken, setDeployedToken] = useState<{
+    address: string
+    name: string
+    symbol: string
+  } | null>(null)
   const [pendingParams, setPendingParams] = useState<TokenDeployParams | null>(null)
   const [deploymentSteps, setDeploymentSteps] = useState<ProgressStep[]>([
     { label: 'Deploy contract', status: 'pending' },
@@ -111,7 +122,10 @@ export const TokenCreateForm: React.FC = () => {
     const sanitizedDescription = sanitizeTokenInput(description)
 
     if (!validateTokenName(sanitizedName)) {
-      addToast('Invalid token name: must be 1-32 characters using only letters, digits, spaces, hyphens, and underscores', 'error')
+      addToast(
+        'Invalid token name: must be 1-32 characters using only letters, digits, spaces, hyphens, and underscores',
+        'error',
+      )
       return
     }
     if (!validateTokenSymbol(sanitizedSymbol)) {
@@ -157,11 +171,16 @@ export const TokenCreateForm: React.FC = () => {
     ])
 
     try {
-      await execute()
+      const result = await execute()
       updateStep(0, 'completed')
       updateStep(1, 'completed')
       updateStep(2, 'completed')
       addToast('Token deployed successfully!', 'success')
+      setDeployedToken({
+        address: result.tokenAddress,
+        name: params.name,
+        symbol: params.symbol,
+      })
       setName('')
       setSymbol('')
       setDecimals('7')
@@ -181,7 +200,9 @@ export const TokenCreateForm: React.FC = () => {
       {deployedToken && (
         <div className="mb-4 sm:mb-6 rounded-lg border border-green-200 bg-green-50 dark:bg-green-900/20 dark:border-green-800 p-4 sm:p-5">
           <div className="flex flex-col sm:flex-row sm:items-start gap-3">
-            <span className="text-2xl shrink-0" aria-hidden="true">🎉</span>
+            <span className="text-2xl shrink-0" aria-hidden="true">
+              🎉
+            </span>
             <div className="flex-1 min-w-0">
               <p className="font-semibold text-green-800 dark:text-green-300 text-sm sm:text-base">
                 {deployedToken.name} (${deployedToken.symbol}) deployed successfully!
@@ -206,7 +227,9 @@ export const TokenCreateForm: React.FC = () => {
 
       {isDeploying && (
         <div className="mb-4 sm:mb-6 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 p-4 sm:p-5 rounded-lg">
-          <h3 className="font-semibold text-blue-900 dark:text-blue-300 mb-4 text-sm sm:text-base">Deployment Progress</h3>
+          <h3 className="font-semibold text-blue-900 dark:text-blue-300 mb-4 text-sm sm:text-base">
+            Deployment Progress
+          </h3>
           <ProgressIndicator steps={deploymentSteps} />
         </div>
       )}
@@ -248,7 +271,10 @@ export const TokenCreateForm: React.FC = () => {
           disabled={isDeploying}
         />
         <div>
-          <label htmlFor="description" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+          <label
+            htmlFor="description"
+            className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
+          >
             {t('tokenForm.descriptionLabel')}
           </label>
           <textarea
@@ -264,7 +290,10 @@ export const TokenCreateForm: React.FC = () => {
 
         {/* Image Upload */}
         <div>
-          <label htmlFor="image" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+          <label
+            htmlFor="image"
+            className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
+          >
             Token Image (Optional)
           </label>
           <input
@@ -288,7 +317,7 @@ export const TokenCreateForm: React.FC = () => {
                     {selectedImage?.name}
                   </p>
                   <p className="text-sm text-gray-500 dark:text-gray-400">
-                    {(selectedImage?.size ? (selectedImage.size / 1024).toFixed(1) : 0)} KB
+                    {selectedImage?.size ? (selectedImage.size / 1024).toFixed(1) : 0} KB
                   </p>
                   <button
                     type="button"

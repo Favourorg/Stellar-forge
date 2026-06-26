@@ -1,38 +1,44 @@
-import React, { useState } from 'react';
-import { useTranslation } from 'react-i18next';
+import React, { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 
 const FAQ_DATA = [
   {
     question: 'What is a Stellar token?',
-    answer: 'A Stellar token is a custom asset created on the Stellar blockchain using the Stellar Asset Contract standard. It represents digital value or utility on the Stellar network and can be used for payments, voting, or other purposes.'
+    answer:
+      'A Stellar token is a custom asset created on the Stellar blockchain using the Stellar Asset Contract standard. It represents digital value or utility on the Stellar network and can be used for payments, voting, or other purposes.',
   },
   {
     question: 'What are the fees?',
-    answer: 'Token creation costs 0.5 XLM base fee + 0.2 XLM per metadata byte (IPFS hash ~100 bytes = ~20.2 XLM total). Minting/burning costs ~0.00001 XLM per transaction. Network fees are minimal compared to Ethereum.'
+    answer:
+      'Token creation costs 0.5 XLM base fee + 0.2 XLM per metadata byte (IPFS hash ~100 bytes = ~20.2 XLM total). Minting/burning costs ~0.00001 XLM per transaction. Network fees are minimal compared to Ethereum.',
   },
   {
     question: 'What is IPFS?',
-    answer: 'IPFS (InterPlanetary File System) is a decentralized protocol for storing and sharing files. Your token metadata (name, symbol, image) is pinned to IPFS via Pinata, ensuring permanent, censorship-resistant storage with content-addressed hashes.'
+    answer:
+      'IPFS (InterPlanetary File System) is a decentralized protocol for storing and sharing files. Your token metadata (name, symbol, image) is pinned to IPFS via Pinata, ensuring permanent, censorship-resistant storage with content-addressed hashes.',
   },
   {
     question: 'How do I get XLM?',
-    answer: 'Use the Fundbot button (testnet only) for free test XLM. For mainnet, buy XLM on exchanges like Coinbase, Kraken, Binance, or Stellar DEX. Minimum ~25 XLM recommended for transactions + base reserves.'
+    answer:
+      'Use the Fundbot button (testnet only) for free test XLM. For mainnet, buy XLM on exchanges like Coinbase, Kraken, Binance, or Stellar DEX. Minimum ~25 XLM recommended for transactions + base reserves.',
   },
   {
     question: 'Is my token on mainnet or testnet?',
-    answer: 'Check the network selector in the top-right. Testnet tokens are for development (free XLM). Mainnet tokens are live/production. Always confirm network before creating/minting!'
-  }
-];
+    answer:
+      'Check the network selector in the top-right. Testnet tokens are for development (free XLM). Mainnet tokens are live/production. Always confirm network before creating/minting!',
+  },
+]
 
 export const FAQ: React.FC = () => {
-  const [searchQuery, setSearchQuery] = useState('');
-  const { t } = useTranslation();
-  const searchId = 'faq-search';
+  const [searchQuery, setSearchQuery] = useState('')
+  const { t } = useTranslation()
+  const searchId = 'faq-search'
 
-  const filteredFAQ = FAQ_DATA.filter(item =>
-    item.question.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    item.answer.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const filteredFAQ = FAQ_DATA.filter(
+    (item) =>
+      item.question.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      item.answer.toLowerCase().includes(searchQuery.toLowerCase()),
+  )
 
   return (
     <div className="max-w-4xl mx-auto">
@@ -41,7 +47,10 @@ export const FAQ: React.FC = () => {
           {t('faq.title', 'Frequently Asked Questions')}
         </h2>
         <p className="text-base sm:text-xl text-gray-600 mb-4 sm:mb-8">
-          {t('faq.subtitle', 'Find answers to common questions about token creation, fees, and Stellar network.')}
+          {t(
+            'faq.subtitle',
+            'Find answers to common questions about token creation, fees, and Stellar network.',
+          )}
         </p>
         <div className="max-w-md mx-auto">
           <label htmlFor={searchId} className="sr-only">
@@ -73,7 +82,9 @@ export const FAQ: React.FC = () => {
           ))
         ) : (
           <div className="text-center py-12" role="status">
-            <p className="text-gray-500 text-lg">{t('faq.noResults', 'No FAQs match your search. Try another keyword.')}</p>
+            <p className="text-gray-500 text-lg">
+              {t('faq.noResults', 'No FAQs match your search. Try another keyword.')}
+            </p>
           </div>
         )}
       </div>
@@ -89,5 +100,5 @@ export const FAQ: React.FC = () => {
         </div>
       )}
     </div>
-  );
-};
+  )
+}

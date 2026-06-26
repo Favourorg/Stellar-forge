@@ -22,8 +22,7 @@ export const ExplorerLink = ({
 }: ExplorerLinkProps) => {
   const href = stellarExplorerUrl(type, value, network)
   const baseAriaLabel = ariaLabel ?? label
-  const computedAriaLabel =
-    network === 'testnet' ? `${baseAriaLabel} (testnet)` : baseAriaLabel
+  const computedAriaLabel = network === 'testnet' ? `${baseAriaLabel} (testnet)` : baseAriaLabel
 
   return (
     <a

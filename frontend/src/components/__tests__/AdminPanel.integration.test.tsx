@@ -19,7 +19,7 @@ describe('AdminPanel Integration', () => {
 
 describe('AdminPanel Helper Functions', () => {
   // Test the conversion functions used in AdminPanel
-  
+
   it('should convert stroops to XLM display format', () => {
     const stroopsToDisplay = (stroops: string): string => {
       return (Number(stroops) / 1e7).toFixed(7).replace(/\.?0+$/, '')
@@ -76,8 +76,8 @@ describe('AdminPanel Helper Functions', () => {
 
     // Test round-trip conversion
     const testValues = ['10000000', '5000000', '1', '100000000', '0']
-    
-    testValues.forEach(stroops => {
+
+    testValues.forEach((stroops) => {
       const xlm = stroopsToDisplay(stroops)
       const backToStroops = displayToStroops(xlm)
       expect(backToStroops).toBe(stroops)
@@ -96,7 +96,7 @@ describe('AdminPanel Helper Functions', () => {
     // Test precision with very small values
     expect(stroopsToDisplay('1')).toBe('0.0000001')
     expect(displayToStroops('0.0000001')).toBe('1')
-    
+
     expect(stroopsToDisplay('10')).toBe('0.000001')
     expect(displayToStroops('0.000001')).toBe('10')
   })
@@ -147,7 +147,7 @@ describe('AdminPanel Acceptance Criteria', () => {
     }
 
     // All criteria should be met
-    Object.values(acceptanceCriteria).forEach(met => {
+    Object.values(acceptanceCriteria).forEach((met) => {
       expect(met).toBe(true)
     })
   })

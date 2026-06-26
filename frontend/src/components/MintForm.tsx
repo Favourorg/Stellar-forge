@@ -20,8 +20,8 @@ const ESTIMATED_FEE_XLM = 0.01
 const MANUAL_VALUE = '__manual__'
 
 interface MintFormData {
-  tokenSelect: string   // dropdown value — either a contract address or MANUAL_VALUE
-  tokenManual: string   // shown only when tokenSelect === MANUAL_VALUE
+  tokenSelect: string // dropdown value — either a contract address or MANUAL_VALUE
+  tokenManual: string // shown only when tokenSelect === MANUAL_VALUE
   recipient: string
   amount: string
 }
@@ -51,7 +51,9 @@ export const MintForm: React.FC<MintFormProps> = ({
 
   useEffect(() => {
     mountedRef.current = true
-    return () => { mountedRef.current = false }
+    return () => {
+      mountedRef.current = false
+    }
   }, [])
 
   const {
@@ -69,9 +71,14 @@ export const MintForm: React.FC<MintFormProps> = ({
     },
   })
 
+  // React Hook Form's watch() is not memoizable, so the React Compiler skips
+  // optimizing this component. That's expected and safe here — we read live
+  // form values rather than relying on referential stability.
+  // eslint-disable-next-line react-hooks/incompatible-library
   const tokenSelect = watch('tokenSelect')
   const tokenManual = watch('tokenManual')
   const recipient = watch('recipient')
+  const amount = watch('amount')
 
   // Resolved token address: dropdown selection or manual input
   const resolvedTokenAddress = tokenSelect === MANUAL_VALUE ? tokenManual : tokenSelect
@@ -93,10 +100,18 @@ export const MintForm: React.FC<MintFormProps> = ({
     setIsCheckingRecipient(true)
     stellarService
       .accountExists(trimmed)
-      .then((exists) => { if (!cancelled && mountedRef.current) setRecipientHasAccount(exists) })
-      .catch(() => { if (!cancelled && mountedRef.current) setRecipientHasAccount(null) })
-      .finally(() => { if (!cancelled && mountedRef.current) setIsCheckingRecipient(false) })
-    return () => { cancelled = true }
+      .then((exists) => {
+        if (!cancelled && mountedRef.current) setRecipientHasAccount(exists)
+      })
+      .catch(() => {
+        if (!cancelled && mountedRef.current) setRecipientHasAccount(null)
+      })
+      .finally(() => {
+        if (!cancelled && mountedRef.current) setIsCheckingRecipient(false)
+      })
+    return () => {
+      cancelled = true
+    }
   }, [debouncedRecipient, stellarService])
 
   const mintBuilder = useCallback(
@@ -104,19 +119,24 @@ export const MintForm: React.FC<MintFormProps> = ({
       stellarService.mintTokens({
         tokenAddress: resolvedTokenAddress,
         to: recipient.trim(),
-        amount: watch('amount'),
+        amount,
         feePayment: BASE_FEE_STROOPS,
       }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [stellarService, resolvedTokenAddress, recipient],
+    [stellarService, resolvedTokenAddress, recipient, amount],
   )
 
   const { execute: executeMint, status: txStatus } = useTransaction(mintBuilder)
   const isSubmitting =
-    txStatus === 'simulating' || txStatus === 'signing' || txStatus === 'submitting' || txStatus === 'polling'
+    txStatus === 'simulating' ||
+    txStatus === 'signing' ||
+    txStatus === 'submitting' ||
+    txStatus === 'polling'
 
   const onValid = () => {
-    if (!wallet.isConnected) { addToast('Connect your wallet first', 'error'); return }
+    if (!wallet.isConnected) {
+      addToast('Connect your wallet first', 'error')
+      return
+    }
     requireTos(() => setPending(true))
   }
 
@@ -141,8 +161,6 @@ export const MintForm: React.FC<MintFormProps> = ({
     { value: MANUAL_VALUE, label: 'Manual input…' },
   ]
 
-  const formAmount = watch('amount')
-
   return (
     <>
       <form onSubmit={handleSubmit(onValid)} className="space-y-4" noValidate>
@@ -154,7 +172,11 @@ export const MintForm: React.FC<MintFormProps> = ({
           render={({ field }) => (
             <Select
               label="Token"
-              options={tokenOptions.length > 1 ? tokenOptions : [{ value: MANUAL_VALUE, label: 'Manual input…' }]}
+              options={
+                tokenOptions.length > 1
+                  ? tokenOptions
+                  : [{ value: MANUAL_VALUE, label: 'Manual input…' }]
+              }
               placeholder={myTokens.length === 0 ? 'No tokens found — use manual input' : undefined}
               error={errors.tokenSelect?.message}
               required
@@ -176,7 +198,8 @@ export const MintForm: React.FC<MintFormProps> = ({
             error={errors.tokenManual?.message}
             {...register('tokenManual', {
               required: 'Token address is required',
-              validate: (v) => isValidContractAddress(v.trim()) || 'Enter a valid Soroban contract address',
+              validate: (v) =>
+                isValidContractAddress(v.trim()) || 'Enter a valid Soroban contract address',
             })}
           />
         )}
@@ -197,7 +220,8 @@ export const MintForm: React.FC<MintFormProps> = ({
             error={errors.recipient?.message}
             {...register('recipient', {
               required: 'Recipient address is required',
-              validate: (v) => isValidStellarAddress(v.trim()) || 'Enter a valid Stellar account address',
+              validate: (v) =>
+                isValidStellarAddress(v.trim()) || 'Enter a valid Stellar account address',
             })}
             onChange={(e) => {
               register('recipient').onChange(e)
@@ -211,7 +235,11 @@ export const MintForm: React.FC<MintFormProps> = ({
             </p>
           )}
           {recipientHasAccount === false && (
-            <p className="mt-1 text-xs text-amber-600 dark:text-amber-400" role="status" aria-live="polite">
+            <p
+              className="mt-1 text-xs text-amber-600 dark:text-amber-400"
+              role="status"
+              aria-live="polite"
+            >
               This address does not have a Stellar account yet. It may need to be funded first.
             </p>
           )}
@@ -280,7 +308,7 @@ export const MintForm: React.FC<MintFormProps> = ({
               : resolvedTokenAddress,
           },
           { label: 'Recipient', value: recipient },
-          { label: 'Amount', value: formAmount },
+          { label: 'Amount', value: amount },
           { label: 'Estimated Fee', value: ESTIMATED_FEE_DISPLAY },
         ]}
         onConfirm={handleConfirm}

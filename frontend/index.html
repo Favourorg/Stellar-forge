@@ -4,13 +4,12 @@
     <meta charset="UTF-8" />
     <!--
       DEVELOPMENT FALLBACK ONLY — meta tags cannot enforce frame-ancestors.
-      Production CSP is set via HTTP headers in vercel.json / public/_headers,
-      generated from src/csp/policy.ts. Do not rely on this tag for production
-      security and do not edit it by hand — run `npm run prebuild` instead.
-
-      Note: frame-ancestors 'none' prevents clickjacking attacks and is now
-      enforced as an HTTP header on Vercel. Browsers silently ignore frame-ancestors
-      and other header-only directives when set via meta tags.
+      This tag, production CSP in vercel.json, and public/_headers are all
+      generated from src/csp/policy.ts via `npm run prebuild`. Do not edit by hand.
+      
+      Note: frame-ancestors 'none' prevents clickjacking attacks and is enforced
+      as an HTTP header on Vercel. Browsers silently ignore frame-ancestors and
+      other header-only directives when set via meta tags.
     -->
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://gateway.pinata.cloud; connect-src 'self' https://horizon.stellar.org https://horizon-testnet.stellar.org https://soroban-testnet.stellar.org https://rpc-mainnet.stellar.org https://gateway.pinata.cloud https://api.pinata.cloud https://*.ingest.sentry.io; font-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; upgrade-insecure-requests; worker-src blob:" />
     <!-- X-Content-Type-Options prevents MIME-type sniffing attacks. -->

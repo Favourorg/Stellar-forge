@@ -8,6 +8,7 @@ import { useNetwork } from '../context/NetworkContext'
 import { validateTokenParams } from '../utils/validation'
 import { formatXLM, stroopsToXLM } from '../utils/formatting'
 import { useFactoryState } from '../hooks/useFactoryState'
+import { logger } from '../utils/logger'
 
 interface TokenFormProps {
   onSubmit: (params: {
@@ -118,11 +119,8 @@ export const TokenForm: React.FC<TokenFormProps> = ({
     try {
       await onSubmit(formData)
     } catch (error) {
-      console.error('Form submission error:', error)
-      addToast(
-        error instanceof Error ? error.message : t('tokenForm.submitError'),
-        'error',
-      )
+      logger.error('Form submission error:', error)
+      addToast(error instanceof Error ? error.message : t('tokenForm.submitError'), 'error')
     }
   }
 
@@ -192,9 +190,7 @@ export const TokenForm: React.FC<TokenFormProps> = ({
             required
           />
           {touched.initialSupply && errors.initialSupply && (
-            <p className="mt-1 text-sm text-red-600 dark:text-red-400">
-              {errors.initialSupply}
-            </p>
+            <p className="mt-1 text-sm text-red-600 dark:text-red-400">{errors.initialSupply}</p>
           )}
         </div>
       </div>
@@ -224,11 +220,7 @@ export const TokenForm: React.FC<TokenFormProps> = ({
       </div>
 
       {/* Submit Button */}
-      <Button
-        type="submit"
-        disabled={!isFormValid() || isLoading}
-        className="w-full"
-      >
+      <Button type="submit" disabled={!isFormValid() || isLoading} className="w-full">
         {isLoading ? t('tokenForm.deploying') : t('tokenForm.deploy')}
       </Button>
 

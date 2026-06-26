@@ -14,7 +14,7 @@ export function useLocalStorage<T>(
     try {
       const item = window.localStorage.getItem(key)
       return item ? (JSON.parse(item) as T) : defaultValue
-    } catch (error) {
+    } catch {
       // localStorage read failure — fall back to defaultValue silently
       return defaultValue
     }
@@ -24,15 +24,17 @@ export function useLocalStorage<T>(
   // persists the new value to localStorage.
   const setValue = useCallback(
     (value: T | ((prev: T) => T)) => {
-      try {
-        setStoredValue((prevValue: T) => {
-          const valueToStore = value instanceof Function ? value(prevValue) : value
+      setStoredValue((prevValue: T) => {
+        const valueToStore = value instanceof Function ? value(prevValue) : value
+        try {
           window.localStorage.setItem(key, JSON.stringify(valueToStore))
-          return valueToStore
-        })
-      } catch (error) {
-        console.warn(`[useLocalStorage] Error setting key "${key}":`, error)
-      }
+        } catch (error) {
+          // localStorage write failure (quota exceeded, unavailable, etc.) —
+          // keep the in-memory value but don't let it crash the render.
+          console.warn(`[useLocalStorage] Error setting key "${key}":`, error)
+        }
+        return valueToStore
+      })
     },
     [key],
   )
@@ -55,4 +57,3 @@ export function useLocalStorage<T>(
 
   return [storedValue, setValue]
 }
-

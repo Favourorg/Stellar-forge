@@ -8,9 +8,7 @@ vi.mock('@sentry/react', () => ({
   captureMessage: vi.fn(),
   setUser: vi.fn(),
   setTag: vi.fn(),
-  withScope: vi.fn((cb: (scope: { setExtras: () => void }) => void) =>
-    cb({ setExtras: vi.fn() }),
-  ),
+  withScope: vi.fn((cb: (scope: { setExtras: () => void }) => void) => cb({ setExtras: vi.fn() })),
   withProfiler: vi.fn((c) => c),
   browserTracingIntegration: vi.fn(),
   replayIntegration: vi.fn(),
@@ -32,6 +30,7 @@ describe('sentry.ts', () => {
 
   it('calls Sentry.init in production', async () => {
     vi.stubEnv('MODE', 'production')
+    vi.stubEnv('VITE_SENTRY_DSN', 'https://example@sentry.io/1')
     await import('../../lib/monitoring/sentry')
     expect(SentrySDK.init).toHaveBeenCalledOnce()
     vi.unstubAllEnvs()
@@ -39,6 +38,7 @@ describe('sentry.ts', () => {
 
   it('captureException calls Sentry.captureException with correct args in production', async () => {
     vi.stubEnv('MODE', 'production')
+    vi.stubEnv('VITE_SENTRY_DSN', 'https://example@sentry.io/1')
     const { captureException } = await import('../../lib/monitoring/sentry')
     const err = new Error('test')
     captureException(err, { foo: 'bar' })

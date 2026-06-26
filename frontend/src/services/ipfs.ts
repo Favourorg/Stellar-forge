@@ -1,7 +1,7 @@
 // IPFS service for metadata upload via Pinata
 
 import { IPFS_CONFIG } from '../config/ipfs'
-import { withRetry, isTransientError } from '../utils/retry'
+import { withRetry, isTransientError, HttpError } from '../utils/retry'
 import { isValidImageFile } from '../utils/validation'
 import { IPFSConfigError, IPFSUploadError } from './ipfs-errors'
 
@@ -11,6 +11,24 @@ export interface TokenMetadata {
   name: string
   description: string
   image: string // ipfs:// URI
+}
+
+export interface UploadMetadataOptions {
+  image: File
+  description: string
+  tokenName: string
+  onProgress?: (percent: number) => void
+  onRetry?: (attempt: number, delayMs: number) => void
+}
+
+function isTokenMetadata(value: unknown): value is TokenMetadata {
+  if (typeof value !== 'object' || value === null) return false
+  const obj = value as Record<string, unknown>
+  return (
+    typeof obj.name === 'string' &&
+    typeof obj.description === 'string' &&
+    typeof obj.image === 'string'
+  )
 }
 
 function validateConfig(): void {
@@ -29,16 +47,18 @@ export class IPFSService {
    * @param description - Token description
    * @param tokenName   - Token name (used as metadata `name` field)
    * @param onProgress  - Optional progress callback (0–100)
+   * @param onRetry     - Optional callback fired before each retry attempt
    * @returns           Metadata URI in ipfs:// format
    *
    * @throws {IPFSConfigError}  When API credentials are missing
-   * @throws {IPFSUploadError}  On validation failures, auth errors, or network errors
+   * @throws {IPFSUploadError}  On validation failures, auth errors, or exhausted retries
    */
   async uploadMetadata(
     image: File,
     description: string,
     tokenName: string,
     onProgress?: (percent: number) => void,
+    onRetry?: (attempt: number, delayMs: number) => void,
   ): Promise<string> {
     validateConfig()
 
@@ -49,7 +69,7 @@ export class IPFSService {
 
     // Step 1: Upload image file (progress 0 → 75)
     onProgress?.(0)
-    const imageCid = await this._uploadFile(image, onProgress)
+    const imageCid = await this._uploadFile(image, onProgress, onRetry)
 
     // Step 2: Build and upload metadata JSON (progress 75 → 100)
     onProgress?.(75)
@@ -58,7 +78,7 @@ export class IPFSService {
       description,
       image: `ipfs://${imageCid}`,
     }
-    const metadataCid = await this._uploadJSON(metadata, `${tokenName}-metadata.json`)
+    const metadataCid = await this._uploadJSON(metadata, `${tokenName}-metadata.json`, onRetry)
     onProgress?.(100)
 
     return `ipfs://${metadataCid}`
@@ -94,73 +114,123 @@ export class IPFSService {
       )
     }
 
+    let parsed: unknown
     try {
-      return (await response.json()) as TokenMetadata
+      parsed = await response.json()
     } catch {
       throw new IPFSUploadError('Metadata response is not valid JSON.')
     }
+
+    if (!isTokenMetadata(parsed)) {
+      throw new IPFSUploadError(
+        'Metadata response is missing required fields (name, description, image).',
+      )
+    }
+
+    return { name: parsed.name, description: parsed.description, image: parsed.image }
   }
 
   // ── Private helpers ──────────────────────────────────────────────────────────
 
-  private _uploadFile(file: File, onProgress?: (percent: number) => void): Promise<string> {
+  private _uploadFile(
+    file: File,
+    onProgress?: (percent: number) => void,
+    onRetry?: (attempt: number, delayMs: number) => void,
+  ): Promise<string> {
+    const doUpload = (): Promise<string> =>
+      new Promise<string>((resolve, reject) => {
+        const xhr = new XMLHttpRequest()
+
+        xhr.upload.addEventListener('progress', (e) => {
+          if (e.lengthComputable && onProgress) {
+            onProgress(Math.round((e.loaded / e.total) * 75))
+          }
+        })
+
+        xhr.addEventListener('load', () => {
+          if (xhr.status === 429 || (xhr.status >= 500 && xhr.status < 600)) {
+            reject(
+              new HttpError(
+                xhr.status,
+                `Image upload failed (HTTP ${xhr.status})`,
+                xhr.status === 429
+                  ? parseInt(xhr.getResponseHeader('Retry-After') ?? '0') || undefined
+                  : undefined,
+              ),
+            )
+            return
+          }
+
+          if (xhr.status === 401) {
+            reject(
+              new IPFSUploadError('Pinata authentication failed. Check your API key and secret.'),
+            )
+            return
+          }
+          if (xhr.status !== 200) {
+            reject(
+              new IPFSUploadError(`Image upload failed (HTTP ${xhr.status}). Please try again.`),
+            )
+            return
+          }
+          try {
+            const data = JSON.parse(xhr.responseText) as {
+              IpfsHash: string
+            }
+            if (!data.IpfsHash) {
+              reject(
+                new IPFSUploadError('Pinata returned an unexpected response: missing IpfsHash.'),
+              )
+              return
+            }
+            resolve(data.IpfsHash)
+          } catch {
+            reject(new IPFSUploadError('Unexpected response from Pinata while uploading image.'))
+          }
+        })
+
+        xhr.addEventListener('error', () => {
+          reject(new HttpError(0, 'Network error during image upload'))
+        })
+
+        xhr.addEventListener('abort', () => {
+          reject(new IPFSUploadError('Image upload was aborted.'))
+        })
+
+        xhr.open('POST', `${IPFS_CONFIG.pinataApiUrl}/pinning/pinFileToIPFS`)
+        xhr.setRequestHeader('pinata_api_key', IPFS_CONFIG.apiKey)
+        xhr.setRequestHeader('pinata_secret_api_key', IPFS_CONFIG.apiSecret)
+        xhr.send(formData)
+      })
+
     const formData = new FormData()
     formData.append('file', file)
     formData.append('pinataMetadata', JSON.stringify({ name: file.name }))
     formData.append('pinataOptions', JSON.stringify({ cidVersion: 1 }))
 
-    return new Promise<string>((resolve, reject) => {
-      const xhr = new XMLHttpRequest()
-
-      xhr.upload.addEventListener('progress', (e) => {
-        if (e.lengthComputable && onProgress) {
-          onProgress(Math.round((e.loaded / e.total) * 75))
-        }
-      })
-
-      xhr.addEventListener('load', () => {
-        if (xhr.status === 401) {
-          reject(
-            new IPFSUploadError('Pinata authentication failed. Check your API key and secret.'),
-          )
-          return
-        }
-        if (xhr.status !== 200) {
-          reject(new IPFSUploadError(`Image upload failed (HTTP ${xhr.status}). Please try again.`))
-          return
-        }
-        try {
-          const data = JSON.parse(xhr.responseText) as { IpfsHash: string }
-          if (!data.IpfsHash) {
-            reject(new IPFSUploadError('Pinata returned an unexpected response: missing IpfsHash.'))
-            return
-          }
-          resolve(data.IpfsHash)
-        } catch {
-          reject(new IPFSUploadError('Unexpected response from Pinata while uploading image.'))
-        }
-      })
-
-      xhr.addEventListener('error', () => {
-        reject(
-          new IPFSUploadError(
-            'Network error during image upload. Check your connection and try again.',
-          ),
+    return withRetry(doUpload, {
+      maxAttempts: 3,
+      shouldRetry: (err) => isTransientError(err),
+      onRetry,
+    }).catch((err) => {
+      if (err instanceof IPFSUploadError) throw err
+      const httpErr = err instanceof HttpError ? err : null
+      if (httpErr) {
+        throw new IPFSUploadError(
+          httpErr.status === 0
+            ? 'Network error during image upload. Check your connection and try again.'
+            : `Image upload failed (HTTP ${httpErr.status}). Please try again.`,
         )
-      })
-
-      xhr.addEventListener('abort', () => {
-        reject(new IPFSUploadError('Image upload was aborted.'))
-      })
-
-      xhr.open('POST', `${IPFS_CONFIG.pinataApiUrl}/pinning/pinFileToIPFS`)
-      xhr.setRequestHeader('pinata_api_key', IPFS_CONFIG.apiKey)
-      xhr.setRequestHeader('pinata_secret_api_key', IPFS_CONFIG.apiSecret)
-      xhr.send(formData)
+      }
+      throw err
     })
   }
 
-  private async _uploadJSON(json: object, name: string): Promise<string> {
+  private async _uploadJSON(
+    json: object,
+    name: string,
+    onRetry?: (attempt: number, delayMs: number) => void,
+  ): Promise<string> {
     const body = {
       pinataContent: json,
       pinataMetadata: { name },
@@ -180,7 +250,10 @@ export class IPFSService {
             },
             body: JSON.stringify(body),
           }),
-        { shouldRetry: isTransientError },
+        {
+          shouldRetry: (err) => isTransientError(err),
+          onRetry,
+        },
       )
     } catch {
       throw new IPFSUploadError(
@@ -199,7 +272,9 @@ export class IPFSService {
 
     let data: { IpfsHash: string }
     try {
-      data = (await response.json()) as { IpfsHash: string }
+      data = (await response.json()) as {
+        IpfsHash: string
+      }
     } catch {
       throw new IPFSUploadError('Pinata returned a non-JSON response for metadata upload.')
     }

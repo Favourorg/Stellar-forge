@@ -77,9 +77,7 @@ export function useTokenDashboard(): UseTokenDashboardResult {
 
         // Step 3: fetch token info for all indices in parallel (1-based)
         const indices = Array.from({ length: count }, (_, i) => i + 1)
-        const results = await Promise.allSettled(
-          indices.map((i) => stellarService.getTokenInfo(i)),
-        )
+        const results = await Promise.allSettled(indices.map((i) => stellarService.getTokenInfo(i)))
 
         // Step 4: assemble rows — client-side filter by creator happens in render
         const rows: TokenRow[] = results

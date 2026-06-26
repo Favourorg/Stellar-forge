@@ -55,6 +55,7 @@ export function useXlmPrice(): XlmPriceResult {
     let cancelled = false
 
     if (cachedPrice !== null) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- syncing state from the module-level price cache
       setPrice(cachedPrice)
       setLoading(false)
       setUnavailable(false)

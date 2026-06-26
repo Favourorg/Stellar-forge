@@ -24,8 +24,12 @@ function Consumer() {
       <span data-testid="connecting">{String(isConnecting)}</span>
       <span data-testid="error">{error ?? 'null'}</span>
       <span data-testid="installed">{String(isInstalled)}</span>
-      <button data-testid="connect" onClick={connect}>Connect</button>
-      <button data-testid="disconnect" onClick={disconnect}>Disconnect</button>
+      <button data-testid="connect" onClick={connect}>
+        Connect
+      </button>
+      <button data-testid="disconnect" onClick={disconnect}>
+        Disconnect
+      </button>
     </div>
   )
 }
@@ -64,8 +68,12 @@ describe('useWallet', () => {
     vi.mocked(walletService.connect).mockResolvedValue('GABC123')
     renderWithProvider()
 
-    await act(async () => { screen.getByTestId('connect').click() })
-    act(() => { screen.getByTestId('disconnect').click() })
+    await act(async () => {
+      screen.getByTestId('connect').click()
+    })
+    act(() => {
+      screen.getByTestId('disconnect').click()
+    })
 
     expect(screen.getByTestId('connected').textContent).toBe('false')
     expect(screen.getByTestId('address').textContent).toBe('null')
@@ -77,7 +85,9 @@ describe('useWallet', () => {
     )
     renderWithProvider()
 
-    await act(async () => { screen.getByTestId('connect').click() })
+    await act(async () => {
+      screen.getByTestId('connect').click()
+    })
 
     expect(screen.getByTestId('connected').textContent).toBe('false')
     expect(screen.getByTestId('error').textContent).toBe('Freighter wallet is not installed')
@@ -87,7 +97,9 @@ describe('useWallet', () => {
     vi.mocked(walletService.connect).mockRejectedValue(new Error('User rejected'))
     renderWithProvider()
 
-    await act(async () => { screen.getByTestId('connect').click() })
+    await act(async () => {
+      screen.getByTestId('connect').click()
+    })
 
     expect(screen.getByTestId('connected').textContent).toBe('false')
     expect(screen.getByTestId('error').textContent).toBe('User rejected')

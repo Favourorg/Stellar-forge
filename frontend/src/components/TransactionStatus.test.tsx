@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, act } from '@testing-library/react'
 import { describe, test, expect, vi, beforeEach, afterEach, type Mock } from 'vitest'
 import { TransactionStatus } from './TransactionStatus'
 import { stellarService } from '../services/stellar'
@@ -81,7 +81,7 @@ describe('TransactionStatus Component', () => {
     })
 
     const link = screen.getByRole('link', { name: /view on stellar expert/i })
-    expect(link).toHaveAttribute('href', 'https://stellar.expert/explorer/public/tx/test-hash')
+    expect(link).toHaveAttribute('href', 'https://stellar.expert/explorer/testnet/tx/test-hash')
   })
 
   test('shows timeout error after 60 seconds', async () => {

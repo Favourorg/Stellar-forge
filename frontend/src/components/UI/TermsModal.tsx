@@ -11,6 +11,7 @@ export const TermsModal: React.FC<TermsModalProps> = ({ isOpen, onAccept, onDecl
   const [checked, setChecked] = useState(false)
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset the checkbox whenever the modal closes
     if (!isOpen) setChecked(false)
   }, [isOpen])
 
@@ -27,14 +28,17 @@ export const TermsModal: React.FC<TermsModalProps> = ({ isOpen, onAccept, onDecl
   if (!isOpen) return null
 
   return (
+    // Swallow backdrop clicks so users choose Accept or Decline explicitly.
+    // Not a keyboard-operable control — purely a click-propagation guard.
+    // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions
     <div
       className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50"
       role="dialog"
       aria-modal="true"
       aria-labelledby="tos-modal-title"
-      // Swallow backdrop clicks so users choose Accept or Decline explicitly.
       onClick={(e) => e.stopPropagation()}
     >
+      {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions */}
       <div
         className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-lg w-full mx-4 max-h-[90vh] flex flex-col"
         onClick={(e) => e.stopPropagation()}

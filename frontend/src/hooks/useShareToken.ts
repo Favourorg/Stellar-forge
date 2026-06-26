@@ -7,9 +7,10 @@ export function useShareToken(tokenAddress: string, tokenName?: string, tokenSym
 
   const shareUrl = `${BASE_URL}/token/${tokenAddress}`
 
-  const twitterText = tokenName && tokenSymbol
-    ? `Just deployed ${tokenName} ($${tokenSymbol}) on the Stellar blockchain with @StellarForge! 🚀\n\nCheck it out:`
-    : `Check out this token on @StellarForge built on the Stellar blockchain:`
+  const twitterText =
+    tokenName && tokenSymbol
+      ? `Just deployed ${tokenName} ($${tokenSymbol}) on the Stellar blockchain with @StellarForge! 🚀\n\nCheck it out:`
+      : `Check out this token on @StellarForge built on the Stellar blockchain:`
 
   const twitterUrl = `https://twitter.com/intent/tweet?text=${encodeURIComponent(twitterText)}&url=${encodeURIComponent(shareUrl)}`
 

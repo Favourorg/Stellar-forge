@@ -10,7 +10,13 @@ export { PaginationControls } from './PaginationControls'
 export { ProgressIndicator } from './ProgressIndicator'
 export type { ProgressStep } from './ProgressIndicator'
 export { Select } from './Select'
-export { Skeleton, SkeletonCard, SkeletonTokenCard, TokenCardSkeleton, TokenDetailSkeleton } from './Skeleton'
+export {
+  Skeleton,
+  SkeletonCard,
+  SkeletonTokenCard,
+  TokenCardSkeleton,
+  TokenDetailSkeleton,
+} from './Skeleton'
 export { Spinner } from './Spinner'
 export { TermsModal } from './TermsModal'
 export { ToastContainer } from './ToastContainer'

@@ -75,6 +75,39 @@ export const isValidContractAddress = (address: string): boolean => {
   }
 }
 
+// Single source of truth for token field rules
+const TOKEN_NAME_MIN_LENGTH = 1
+const TOKEN_NAME_MAX_LENGTH = 32
+const TOKEN_NAME_PATTERN = /^[A-Za-z0-9 _-]+$/
+
+const TOKEN_SYMBOL_MIN_LENGTH = 1
+const TOKEN_SYMBOL_MAX_LENGTH = 12
+const TOKEN_SYMBOL_PATTERN = /^[A-Za-z0-9-]+$/
+
+const TOKEN_DECIMALS_MIN = 0
+const TOKEN_DECIMALS_MAX = 18
+
+const isTokenNameLengthValid = (trimmedName: string): boolean =>
+  trimmedName.length >= TOKEN_NAME_MIN_LENGTH && trimmedName.length <= TOKEN_NAME_MAX_LENGTH
+
+const isTokenNamePatternValid = (trimmedName: string): boolean =>
+  TOKEN_NAME_PATTERN.test(trimmedName)
+
+const isValidTokenNameValue = (trimmedName: string): boolean =>
+  isTokenNameLengthValid(trimmedName) && isTokenNamePatternValid(trimmedName)
+
+const isTokenSymbolLengthValid = (trimmedSymbol: string): boolean =>
+  trimmedSymbol.length >= TOKEN_SYMBOL_MIN_LENGTH && trimmedSymbol.length <= TOKEN_SYMBOL_MAX_LENGTH
+
+const isTokenSymbolPatternValid = (trimmedSymbol: string): boolean =>
+  TOKEN_SYMBOL_PATTERN.test(trimmedSymbol)
+
+const isValidTokenSymbolValue = (trimmedSymbol: string): boolean =>
+  isTokenSymbolLengthValid(trimmedSymbol) && isTokenSymbolPatternValid(trimmedSymbol)
+
+const isValidDecimalsValue = (decimals: number): boolean =>
+  decimals >= TOKEN_DECIMALS_MIN && decimals <= TOKEN_DECIMALS_MAX
+
 export const validateTokenParams = (params: {
   name?: string
   symbol?: string
@@ -86,25 +119,24 @@ export const validateTokenParams = (params: {
   const trimmedName = params.name?.trim() || ''
   const trimmedSymbol = params.symbol?.trim() || ''
 
-  if (!trimmedName || trimmedName.length < 1 || trimmedName.length > 32) {
-    errors.name = 'Token name must be 1-32 characters'
-  } else if (!/^[A-Za-z0-9 _-]+$/.test(trimmedName)) {
+  if (!isTokenNameLengthValid(trimmedName)) {
+    errors.name = `Token name must be ${TOKEN_NAME_MIN_LENGTH}-${TOKEN_NAME_MAX_LENGTH} characters`
+  } else if (!isTokenNamePatternValid(trimmedName)) {
     errors.name = 'Token name can only contain letters, digits, spaces, hyphens, and underscores'
   }
 
-  if (!trimmedSymbol || trimmedSymbol.length < 1 || trimmedSymbol.length > 12) {
-    errors.symbol = 'Token symbol must be 1-12 characters'
-  } else if (!/^[A-Za-z0-9-]+$/.test(trimmedSymbol)) {
+  if (!isTokenSymbolLengthValid(trimmedSymbol)) {
+    errors.symbol = `Token symbol must be ${TOKEN_SYMBOL_MIN_LENGTH}-${TOKEN_SYMBOL_MAX_LENGTH} characters`
+  } else if (!isTokenSymbolPatternValid(trimmedSymbol)) {
     errors.symbol = 'Token symbol can only contain alphanumeric characters and hyphens'
   }
 
   if (
     params.decimals === undefined ||
     params.decimals === null ||
-    params.decimals < 0 ||
-    params.decimals > 18
+    !isValidDecimalsValue(params.decimals)
   ) {
-    errors.decimals = 'Decimals must be 0-18'
+    errors.decimals = `Decimals must be ${TOKEN_DECIMALS_MIN}-${TOKEN_DECIMALS_MAX}`
   }
 
   if (!params.initialSupply || parseFloat(params.initialSupply) <= 0) {
@@ -139,24 +171,13 @@ export const isValidImageFile = (file: File): { valid: boolean; error?: string }
   return { valid: true }
 }
 
-export const validateTokenName = (name: string): boolean => {
-  const trimmed = name.trim()
-  // Allow letters, digits, spaces, hyphens, underscores — reject HTML/special chars
-  const validPattern = /^[A-Za-z0-9 _-]+$/
-  return trimmed.length >= 1 && trimmed.length <= 32 && validPattern.test(trimmed)
-}
+export const validateTokenName = (name: string): boolean => isValidTokenNameValue(name.trim())
 
-export const validateTokenSymbol = (symbol: string): boolean => {
-  const trimmed = symbol.trim()
-  // Only allow alphanumeric characters and hyphens
-  const validPattern = /^[A-Za-z0-9-]+$/
-  return trimmed.length >= 1 && trimmed.length <= 12 && validPattern.test(trimmed)
-}
+export const validateTokenSymbol = (symbol: string): boolean =>
+  isValidTokenSymbolValue(symbol.trim())
 
 export const sanitizeTokenInput = (input: string): string => {
   return input.trim()
 }
 
-export const validateDecimals = (decimals: number): boolean => {
-  return decimals >= 0 && decimals <= 18
-}
+export const validateDecimals = (decimals: number): boolean => isValidDecimalsValue(decimals)

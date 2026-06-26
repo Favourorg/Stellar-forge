@@ -1,6 +1,13 @@
 import { test, expect, type Page } from '@playwright/test'
 import { Keypair, Transaction, Networks } from 'stellar-sdk'
 import { fundAccount } from './helpers/e2e-setup'
+import './helpers/wallet-mock' // augments the global Window type with `freighter`
+
+declare global {
+  interface Window {
+    signWithSecret?: (xdr: string) => Promise<{ signedTxXdr: string }>
+  }
+}
 
 // Use TESTNET_SECRET exposed by CI as E2E_TESTNET_WALLET_SECRET or TESTNET_SECRET
 const SECRET = process.env.TESTNET_SECRET || process.env.E2E_TESTNET_WALLET_SECRET
@@ -26,11 +33,12 @@ test.describe('Token Creation (testnet)', () => {
 
     // Mock the Freighter API in the page and delegate signing to `signWithSecret`.
     await page.addInitScript((addr: string) => {
-      ;(window as any).freighter = {
+      window.freighter = {
         isConnected: () => Promise.resolve({ isConnected: true }),
         getAddress: () => Promise.resolve({ address: addr }),
         requestAccess: () => Promise.resolve({ address: addr }),
-        signTransaction: (xdr: string) => (window as any).signWithSecret(xdr),
+        signTransaction: (xdr: string) =>
+          window.signWithSecret?.(xdr) ?? Promise.reject(new Error('signWithSecret not exposed')),
         getNetwork: () => Promise.resolve({ network: 'TESTNET' }),
       }
     }, ADDRESS)

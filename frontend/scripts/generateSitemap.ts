@@ -19,7 +19,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-const NETWORK = (process.env.VITE_NETWORK ?? 'testnet') as 'testnet' | 'mainnet'
+const NETWORK = process.env.VITE_NETWORK ?? 'testnet'
 const FACTORY_CONTRACT_ID = process.env.VITE_FACTORY_CONTRACT_ID ?? ''
 const SITE_URL = (process.env.VITE_SITE_URL ?? 'https://stellarforge.app').replace(/\/$/, '')
 
@@ -33,6 +33,11 @@ const RPC_URLS: Record<'testnet' | 'mainnet', string> = {
 async function fetchTokenAddresses(): Promise<string[]> {
   if (!FACTORY_CONTRACT_ID || FACTORY_CONTRACT_ID.startsWith('CXXX')) {
     console.warn('generateSitemap: VITE_FACTORY_CONTRACT_ID not set — skipping token URLs')
+    return []
+  }
+
+  if (NETWORK !== 'testnet' && NETWORK !== 'mainnet') {
+    console.warn(`generateSitemap: no public RPC for network "${NETWORK}" — skipping token URLs`)
     return []
   }
 

@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-const mockCaptureException = vi.fn()
-const mockSetTag = vi.fn()
+const { mockCaptureException, mockSetTag } = vi.hoisted(() => ({
+  mockCaptureException: vi.fn(),
+  mockSetTag: vi.fn(),
+}))
 
 vi.mock('../../lib/monitoring/sentry', () => ({
   captureException: mockCaptureException,
@@ -36,6 +38,9 @@ describe('alerts.ts', () => {
     const err = new Error('revert')
     captureContractFailure('deployToken', err, '0xabc')
     expect(mockSetTag).toHaveBeenCalledWith('category', 'contract')
-    expect(mockCaptureException).toHaveBeenCalledWith(err, { method: 'deployToken', txHash: '0xabc' })
+    expect(mockCaptureException).toHaveBeenCalledWith(err, {
+      method: 'deployToken',
+      txHash: '0xabc',
+    })
   })
 })

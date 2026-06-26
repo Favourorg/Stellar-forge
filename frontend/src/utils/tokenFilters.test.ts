@@ -69,7 +69,7 @@ describe('applyFilters', () => {
     it('matches partial strings', () => {
       const result = applyFilters(mockTokens, 'Token', '', 'newest')
       expect(result).toHaveLength(2)
-      expect(result.map(t => t.name)).toEqual(['Alpha Token', 'Gamma Token'])
+      expect(result.map((t) => t.name)).toEqual(['Alpha Token', 'Gamma Token'])
     })
 
     it('returns all tokens when search is empty', () => {
@@ -89,7 +89,7 @@ describe('applyFilters', () => {
     it('filters tokens by creator address', () => {
       const result = applyFilters(mockTokens, '', CREATOR_A, 'newest')
       expect(result).toHaveLength(2)
-      expect(result.map(t => t.creator)).toEqual([CREATOR_A, CREATOR_A])
+      expect(result.map((t) => t.creator)).toEqual([CREATOR_A, CREATOR_A])
     })
 
     it('is case-insensitive for creator address', () => {
@@ -101,11 +101,18 @@ describe('applyFilters', () => {
       const partialCreator = CREATOR_A.slice(0, 10)
       const result = applyFilters(mockTokens, '', partialCreator, 'newest')
       expect(result).toHaveLength(2)
-      expect(result.every(t => t.creator.toLowerCase().includes(partialCreator.toLowerCase()))).toBe(true)
+      expect(
+        result.every((t) => t.creator.toLowerCase().includes(partialCreator.toLowerCase())),
+      ).toBe(true)
     })
 
     it('returns empty array when creator matches nothing', () => {
-      const result = applyFilters(mockTokens, '', 'GCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCWHF', 'newest')
+      const result = applyFilters(
+        mockTokens,
+        '',
+        'GCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCWHF',
+        'newest',
+      )
       expect(result).toHaveLength(0)
     })
 
@@ -121,7 +128,7 @@ describe('applyFilters', () => {
     it('applies both search and creator filters', () => {
       const result = applyFilters(mockTokens, 'Token', CREATOR_A, 'newest')
       expect(result).toHaveLength(2)
-      expect(result.map(t => t.symbol)).toEqual(['ALPHA', 'GAMMA'])
+      expect(result.map((t) => t.symbol)).toEqual(['ALPHA', 'GAMMA'])
     })
 
     it('returns empty when combined filters match nothing', () => {
@@ -147,7 +154,7 @@ describe('applyFilters', () => {
 
     it('sorts alphabetically by name when specified', () => {
       const result = applyFilters(mockTokens, '', '', 'alphabetical')
-      expect(result.map(t => t.name)).toEqual([
+      expect(result.map((t) => t.name)).toEqual([
         'Alpha Token',
         'Beta Coin',
         'Delta Finance',

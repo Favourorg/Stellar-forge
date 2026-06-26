@@ -1,7 +1,16 @@
-import { createContext, useContext, useState, useEffect, useCallback, useMemo, ReactNode } from 'react'
+import {
+  createContext,
+  useContext,
+  useState,
+  useEffect,
+  useCallback,
+  useMemo,
+  ReactNode,
+} from 'react'
 import { walletService } from '../services/wallet'
 import { useNetwork } from './NetworkContext'
 import { WatchWalletChanges } from '@stellar/freighter-api'
+import { _clearCache as clearTokenCache } from '../hooks/useTokens'
 
 function useNetworkSafe() {
   try {
@@ -27,6 +36,7 @@ interface WalletContextValue {
   refreshBalance: () => Promise<void>
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export const WalletContext = createContext<WalletContextValue | null>(null)
 
 export function WalletProvider({ children }: { children: ReactNode }) {
@@ -41,14 +51,17 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const [isInstalled, setIsInstalled] = useState<boolean>(true)
 
   // Stable callback — only recreated when network changes
-  const fetchBalance = useCallback(async (address: string) => {
-    try {
-      const balance = await walletService.getBalance(address, network)
-      setWallet((prev: WalletState) => ({ ...prev, balance }))
-    } catch {
-      // Balance fetch failure is non-critical; wallet remains connected
-    }
-  }, [network])
+  const fetchBalance = useCallback(
+    async (address: string) => {
+      try {
+        const balance = await walletService.getBalance(address, network)
+        setWallet((prev: WalletState) => ({ ...prev, balance }))
+      } catch {
+        // Balance fetch failure is non-critical; wallet remains connected
+      }
+    },
+    [network],
+  )
 
   // Stable callback — only recreated when fetchBalance changes (i.e. network switch)
   const connect = useCallback(async () => {
@@ -69,6 +82,9 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   // Stable callback — no dependencies, reference never changes after mount
   const disconnect = useCallback(() => {
     walletService.disconnect()
+    // Flush the module-level token cache so a subsequent user connecting in
+    // the same browser session cannot see stale data from the previous session.
+    clearTokenCache()
     setWallet({ address: null, isConnected: false, balance: undefined })
     setError(null)
   }, [])
@@ -102,7 +118,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
 
     try {
       watcher = new WatchWalletChanges()
-      
+
       watcher.watch(async (result) => {
         const { address: newAddress, network: newNetwork } = result
 

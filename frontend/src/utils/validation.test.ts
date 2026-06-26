@@ -1,9 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import {
-  isValidStellarAddress,
-  validateTokenParams,
-  isValidImageFile,
-} from './validation'
+import { isValidStellarAddress, validateTokenParams, isValidImageFile } from './validation'
 
 // Real valid Ed25519 public key
 const VALID_ADDRESS = 'GDNQ2ULB7MXLA4GJBTAAZQON3IEO4HUCYFQMAHVAA2RTC4L4B4G5IK4C'
@@ -30,7 +26,9 @@ describe('isValidStellarAddress', () => {
   })
 
   it('rejects a contract address (C...) as an account address', () => {
-    expect(isValidStellarAddress('CA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKERYNZGGA5SOAOPIFY6YQGAXE')).toBe(false)
+    expect(isValidStellarAddress('CA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKERYNZGGA5SOAOPIFY6YQGAXE')).toBe(
+      false,
+    )
   })
 })
 
@@ -86,7 +84,11 @@ describe('validateTokenParams', () => {
   })
 
   it('rejects missing decimals', () => {
-    const { valid, errors } = validateTokenParams({ name: BASE.name, symbol: BASE.symbol, initialSupply: BASE.initialSupply })
+    const { valid, errors } = validateTokenParams({
+      name: BASE.name,
+      symbol: BASE.symbol,
+      initialSupply: BASE.initialSupply,
+    })
     expect(valid).toBe(false)
     expect(errors.decimals).toBeDefined()
   })

@@ -38,6 +38,7 @@ export function useNetworkMismatch(network: Network): NetworkMismatchState {
   }, [network])
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- initial check, then poll on an interval
     check()
     const id = setInterval(check, POLL_INTERVAL_MS)
     return () => clearInterval(id)

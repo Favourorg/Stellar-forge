@@ -8,6 +8,7 @@ interface StellarContextValue {
   ipfsService: IPFSService
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export const StellarContext = createContext<StellarContextValue | null>(null)
 
 export function StellarProvider({ children }: { children: ReactNode }) {

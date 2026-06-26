@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router-dom'
 import { useStellarContext } from '../context/StellarContext'
@@ -25,7 +25,6 @@ export const TokenExplorer: React.FC = () => {
 
   const [searchInput, setSearchInput] = useState('')
   const [creatorFilter, setCreatorFilter] = useState('')
-  const debouncedSearchInput = useDebounce(searchInput, 300)
   const debouncedCreatorFilter = useDebounce(creatorFilter, 300)
 
   const [searchResult, setSearchResult] = useState<TokenWithMetadata | null>(null)
@@ -46,6 +45,32 @@ export const TokenExplorer: React.FC = () => {
       .then((state) => setTotalTokens(state.tokenCount))
       .catch(() => setTotalTokens(0))
   }, [stellarService])
+
+  const loadTokenByAddress = useCallback(
+    async (address: string): Promise<TokenWithMetadata | null> => {
+      try {
+        const info = await stellarService.getTokenInfoByAddress(address)
+
+        let metadata: IPFSMetadata | null = null
+        if (info.metadataUri) {
+          try {
+            metadata = await ipfsService.getMetadata(info.metadataUri)
+          } catch {
+            // Metadata fetch failure is non-fatal
+          }
+        }
+
+        return {
+          ...info,
+          address,
+          metadata,
+        }
+      } catch {
+        return null
+      }
+    },
+    [stellarService],
+  )
 
   // Load tokens for current page
   useEffect(() => {
@@ -79,30 +104,7 @@ export const TokenExplorer: React.FC = () => {
       })
       .catch(() => setTokens([]))
       .finally(() => setLoadingTokens(false))
-  }, [currentPage, totalTokens, stellarService])
-
-  const loadTokenByAddress = async (address: string): Promise<TokenWithMetadata | null> => {
-    try {
-      const info = await stellarService.getTokenInfoByAddress(address)
-
-      let metadata: IPFSMetadata | null = null
-      if (info.metadataUri) {
-        try {
-          metadata = await ipfsService.getMetadata(info.metadataUri)
-        } catch {
-          // Metadata fetch failure is non-fatal
-        }
-      }
-
-      return {
-        ...info,
-        address,
-        metadata,
-      }
-    } catch {
-      return null
-    }
-  }
+  }, [currentPage, totalTokens, stellarService, loadTokenByAddress])
 
   const getFilteredTokens = (): TokenWithMetadata[] => {
     if (!debouncedCreatorFilter) return tokens

@@ -17,8 +17,8 @@ test.describe('Wallet Connection', () => {
     await connectButton.click();
 
     // 4. Verify that the address is displayed (or a portion of it)
-    await expect(page.getByText(TEST_ADDRESS.substring(0, 4))).toBeVisible();
-    await expect(page.getByText(TEST_ADDRESS.substring(48))).toBeVisible();
+    await expect(page.getByText(TEST_ADDRESS.substring(0, 4)).first()).toBeVisible();
+    await expect(page.getByText(TEST_ADDRESS.substring(48)).first()).toBeVisible();
   });
 
   test('should disconnect wallet', async ({ page }) => {
@@ -28,7 +28,7 @@ test.describe('Wallet Connection', () => {
     await page.getByRole('button', { name: /Connect Wallet/i }).click();
 
     // 2. Verify connected
-    await expect(page.getByText(TEST_ADDRESS.substring(0, 4))).toBeVisible();
+    await expect(page.getByText(TEST_ADDRESS.substring(0, 4)).first()).toBeVisible();
 
     // 3. Click disconnect button (assuming it appears after connection)
     // You might need to adjust the selector based on the actual UI

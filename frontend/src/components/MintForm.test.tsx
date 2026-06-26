@@ -2,6 +2,7 @@ import { render, screen, waitFor, act, fireEvent } from '@testing-library/react'
 import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from 'vitest'
 import { MintForm } from './MintForm'
 import { TosProvider } from '../context/TosContext'
+import { NetworkProvider } from '../context/NetworkContext'
 
 const mockStellarService = {
   getTokenInfo: vi.fn().mockRejectedValue(new Error('not found')),
@@ -27,9 +28,11 @@ vi.mock('../hooks/useFactoryState', () => ({
 
 const renderMintForm = () =>
   render(
-    <TosProvider>
-      <MintForm />
-    </TosProvider>,
+    <NetworkProvider>
+      <TosProvider>
+        <MintForm />
+      </TosProvider>
+    </NetworkProvider>,
   )
 
 describe('MintForm', () => {

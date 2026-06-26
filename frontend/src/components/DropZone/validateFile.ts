@@ -13,9 +13,7 @@ export function validateFile(
   maxSizeMB: number,
 ): ValidationResult {
   if (!acceptedTypes.includes(file.type)) {
-    const readableTypes = acceptedTypes
-      .map((t) => t.split('/')[1]?.toUpperCase() ?? t)
-      .join(', ')
+    const readableTypes = acceptedTypes.map((t) => t.split('/')[1]?.toUpperCase() ?? t).join(', ')
     return {
       valid: false,
       error: `File type not supported. Please upload a ${readableTypes} image.`,

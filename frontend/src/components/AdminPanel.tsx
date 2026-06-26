@@ -53,14 +53,14 @@ export const AdminPanel: React.FC = () => {
   // Pre-populate form once factory state loads
   useEffect(() => {
     if (state) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- syncing form fields from async-loaded factory state
       setBaseFee(stroopsToDisplay(state.baseFee))
       setMetadataFee(stroopsToDisplay(state.metadataFee))
     }
   }, [state])
 
   // Authorization guard — only the factory admin may see this panel
-  const isAdmin =
-    !!wallet.address && !!state?.admin && wallet.address === state.admin
+  const isAdmin = !!wallet.address && !!state?.admin && wallet.address === state.admin
 
   if (stateLoading) {
     return (
@@ -80,10 +80,7 @@ export const AdminPanel: React.FC = () => {
 
   if (!isAdmin) {
     return (
-      <div
-        className="text-center py-12 text-red-600 dark:text-red-400 font-medium"
-        role="alert"
-      >
+      <div className="text-center py-12 text-red-600 dark:text-red-400 font-medium" role="alert">
         Access denied. Only the factory admin can view this page.
       </div>
     )

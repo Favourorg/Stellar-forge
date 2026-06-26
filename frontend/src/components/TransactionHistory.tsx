@@ -1,18 +1,17 @@
-
-import React from 'react';
-import { useTransactionHistory } from '../hooks/useTransactionHistory';
-import { useNetwork } from '../context/NetworkContext';
-import { stellarExplorerUrl, formatTimestamp } from '../utils/formatting';
-import { ExplorerLink } from './ExplorerLink';
-import { CopyButton } from './CopyButton';
-import { useTranslation } from 'react-i18next';
+import React from 'react'
+import { useTransactionHistory } from '../hooks/useTransactionHistory'
+import { useNetwork } from '../context/NetworkContext'
+import { formatTimestamp } from '../utils/formatting'
+import { ExplorerLink } from './ExplorerLink'
+import { CopyButton } from './CopyButton'
+import { useTranslation } from 'react-i18next'
 
 interface TransactionHistoryProps {
-  publicKey?: string;
-  contractId?: string;
-  assetCodes?: string[];
-  issuer?: string;
-  contractIds?: string[];
+  publicKey?: string
+  contractId?: string
+  assetCodes?: string[]
+  issuer?: string
+  contractIds?: string[]
 }
 
 const badgeColors: Record<string, string> = {
@@ -24,14 +23,14 @@ const badgeColors: Record<string, string> = {
 }
 
 function timeAgo(date: Date): string {
-  const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
-  if (seconds < 60) return `${seconds}s ago`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
+  const seconds = Math.floor((Date.now() - date.getTime()) / 1000)
+  if (seconds < 60) return `${seconds}s ago`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+  const days = Math.floor(hours / 24)
+  return `${days}d ago`
 }
 
 export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
@@ -42,13 +41,15 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
   contractIds,
 }) => {
   const { t } = useTranslation()
+  const { network } = useNetwork()
   const resolvedContractIds = contractId ? [contractId, ...(contractIds ?? [])] : contractIds
-  const { transactions, loading, error, hasMore, loadMore, lastUpdated, refresh } = useTransactionHistory(publicKey, {
-    assetCodes,
-    issuer,
-    contractIds: resolvedContractIds,
-    pageSize: 10,
-  })
+  const { transactions, loading, error, hasMore, loadMore, lastUpdated, refresh } =
+    useTransactionHistory(publicKey, {
+      assetCodes,
+      issuer,
+      contractIds: resolvedContractIds,
+      pageSize: 10,
+    })
 
   // Infinite scroll
   React.useEffect(() => {
@@ -119,30 +120,38 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
           {/* Mobile: card list */}
           <div className="sm:hidden space-y-3">
             {transactions.map((tx) => (
-              <div key={tx.id} className="border border-gray-200 dark:border-gray-700 rounded-lg p-3 space-y-2 text-sm">
+              <div
+                key={tx.id}
+                className="border border-gray-200 dark:border-gray-700 rounded-lg p-3 space-y-2 text-sm"
+              >
                 <div className="flex items-center justify-between gap-2">
-                  <span className={`px-2 py-0.5 rounded text-[10px] uppercase font-bold ${badgeColors[tx.type] || 'bg-gray-100 text-gray-800'}`}>
+                  <span
+                    className={`px-2 py-0.5 rounded text-[10px] uppercase font-bold ${badgeColors[tx.type] || 'bg-gray-100 text-gray-800'}`}
+                  >
                     {t(`transactionHistory.eventLabels.${tx.type}`, { defaultValue: tx.type })}
                   </span>
-                  <span className={`px-2 py-0.5 rounded text-[10px] uppercase font-bold ${badgeColors[tx.status] || 'bg-gray-100 text-gray-800'}`}>
+                  <span
+                    className={`px-2 py-0.5 rounded text-[10px] uppercase font-bold ${badgeColors[tx.status] || 'bg-gray-100 text-gray-800'}`}
+                  >
                     {tx.status}
                   </span>
                 </div>
-                <div className="font-mono text-xs text-gray-700 dark:text-gray-300 break-all">{tx.token}</div>
+                <div className="font-mono text-xs text-gray-700 dark:text-gray-300 break-all">
+                  {tx.token}
+                </div>
                 <div className="flex items-center justify-between gap-2 text-xs text-gray-500 dark:text-gray-400">
                   <span>{tx.amount}</span>
                   <span>{formatTimestamp(new Date(tx.date).getTime() / 1000)}</span>
                 </div>
                 <div className="flex items-center gap-2 pt-1 border-t border-gray-100 dark:border-gray-700">
-                  <a
-                    href={`https://stellar.expert/explorer/public/tx/${tx.hash}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
+                  <ExplorerLink
+                    type="tx"
+                    value={tx.hash}
+                    network={network}
+                    label="View tx"
+                    ariaLabel={`View transaction ${tx.hash} on Stellar Explorer`}
                     className="text-blue-600 underline text-xs"
-                    aria-label={`View transaction ${tx.hash} on Stellar Explorer`}
-                  >
-                    View tx
-                  </a>
+                  />
                   <CopyButton value={tx.hash} ariaLabel={`Copy transaction hash ${tx.hash}`} />
                 </div>
               </div>
@@ -155,19 +164,36 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
               <caption className="sr-only">Transaction history</caption>
               <thead>
                 <tr>
-                  <th scope="col" className="px-4 py-2">Type</th>
-                  <th scope="col" className="px-4 py-2">Token</th>
-                  <th scope="col" className="px-4 py-2">Amount</th>
-                  <th scope="col" className="px-4 py-2">Date</th>
-                  <th scope="col" className="px-4 py-2">Status</th>
-                  <th scope="col" className="px-4 py-2">Link</th>
+                  <th scope="col" className="px-4 py-2">
+                    Type
+                  </th>
+                  <th scope="col" className="px-4 py-2">
+                    Token
+                  </th>
+                  <th scope="col" className="px-4 py-2">
+                    Amount
+                  </th>
+                  <th scope="col" className="px-4 py-2">
+                    Date
+                  </th>
+                  <th scope="col" className="px-4 py-2">
+                    Status
+                  </th>
+                  <th scope="col" className="px-4 py-2">
+                    Link
+                  </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200 dark:divide-slate-700">
                 {transactions.map((tx) => (
-                  <tr key={tx.id} className="hover:bg-gray-50 dark:hover:bg-slate-700/50 transition-colors">
+                  <tr
+                    key={tx.id}
+                    className="hover:bg-gray-50 dark:hover:bg-slate-700/50 transition-colors"
+                  >
                     <td className="px-4 py-3">
-                      <span className={`px-2 py-0.5 rounded text-[10px] uppercase font-bold ${badgeColors[tx.type] || 'bg-gray-100 text-gray-800'}`}>
+                      <span
+                        className={`px-2 py-0.5 rounded text-[10px] uppercase font-bold ${badgeColors[tx.type] || 'bg-gray-100 text-gray-800'}`}
+                      >
                         {t(`transactionHistory.eventLabels.${tx.type}`, { defaultValue: tx.type })}
                       </span>
                     </td>
@@ -177,22 +203,26 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
                       {formatTimestamp(new Date(tx.date).getTime() / 1000)}
                     </td>
                     <td className="px-4 py-3">
-                      <span className={`px-2 py-0.5 rounded text-[10px] uppercase font-bold ${badgeColors[tx.status] || 'bg-gray-100 text-gray-800'}`}>
+                      <span
+                        className={`px-2 py-0.5 rounded text-[10px] uppercase font-bold ${badgeColors[tx.status] || 'bg-gray-100 text-gray-800'}`}
+                      >
                         {tx.status}
                       </span>
                     </td>
                     <td className="px-4 py-2">
                       <div className="inline-flex items-center gap-2">
-                        <a
-                          href={`https://stellar.expert/explorer/public/tx/${tx.hash}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
+                        <ExplorerLink
+                          type="tx"
+                          value={tx.hash}
+                          network={network}
+                          label="View"
+                          ariaLabel={`View transaction ${tx.hash} on Stellar Explorer`}
                           className="text-blue-600 underline text-sm"
-                          aria-label={`View transaction ${tx.hash} on Stellar Explorer`}
-                        >
-                          View
-                        </a>
-                        <CopyButton value={tx.hash} ariaLabel={`Copy transaction hash ${tx.hash}`} />
+                        />
+                        <CopyButton
+                          value={tx.hash}
+                          ariaLabel={`Copy transaction hash ${tx.hash}`}
+                        />
                       </div>
                     </td>
                   </tr>
