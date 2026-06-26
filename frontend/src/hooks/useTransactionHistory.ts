@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { STELLAR_CONFIG } from '../config/stellar';
 
 export type TransactionType = 'create' | 'mint' | 'burn' | 'other'
 
@@ -37,19 +38,25 @@ export function useTransactionHistory(
   publicKey: string | undefined,
   options: UseTransactionHistoryOptions = {},
 ) {
-  const [transactions, setTransactions] = useState<TransactionHistoryItem[]>([])
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [hasMore, setHasMore] = useState(true)
-  const [page, setPage] = useState(1)
-  const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
-  const cacheRef = useRef<{ [key: string]: TransactionHistoryItem[] }>({})
-  const debounceRef = useRef<number | null>(null)
-  const pollRef = useRef<number | null>(null)
-  const isMountedRef = useRef(true)
+  const [transactions, setTransactions] = useState<TransactionHistoryItem[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [hasMore, setHasMore] = useState(true);
+  const [page, setPage] = useState(1);
+  const cacheRef = useRef<{ [key: string]: TransactionHistoryItem[] }>({});
+  const debounceRef = useRef<number | null>(null);
+  // Tracks the paging_token of the last fetched record for cursor-based pagination
+  const cursorRef = useRef<string>('');
 
   const pageSize = options.pageSize || 10
   const pollIntervalMs = options.pollIntervalMs ?? 30_000
+
+  // Stable string key derived from filter values so the cache is filter-aware
+  const filterKey = JSON.stringify({
+    assetCodes: options.assetCodes ? [...options.assetCodes].sort() : null,
+    issuer: options.issuer ?? null,
+    contractIds: options.contractIds ? [...options.contractIds].sort() : null,
+  });
 
   const fetchTransactions = useCallback(
     async (reset = false) => {
@@ -57,62 +64,55 @@ export function useTransactionHistory(
       setLoading(true)
       setError(null)
       try {
-        const cacheKey = `${publicKey}-${page}`
-        if (cacheRef.current[cacheKey]) {
+        const cacheKey = `${publicKey}-${page}-${filterKey}`;
+        const cached = cacheRef.current[cacheKey];
+        if (cached) {
           setTransactions((prev: TransactionHistoryItem[]) =>
-            reset ? cacheRef.current[cacheKey] : [...prev, ...cacheRef.current[cacheKey]],
-          )
-          setHasMore(cacheRef.current[cacheKey].length === pageSize)
-          setLoading(false)
-          setLastUpdated(new Date())
-          return
+            reset ? cached : [...prev, ...cached]
+          );
+          setHasMore(cached.length === pageSize);
+          setLoading(false);
+          return;
         }
-        const url = `https://horizon.stellar.org/accounts/${publicKey}/operations?order=desc&limit=${pageSize}&cursor=`
-        const resp = await fetch(url)
-        if (!resp.ok) throw new Error('Failed to fetch transactions')
-        const data = await resp.json()
-        const items: TransactionHistoryItem[] = (data._embedded?.records || [])
-          .map((op: HorizonOperationRecord) => parseOperation(op, options))
-          .filter((item: TransactionHistoryItem | null) => item !== null)
-        cacheRef.current[cacheKey] = items
-        setTransactions((prev: TransactionHistoryItem[]) => (reset ? items : [...prev, ...items]))
-        setHasMore(items.length === pageSize)
-        setLastUpdated(new Date())
-      } catch (e) {
-        setError(e instanceof Error ? e.message : 'Unknown error')
+        const network = STELLAR_CONFIG.network as 'testnet' | 'mainnet';
+        const { horizonUrl } = STELLAR_CONFIG[network];
+        const cursor = reset ? '' : cursorRef.current;
+        const url = `${horizonUrl}/accounts/${publicKey}/operations?order=desc&limit=${pageSize}&cursor=${cursor}`;
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error('Failed to fetch transactions');
+        const data = await resp.json();
+        const records: any[] = data._embedded?.records ?? [];
+        const items: TransactionHistoryItem[] = records
+          .map((op: any) => parseOperation(op, options))
+          .filter((item): item is TransactionHistoryItem => item !== null);
+        if (records.length > 0) {
+          cursorRef.current = records[records.length - 1].paging_token ?? '';
+        }
+        cacheRef.current[cacheKey] = items;
+        setTransactions((prev: TransactionHistoryItem[]) => (reset ? items : [...prev, ...items]));
+        setHasMore(items.length === pageSize);
+      } catch (e: any) {
+        setError(e.message || 'Unknown error');
       } finally {
         setLoading(false)
       }
     },
-    [publicKey, page, pageSize, options],
-  )
-
-  // The effects below trigger fetches in response to specific values
-  // (publicKey, page, poll interval). They deliberately do NOT depend on
-  // `fetchTransactions` itself: its identity changes on every render because
-  // `options` is a fresh object each time, so listing it would re-run the
-  // effects in a loop. Instead we read the latest fetch function and page from
-  // refs, which keeps the dependency arrays honest and exhaustive.
-  const fetchRef = useRef(fetchTransactions)
-  useEffect(() => {
-    fetchRef.current = fetchTransactions
-  }, [fetchTransactions])
-
-  const pageRef = useRef(page)
-  useEffect(() => {
-    pageRef.current = page
-  }, [page])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [publicKey, page, pageSize, filterKey]
+  );
 
   // Debounce on publicKey change
   useEffect(() => {
     if (!publicKey) return
     if (debounceRef.current) clearTimeout(debounceRef.current)
     debounceRef.current = setTimeout(() => {
-      setPage(1)
-      setTransactions([])
-      fetchRef.current(true)
-    }, 400)
-  }, [publicKey])
+      cursorRef.current = '';
+      setPage(1);
+      setTransactions([]);
+      fetchTransactions(true);
+    }, 400);
+    // eslint-disable-next-line
+  }, [publicKey]);
 
   // Fetch on page change
   useEffect(() => {
