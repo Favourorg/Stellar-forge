@@ -102,8 +102,9 @@ async function simulateAndSubmit(
 async function pollTransaction(
   server: rpc.Server,
   hash: string,
-  maxAttempts = 30,
-  intervalMs = 2000,
+  maxAttempts = 20,
+  initialDelayMs = 500,
+  maxDelayMs = 4_000,
 ): Promise<rpc.Api.GetTransactionResponse> {
   for (let i = 0; i < maxAttempts; i++) {
     const result = (await withRetry(() =>
@@ -113,7 +114,11 @@ async function pollTransaction(
     if (result.status === rpc.Api.GetTransactionStatus.FAILED) {
       throw parseContractError(new Error(`Transaction failed: ${hash}`))
     }
-    await new Promise((r) => setTimeout(r, intervalMs))
+    // Exponential backoff capped at maxDelayMs, with ±10% jitter to avoid
+    // thundering-herd bursts when many transactions confirm around the same time.
+    const base = Math.min(initialDelayMs * Math.pow(2, i), maxDelayMs)
+    const jitter = Math.floor(Math.random() * 0.2 * base) - Math.floor(0.1 * base)
+    await new Promise((r) => setTimeout(r, base + jitter))
   }
   throw new Error(`Transaction ${hash} timed out after ${maxAttempts} attempts`)
 }
