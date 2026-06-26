@@ -10,6 +10,7 @@ import {
 import { walletService } from '../services/wallet'
 import { useNetwork } from './NetworkContext'
 import { WatchWalletChanges } from '@stellar/freighter-api'
+import { _clearCache as clearTokenCache } from '../hooks/useTokens'
 
 function useNetworkSafe() {
   try {
@@ -81,6 +82,9 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   // Stable callback — no dependencies, reference never changes after mount
   const disconnect = useCallback(() => {
     walletService.disconnect()
+    // Flush the module-level token cache so a subsequent user connecting in
+    // the same browser session cannot see stale data from the previous session.
+    clearTokenCache()
     setWallet({ address: null, isConnected: false, balance: undefined })
     setError(null)
   }, [])
