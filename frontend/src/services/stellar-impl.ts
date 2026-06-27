@@ -824,11 +824,7 @@ export class StellarService {
    * below Stellar ledger entry size limits, so callers should treat responses
    * shorter than `limit` as "end of available data" and stop iterating.
    */
-  async getTokensByCreator(
-    creator: string,
-    offset: number,
-    limit: number,
-  ): Promise<TokenInfo[]> {
+  async getTokensByCreator(creator: string, offset: number, limit: number): Promise<TokenInfo[]> {
     const contractId = STELLAR_CONFIG.factoryContractId
     if (!contractId) throw new Error('Factory contract ID is not configured')
 
@@ -852,15 +848,11 @@ export class StellarService {
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const native = scValToNative(indicesRetval) as any
-      const indices: number[] = Array.isArray(native)
-        ? native.map((v: unknown) => Number(v))
-        : []
+      const indices: number[] = Array.isArray(native) ? native.map((v: unknown) => Number(v)) : []
 
       if (indices.length === 0) return []
 
-      const results = await Promise.allSettled(
-        indices.map((i) => this.getTokenInfo(i)),
-      )
+      const results = await Promise.allSettled(indices.map((i) => this.getTokenInfo(i)))
       return results
         .filter((r): r is PromiseFulfilledResult<TokenInfo> => r.status === 'fulfilled')
         .map((r) => r.value)

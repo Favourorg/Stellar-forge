@@ -29,9 +29,7 @@ export function _clearCache() {
 // iterates the contract page-by-page until the returned slice is shorter
 // than the requested page size (which signals end-of-data).
 
-async function fetchAllTokensByCreator(
-  creator: string,
-): Promise<TokenInfo[]> {
+async function fetchAllTokensByCreator(creator: string): Promise<TokenInfo[]> {
   if (!STELLAR_CONFIG.factoryContractId) {
     throw new Error('VITE_FACTORY_CONTRACT_ID is not configured')
   }
@@ -46,11 +44,7 @@ async function fetchAllTokensByCreator(
   const maxPages = 10_000
 
   for (let page = 0; page < maxPages; page++) {
-    const slice = await stellarService.getTokensByCreator(
-      creator,
-      offset,
-      pageSize,
-    )
+    const slice = await stellarService.getTokensByCreator(creator, offset, pageSize)
     collected.push(...slice)
     if (slice.length < pageSize) break
     offset += slice.length
@@ -89,9 +83,7 @@ export interface UseTokensResult {
 export function useTokens(creator?: string): UseTokensResult {
   const cacheKey = creator ?? ''
 
-  const [tokens, setTokens] = useState<TokenInfo[]>(
-    () => cache.get(cacheKey)?.tokens ?? [],
-  )
+  const [tokens, setTokens] = useState<TokenInfo[]>(() => cache.get(cacheKey)?.tokens ?? [])
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<Error | null>(null)
   const [page, setPageRaw] = useState(1)

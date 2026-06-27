@@ -74,18 +74,8 @@ describe('useTokens', () => {
 
     await waitFor(() => expect(result.current.totalCount).toBe(60))
     expect(stellarService.getTokensByCreator).toHaveBeenCalledTimes(2)
-    expect(stellarService.getTokensByCreator).toHaveBeenNthCalledWith(
-      1,
-      'GABC',
-      0,
-      50,
-    )
-    expect(stellarService.getTokensByCreator).toHaveBeenNthCalledWith(
-      2,
-      'GABC',
-      50,
-      50,
-    )
+    expect(stellarService.getTokensByCreator).toHaveBeenNthCalledWith(1, 'GABC', 0, 50)
+    expect(stellarService.getTokensByCreator).toHaveBeenNthCalledWith(2, 'GABC', 50, 50)
   })
 
   it('fetches all tokens in parallel when no creator given', async () => {
