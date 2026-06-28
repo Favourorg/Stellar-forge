@@ -9,6 +9,7 @@ const mockStellarService = {
   accountExists: vi.fn(),
   mintTokens: vi.fn(),
 }
+const VALID_RECIPIENT = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF'
 
 vi.mock('../context/StellarContext', () => ({
   useStellarContext: () => ({ stellarService: mockStellarService }),
@@ -24,6 +25,10 @@ vi.mock('../context/WalletContext', () => ({
 
 vi.mock('../hooks/useFactoryState', () => ({
   useFactoryState: () => ({ state: { baseFee: '100000' } }),
+}))
+
+vi.mock('../hooks/useBalanceCheck', () => ({
+  useBalanceCheck: () => ({ hasSufficientBalance: true, shortfall: 0, isTestnet: true }),
 }))
 
 const renderMintForm = () =>
@@ -51,7 +56,7 @@ describe('MintForm', () => {
 
     const recipientInput = screen.getByLabelText('Recipient Address', { exact: false })
     fireEvent.change(recipientInput, {
-      target: { value: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF' },
+      target: { value: VALID_RECIPIENT },
     })
 
     expect(mockStellarService.accountExists).not.toHaveBeenCalled()
@@ -77,7 +82,7 @@ describe('MintForm', () => {
     renderMintForm()
 
     fireEvent.change(screen.getByLabelText('Recipient Address', { exact: false }), {
-      target: { value: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF' },
+      target: { value: VALID_RECIPIENT },
     })
 
     act(() => {
@@ -89,5 +94,32 @@ describe('MintForm', () => {
         'This address does not have a Stellar account yet. It may need to be funded first.',
       ),
     ).toBeInTheDocument()
+  })
+
+  it('shows an inline error and disables minting for an invalid recipient address', () => {
+    renderMintForm()
+
+    fireEvent.change(screen.getByLabelText('Recipient Address', { exact: false }), {
+      target: { value: 'not-a-stellar-address' },
+    })
+
+    expect(screen.getByText('Enter a valid Stellar account address')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Mint Tokens' })).toBeDisabled()
+    expect(mockStellarService.accountExists).not.toHaveBeenCalled()
+  })
+
+  it('enables minting after the recipient address becomes valid', () => {
+    renderMintForm()
+
+    const recipientInput = screen.getByLabelText('Recipient Address', { exact: false })
+    fireEvent.change(recipientInput, {
+      target: { value: 'not-a-stellar-address' },
+    })
+    fireEvent.change(recipientInput, {
+      target: { value: VALID_RECIPIENT },
+    })
+
+    expect(screen.queryByText('Enter a valid Stellar account address')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Mint Tokens' })).toBeEnabled()
   })
 })

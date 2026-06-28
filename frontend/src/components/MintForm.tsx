@@ -88,6 +88,9 @@ export const MintForm: React.FC<MintFormProps> = ({
 
   // Debounced recipient for account-existence check
   const debouncedRecipient = useDebounce(recipient, 500)
+  const trimmedRecipient = recipient.trim()
+  const recipientHasInput = trimmedRecipient.length > 0
+  const recipientAddressIsValid = isValidStellarAddress(trimmedRecipient)
 
   useEffect(() => {
     const trimmed = debouncedRecipient.trim()
@@ -131,6 +134,15 @@ export const MintForm: React.FC<MintFormProps> = ({
     txStatus === 'signing' ||
     txStatus === 'submitting' ||
     txStatus === 'polling'
+  const recipientAddressError =
+    recipientHasInput && !recipientAddressIsValid
+      ? 'Enter a valid Stellar account address'
+      : errors.recipient?.message
+  const recipientRegistration = register('recipient', {
+    required: 'Recipient address is required',
+    validate: (v) => isValidStellarAddress(v.trim()) || 'Enter a valid Stellar account address',
+  })
+  const mintDisabled = isSubmitting || !hasSufficientBalance || !recipientAddressIsValid
 
   const onValid = () => {
     if (!wallet.isConnected) {
@@ -217,14 +229,10 @@ export const MintForm: React.FC<MintFormProps> = ({
             label="Recipient Address"
             placeholder="G..."
             required
-            error={errors.recipient?.message}
-            {...register('recipient', {
-              required: 'Recipient address is required',
-              validate: (v) =>
-                isValidStellarAddress(v.trim()) || 'Enter a valid Stellar account address',
-            })}
+            error={recipientAddressError}
+            {...recipientRegistration}
             onChange={(e) => {
-              register('recipient').onChange(e)
+              recipientRegistration.onChange(e)
               setRecipientHasAccount(null)
               setIsCheckingRecipient(false)
             }}
@@ -267,7 +275,7 @@ export const MintForm: React.FC<MintFormProps> = ({
           type="submit"
           variant="primary"
           loading={isSubmitting}
-          disabled={isSubmitting || !hasSufficientBalance}
+          disabled={mintDisabled}
           className="w-full sm:w-auto"
         >
           {isSubmitting ? 'Processing Transaction…' : 'Mint Tokens'}
