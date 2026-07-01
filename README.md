@@ -1,6 +1,6 @@
 # StellarForge - Stellar Token Deployer
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/Ejirowebfi/Stellar-forge&root=frontend&env=VITE_FACTORY_CONTRACT_ID,VITE_TOKEN_WASM_HASH,VITE_IPFS_API_KEY,VITE_IPFS_API_SECRET&envDescription=Required%20environment%20variables%20for%20StellarForge&envLink=https://github.com/Ejirowebfi/Stellar-forge/blob/main/docs/deployment-vercel.md)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/Favourorg/Stellar-forge&root=frontend&env=VITE_FACTORY_CONTRACT_ID,VITE_TOKEN_WASM_HASH,VITE_IPFS_API_KEY,VITE_IPFS_API_SECRET&envDescription=Required%20environment%20variables%20for%20StellarForge&envLink=https://github.com/Favourorg/Stellar-forge/blob/main/docs/deployment-vercel.md)
 
 StellarForge is a user-friendly decentralized application (dApp) that enables creators, entrepreneurs, and businesses in emerging markets to deploy custom tokens on the Stellar blockchain without writing a single line of code.
 
@@ -676,7 +676,7 @@ StellarForge consists of three main components that work together:
 If you're still experiencing issues:
 
 1. **Check the logs**: Open browser DevTools (F12) and check the Console tab
-2. **Search existing issues**: [GitHub Issues](https://github.com/Ejirowebfi/Stellar-forge/issues)
+2. **Search existing issues**: [GitHub Issues](https://github.com/Favourorg/Stellar-forge/issues)
 3. **Ask for help**: Create a new issue with:
    - Description of the problem
    - Steps to reproduce

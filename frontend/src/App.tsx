@@ -31,6 +31,8 @@ import { MetadataForm } from './components/MetadataForm'
 import { NotFound } from './components/NotFound'
 import { TransactionHistory } from './components/TransactionHistory'
 import { AnalyticsOptOut } from './components/AnalyticsOptOut'
+import { NetworkMismatchBanner } from './components/NetworkBadge'
+import { FAQ } from './components/FAQ'
 
 const TokenDashboard = React.lazy(() =>
   import('./components/TokenDashboard').then((m) => ({ default: m.TokenDashboard })),
@@ -225,6 +227,8 @@ function AppContent() {
         </header>
         {showOnboarding && <OnboardingModal forceOpen onClose={() => setShowOnboarding(false)} />}
 
+        <NetworkMismatchBanner />
+
         {!isFactoryConfigured() && (
           <div
             className="bg-yellow-50 dark:bg-yellow-900/30 border-b border-yellow-300 dark:border-yellow-700 p-4"
@@ -325,6 +329,14 @@ function AppContent() {
                 element={
                   <RouteBoundary routeName="Explorer">
                     <TokenExplorer />
+                  </RouteBoundary>
+                }
+              />
+              <Route
+                path="/faq"
+                element={
+                  <RouteBoundary routeName="FAQ">
+                    <FAQ />
                   </RouteBoundary>
                 }
               />
