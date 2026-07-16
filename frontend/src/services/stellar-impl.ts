@@ -94,9 +94,7 @@ async function simulateAndSubmit(
   const signedXdr = await walletService.signTransaction(assembled.toXDR(), network)
 
   const submitResult = await withRetry(() =>
-    server.sendTransaction(
-      TransactionBuilder.fromXDR(signedXdr, getNetworkPassphrase(network)),
-    ),
+    server.sendTransaction(TransactionBuilder.fromXDR(signedXdr, getNetworkPassphrase(network))),
   )
 
   if (submitResult.status === 'ERROR') {
