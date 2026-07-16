@@ -46,8 +46,7 @@ export function parseContractError(err: unknown): Error {
     msg.toLowerCase().includes('rate limit') ||
     msg.toLowerCase().includes('too many requests') ||
     msg.toLowerCase().includes('http error 429') ||
-    msg.toLowerCase().includes('status 429') ||
-    msg.toLowerCase().includes('429')
+    msg.toLowerCase().includes('status 429')
   ) {
     return new Error(
       'The server is currently rate-limiting requests. Please wait a moment and try again. ' +
