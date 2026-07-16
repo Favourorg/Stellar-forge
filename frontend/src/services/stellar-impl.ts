@@ -71,13 +71,17 @@ function getRpcServer(network: Network): rpc.Server {
 /**
  * Simulate, sign via Freighter, submit, and poll until confirmed.
  * Returns the transaction hash on success.
+ *
+ * Both simulation and submission are wrapped with retry logic so that
+ * transient failures (including 429 rate-limit responses) are handled
+ * with exponential backoff before the user sees an error.
  */
 async function simulateAndSubmit(
   server: rpc.Server,
   tx: ReturnType<TransactionBuilder['build']>,
   network: Network,
 ): Promise<string> {
-  const simResult = await server.simulateTransaction(tx)
+  const simResult = await withRetry(() => server.simulateTransaction(tx))
 
   if (rpc.Api.isSimulationError(simResult)) {
     throw parseContractError(new Error(simResult.error))
@@ -89,8 +93,10 @@ async function simulateAndSubmit(
   const assembled = rpc.assembleTransaction(tx, simResult).build()
   const signedXdr = await walletService.signTransaction(assembled.toXDR(), network)
 
-  const submitResult = await server.sendTransaction(
-    TransactionBuilder.fromXDR(signedXdr, getNetworkPassphrase(network)),
+  const submitResult = await withRetry(() =>
+    server.sendTransaction(
+      TransactionBuilder.fromXDR(signedXdr, getNetworkPassphrase(network)),
+    ),
   )
 
   if (submitResult.status === 'ERROR') {
@@ -163,7 +169,7 @@ export async function submitFeeBumpTransaction(
     getNetworkPassphrase(network),
   ) as FeeBumpTransaction
 
-  const submitResult = await server.sendTransaction(feeBumpTx)
+  const submitResult = await withRetry(() => server.sendTransaction(feeBumpTx))
   if (submitResult.status === 'ERROR') {
     throw parseContractError(
       new Error(submitResult.errorResult?.toXDR('base64') ?? 'Fee bump submission failed'),
@@ -180,7 +186,7 @@ async function buildTxBuilder(
   sourceAddress: string,
   network: Network,
 ): Promise<TransactionBuilder> {
-  const account = await server.getAccount(sourceAddress)
+  const account = await withRetry(() => server.getAccount(sourceAddress))
   return new TransactionBuilder(account, {
     fee: BASE_FEE,
     networkPassphrase: getNetworkPassphrase(network),
@@ -201,7 +207,7 @@ async function callView(
   network: Network,
 ): Promise<xdr.ScVal> {
   const contract = new Contract(contractId)
-  const account = await server.getAccount(sourceAddress)
+  const account = await withRetry(() => server.getAccount(sourceAddress))
   const tx = new TransactionBuilder(account, {
     fee: BASE_FEE,
     networkPassphrase: getNetworkPassphrase(network),
@@ -210,7 +216,7 @@ async function callView(
     .setTimeout(30)
     .build()
 
-  const simResult = await server.simulateTransaction(tx)
+  const simResult = await withRetry(() => server.simulateTransaction(tx))
   if (rpc.Api.isSimulationError(simResult)) {
     throw parseContractError(new Error(simResult.error))
   }
@@ -437,7 +443,7 @@ export class StellarService {
       const hash = await simulateAndSubmit(server, tx, this.network)
 
       // Extract the returned token address from the transaction result
-      const txResult = await server.getTransaction(hash)
+      const txResult = await withRetry(() => server.getTransaction(hash))
       let tokenAddress = ''
       if (txResult.status === rpc.Api.GetTransactionStatus.SUCCESS && txResult.returnValue) {
         tokenAddress = scValToNative(txResult.returnValue) as string
