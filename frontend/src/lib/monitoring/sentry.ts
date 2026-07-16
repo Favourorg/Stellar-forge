@@ -91,6 +91,16 @@ export interface ContractErrorContext extends ErrorContext {
   params?: Record<string, unknown>
 }
 
+/**
+ * Context for transaction lifecycle errors.
+ * Extends ContractErrorContext with the transaction hash so every Sentry event
+ * captured during or after a transaction can be correlated to the on-chain tx.
+ */
+export interface TransactionErrorContext extends ContractErrorContext {
+  /** Stellar transaction hash (64 hex characters) */
+  txHash?: string
+}
+
 export function captureException(error: Error, context?: ErrorContext): void {
   if (!IS_SENTRY_ENABLED) return
   Sentry.withScope((scope: Scope) => {
@@ -103,7 +113,7 @@ export function captureException(error: Error, context?: ErrorContext): void {
  * Capture contract call errors with structured context
  * This helps track failed RPC calls and contract invocations in production
  */
-export function captureContractError(error: Error, context: ContractErrorContext): void {
+export function captureContractError(error: Error, context: ContractErrorContext & { txHash?: string }): void {
   if (!IS_SENTRY_ENABLED) return
 
   Sentry.withScope((scope: Scope) => {
@@ -111,9 +121,52 @@ export function captureContractError(error: Error, context: ContractErrorContext
     if (context.network) scope.setTag('network', context.network)
     if (context.contractId) scope.setTag('contractId', context.contractId)
     if (context.functionName) scope.setTag('functionName', context.functionName)
+    // Tag txHash when available so the event can be correlated to the on-chain transaction
+    if (context.txHash) scope.setTag('txHash', context.txHash)
 
     // Add context as extras
     const extras: Record<string, unknown> = {}
+    if (context.network) extras.network = context.network
+    if (context.contractId) extras.contractId = context.contractId
+    if (context.functionName) extras.functionName = context.functionName
+    if (context.params) extras.params = context.params
+    if (context.txHash) extras.txHash = context.txHash
+
+    scope.setExtras(extras)
+    Sentry.captureException(error)
+  })
+}
+
+/**
+ * Capture a transaction lifecycle error with full structured correlation context.
+ *
+ * Tags every captured event with:
+ *   - `txHash`          — the Stellar transaction hash (allows direct pivot to on-chain data)
+ *   - `network`         — testnet/mainnet (avoids cross-environment noise in alerts)
+ *   - `contractId`      — factory contract ID (correlates events across upgrade deploys)
+ *   - `functionName`    — the RPC method that failed
+ *
+ * This is the primary capture function for any error that occurs during the
+ * simulate → sign → submit → poll lifecycle of a Soroban transaction.
+ *
+ * Returns the Sentry event ID so callers can surface it alongside the txHash
+ * in the "Report an issue" affordance — giving support both pieces of context
+ * in one step.
+ */
+export function captureTransactionError(
+  error: Error,
+  context: TransactionErrorContext,
+): string | undefined {
+  if (!IS_SENTRY_ENABLED) return undefined
+
+  Sentry.withScope((scope: Scope) => {
+    if (context.txHash) scope.setTag('txHash', context.txHash)
+    if (context.network) scope.setTag('network', context.network)
+    if (context.contractId) scope.setTag('contractId', context.contractId)
+    if (context.functionName) scope.setTag('functionName', context.functionName)
+
+    const extras: Record<string, unknown> = {}
+    if (context.txHash) extras.txHash = context.txHash
     if (context.network) extras.network = context.network
     if (context.contractId) extras.contractId = context.contractId
     if (context.functionName) extras.functionName = context.functionName
@@ -122,6 +175,10 @@ export function captureContractError(error: Error, context: ContractErrorContext
     scope.setExtras(extras)
     Sentry.captureException(error)
   })
+
+  // lastEventId() returns the ID of the most recently captured event —
+  // safe to read immediately after withScope because withScope is synchronous.
+  return Sentry.lastEventId() ?? undefined
 }
 
 export function captureMessage(message: string, level: SeverityLevel = 'info'): void {
