@@ -5,4 +5,8 @@ export default {
   ],
   "**/*.{json,css,md}": ["prettier --write"],
   "*.{js,ts,mjs,cjs}": ["prettier --write"],
+  "frontend/src/i18n/*.json": [
+    "bash -c 'cd frontend && node scripts/check-i18n-parity.mjs'",
+    "prettier --write",
+  ],
 };

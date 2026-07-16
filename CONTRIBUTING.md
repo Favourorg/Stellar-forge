@@ -23,10 +23,10 @@ This project uses [Husky](https://typicode.github.io/husky/) and [lint-staged](h
 
 ### What runs automatically
 
-| Git event | Hook | What it does |
-|-----------|------|--------------|
+| Git event    | Hook         | What it does                                                                                                                   |
+| ------------ | ------------ | ------------------------------------------------------------------------------------------------------------------------------ |
 | `git commit` | `pre-commit` | Runs `lint-staged` on staged files: ESLint auto-fix → Prettier format. Blocks the commit if lint errors remain after auto-fix. |
-| `git push` | `pre-push` | Runs the full frontend test suite (`npm test -- --run`). Aborts the push if any tests fail. |
+| `git push`   | `pre-push`   | Runs the full frontend test suite (`npm test -- --run`). Aborts the push if any tests fail.                                    |
 
 ### Targeted file types
 
@@ -76,6 +76,7 @@ rustc --version     # Should be latest stable
 
 1. Fork the repository on GitHub
 2. Clone your fork locally:
+
    ```bash
    git clone https://github.com/YOUR_USERNAME/Stellar-forge.git
    cd Stellar-forge
@@ -114,6 +115,7 @@ Run the setup script to install Rust toolchain, Stellar CLI, and configure the t
 ```
 
 This script will:
+
 - Install Rust (if not already installed)
 - Add the `wasm32-unknown-unknown` target for Rust
 - Install Stellar CLI (replaces the older soroban-cli)
@@ -171,6 +173,7 @@ docker compose logs -f contract-builder
 ```
 
 This will:
+
 - Build and start the frontend development server on `http://localhost:5173`
 - Build the contract builder environment with Rust, Stellar CLI, and all dependencies
 - Mount source directories as volumes for hot reloading
@@ -247,21 +250,23 @@ docker compose down -v
 
 ### Docker vs Local Development
 
-| Aspect | Docker | Local |
-|--------|--------|-------|
-| **Setup Time** | Fast (just Docker required) | Longer (multiple tools) |
-| **Consistency** | Identical across machines | May vary by OS/versions |
-| **Performance** | Slight overhead | Native performance |
-| **Disk Usage** | Higher (images + volumes) | Lower |
-| **Offline Work** | Works after initial setup | Requires local installs |
+| Aspect           | Docker                      | Local                   |
+| ---------------- | --------------------------- | ----------------------- |
+| **Setup Time**   | Fast (just Docker required) | Longer (multiple tools) |
+| **Consistency**  | Identical across machines   | May vary by OS/versions |
+| **Performance**  | Slight overhead             | Native performance      |
+| **Disk Usage**   | Higher (images + volumes)   | Lower                   |
+| **Offline Work** | Works after initial setup   | Requires local installs |
 
 Choose Docker if you:
+
 - Want quick, consistent setup
 - Work on multiple machines
 - Prefer isolated environments
 - Have team members on different OS
 
 Choose local setup if you:
+
 - Need maximum performance
 - Already have tools installed
 - Prefer native development
@@ -298,23 +303,25 @@ docker compose exec contract-builder bash
 
 Always create a new branch for your work. Use these prefixes to categorize your changes:
 
-| Prefix | Purpose | Example |
-|--------|---------|---------|
-| `feature/` | New features or enhancements | `feature/add-token-burn` |
-| `fix/` | Bug fixes | `fix/wallet-connection-timeout` |
-| `docs/` | Documentation updates | `docs/update-readme` |
-| `refactor/` | Code refactoring (no behavior change) | `refactor/simplify-validation` |
-| `test/` | Test additions or updates | `test/add-mint-tests` |
-| `chore/` | Maintenance tasks (deps, config) | `chore/update-dependencies` |
-| `perf/` | Performance improvements | `perf/optimize-event-queries` |
-| `style/` | Code style/formatting changes | `style/fix-linting-errors` |
+| Prefix      | Purpose                               | Example                         |
+| ----------- | ------------------------------------- | ------------------------------- |
+| `feature/`  | New features or enhancements          | `feature/add-token-burn`        |
+| `fix/`      | Bug fixes                             | `fix/wallet-connection-timeout` |
+| `docs/`     | Documentation updates                 | `docs/update-readme`            |
+| `refactor/` | Code refactoring (no behavior change) | `refactor/simplify-validation`  |
+| `test/`     | Test additions or updates             | `test/add-mint-tests`           |
+| `chore/`    | Maintenance tasks (deps, config)      | `chore/update-dependencies`     |
+| `perf/`     | Performance improvements              | `perf/optimize-event-queries`   |
+| `style/`    | Code style/formatting changes         | `style/fix-linting-errors`      |
 
 **Branch naming rules:**
+
 - Use lowercase with hyphens (kebab-case)
 - Be descriptive but concise
 - Include issue number if applicable: `fix/123-wallet-timeout`
 
 **Examples:**
+
 ```bash
 git checkout -b feature/token-history-pagination
 git checkout -b fix/42-ipfs-upload-error
@@ -344,17 +351,19 @@ git checkout -b feature/your-feature-name
    - Contracts: Add tests in `contracts/token-factory/src/test.rs`
 
 3. **Run tests locally** before committing:
+
    ```bash
    # Frontend tests
    cd frontend
    npm run test -- --run
-   
+
    # Contract tests
    cd ../contracts/token-factory
    cargo test
    ```
 
 4. **Run linting** to catch style issues:
+
    ```bash
    cd frontend
    npm run lint
@@ -373,6 +382,7 @@ This project uses **husky** and **lint-staged** to enforce code quality automati
 #### What Happens on Commit
 
 When you commit changes, the pre-commit hook automatically:
+
 - Runs ESLint on staged `.ts` and `.tsx` files in the `frontend/` directory
 - Auto-fixes fixable linting errors
 - Runs TypeScript type checking (`tsc --noEmit`)
@@ -495,17 +505,19 @@ Closes #42"
 ### Before Submitting
 
 1. **Sync with upstream** to avoid conflicts:
+
    ```bash
    git fetch upstream
    git rebase upstream/main
    ```
 
 2. **Run all tests** locally:
+
    ```bash
    cd frontend
    npm run test -- --run
    npm run lint
-   
+
    cd ../contracts/token-factory
    cargo test
    ```
@@ -515,6 +527,7 @@ Closes #42"
 ### Submitting a Pull Request
 
 1. **Push your branch** to your fork:
+
    ```bash
    git push origin feature/your-feature-name
    ```
@@ -550,6 +563,7 @@ docs: update contributing guide
 ### After Merge
 
 - Delete your feature branch locally and remotely:
+
   ```bash
   git branch -d feature/your-feature-name
   git push origin --delete feature/your-feature-name
@@ -585,7 +599,7 @@ docs: update contributing guide
 // Good
 export function TokenForm({ onSubmit }: { onSubmit: (data: TokenData) => void }) {
   const [formData, setFormData] = useState<TokenData>(initialState);
-  
+
   return (
     <form onSubmit={() => onSubmit(formData)}>
       {/* form content */}
@@ -609,11 +623,11 @@ export function TF(props: any) {
 // Good
 export function useTokenBalance(tokenId: string) {
   const [balance, setBalance] = useState<number>(0);
-  
+
   useEffect(() => {
     fetchBalance(tokenId).then(setBalance);
   }, [tokenId]);
-  
+
   return balance;
 }
 ```
@@ -646,7 +660,7 @@ export function useTokenBalance(tokenId: string) {
 
 ```typescript
 // Good
-<button 
+<button
   aria-label="Close modal"
   onClick={onClose}
 >
@@ -764,13 +778,13 @@ pub fn mint_tokens(env: &Env, token_id: Address, amount: i128) {
 fn test_create_token_success() {
     let env = Env::default();
     let factory = TokenFactory::new(&env);
-    
+
     let token_addr = factory.create_token(
         String::from_utf8(b"MyToken".to_vec()).unwrap(),
         String::from_utf8(b"MTK".to_vec()).unwrap(),
         18,
     ).unwrap();
-    
+
     assert!(token_addr.is_valid());
 }
 
@@ -778,13 +792,13 @@ fn test_create_token_success() {
 fn test_create_token_empty_name() {
     let env = Env::default();
     let factory = TokenFactory::new(&env);
-    
+
     let result = factory.create_token(
         String::from_utf8(vec![]).unwrap(),
         String::from_utf8(b"MTK".to_vec()).unwrap(),
         18,
     );
-    
+
     assert!(result.is_err());
 }
 ```
@@ -839,6 +853,27 @@ cd frontend && npm run test -- --run && cd ..
 cd contracts/token-factory && cargo test && cd ../..
 ```
 
+## Adding New Translation Keys
+
+When adding new UI strings to the application:
+
+1. **Add the key to `frontend/src/i18n/en.json`** — English is the source of truth.
+2. **Add the same key to all other locale files** (`es.json`, `fr.json`, `pt.json`) with appropriate translations.
+3. **Run the parity check** to confirm all locales are in sync:
+   ```bash
+   cd frontend && node scripts/check-i18n-parity.mjs
+   ```
+
+The parity check is enforced in CI and as a pre-commit hook. If you add a key to `en.json` without adding it to the other locale files, the build will fail.
+
+> **Tip:** Use the `t()` function from `react-i18next` to access translation keys in components:
+>
+> ```tsx
+> import { useTranslation } from "react-i18next";
+> const { t } = useTranslation();
+> return <button>{t("my.new.key")}</button>;
+> ```
+
 ## Adding a New Language
 
 StellarForge is designed to support multiple languages for the UI. To add a new language:
@@ -851,13 +886,13 @@ Create a new language file in `frontend/src/config/i18n/`:
 // frontend/src/config/i18n/es.ts
 export const es = {
   common: {
-    submit: 'Enviar',
-    cancel: 'Cancelar',
-    loading: 'Cargando...',
+    submit: "Enviar",
+    cancel: "Cancelar",
+    loading: "Cargando...",
   },
   tokens: {
-    create: 'Crear Token',
-    name: 'Nombre del Token',
+    create: "Crear Token",
+    name: "Nombre del Token",
   },
   // ... more translations
 };
@@ -868,7 +903,7 @@ export const es = {
 Update the language registry in `frontend/src/config/i18n/index.ts`:
 
 ```typescript
-import { es } from './es';
+import { es } from "./es";
 
 export const languages = {
   en: en,
@@ -886,8 +921,8 @@ Update the language selector component to include the new language:
 ```typescript
 // frontend/src/components/LanguageSelector.tsx
 const AVAILABLE_LANGUAGES = [
-  { code: 'en', name: 'English' },
-  { code: 'es', name: 'Español' },
+  { code: "en", name: "English" },
+  { code: "es", name: "Español" },
   // ... add new language
 ];
 ```
@@ -902,6 +937,7 @@ const AVAILABLE_LANGUAGES = [
 ### Step 5: Submit PR
 
 Include in your PR:
+
 - Complete translation file
 - Screenshots showing the new language in use
 - Any special considerations (RTL, character encoding, etc.)
@@ -912,10 +948,10 @@ Include in your PR:
 
 The contracts currently pin the following SDK versions in `contracts/token-factory/Cargo.toml`:
 
-| Crate | Version | Reason |
-|-------|---------|--------|
-| `soroban-sdk` | `25.0.0` | Matches Stellar Protocol 22 (the current mainnet protocol). Pinned to avoid unexpected breaking changes from minor/patch releases. |
-| `soroban-token-sdk` | `25.0.0` | Must match `soroban-sdk` exactly — mismatched versions cause type incompatibilities at compile time. |
+| Crate               | Version  | Reason                                                                                                                             |
+| ------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `soroban-sdk`       | `25.0.0` | Matches Stellar Protocol 22 (the current mainnet protocol). Pinned to avoid unexpected breaking changes from minor/patch releases. |
+| `soroban-token-sdk` | `25.0.0` | Must match `soroban-sdk` exactly — mismatched versions cause type incompatibilities at compile time.                               |
 
 > **Important:** `soroban-sdk` and `soroban-token-sdk` must always be on the **same version**. When upgrading one, upgrade both together.
 
@@ -982,6 +1018,7 @@ npm run lint
 #### Step 6: Submit PR
 
 Include in your PR:
+
 - Dependency update commits
 - Code changes for compatibility
 - Updated documentation (including the version table above)

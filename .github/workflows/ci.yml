@@ -93,6 +93,9 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      - name: i18n Parity Check
+        run: node scripts/check-i18n-parity.mjs
+
       - name: Typecheck
         run: npm run typecheck
 
@@ -144,7 +147,7 @@ jobs:
           VITE_NETWORK: standalone
           # placeholder — no factory contract is deployed onto the local network in this job
           VITE_FACTORY_CONTRACT_ID: CCN6L3B2R6G2H5J4J4J4J4J4J4J4J4J4J4J4J4J4J4J4J4J4J4
-          VITE_TOKEN_WASM_HASH: '0000000000000000000000000000000000000000000000000000000000000000'
+          VITE_TOKEN_WASM_HASH: "0000000000000000000000000000000000000000000000000000000000000000"
           VITE_IPFS_API_KEY: mock-key
           VITE_IPFS_API_SECRET: mock-secret
 
@@ -155,7 +158,7 @@ jobs:
           VITE_NETWORK: standalone
           # placeholder — no factory contract is deployed onto the local network in this job
           VITE_FACTORY_CONTRACT_ID: CCN6L3B2R6G2H5J4J4J4J4J4J4J4J4J4J4J4J4J4J4J4J4J4J4
-          VITE_TOKEN_WASM_HASH: '0000000000000000000000000000000000000000000000000000000000000000'
+          VITE_TOKEN_WASM_HASH: "0000000000000000000000000000000000000000000000000000000000000000"
           VITE_IPFS_API_KEY: mock-key
           VITE_IPFS_API_SECRET: mock-secret
 
