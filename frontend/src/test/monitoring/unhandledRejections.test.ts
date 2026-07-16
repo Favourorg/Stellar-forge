@@ -5,6 +5,20 @@ vi.mock('../../lib/monitoring/sentry', () => ({
   captureException: mockCaptureException,
 }))
 
+// jsdom does not provide PromiseRejectionEvent, so polyfill it for tests
+if (typeof PromiseRejectionEvent === 'undefined') {
+  class PromiseRejectionEventPolyfill extends Event {
+    promise: Promise<unknown>
+    reason: unknown
+    constructor(type: string, options: PromiseRejectionEventInit) {
+      super(type, options)
+      this.promise = options.promise
+      this.reason = options.reason
+    }
+  }
+  Object.assign(globalThis, { PromiseRejectionEvent: PromiseRejectionEventPolyfill })
+}
+
 describe('unhandledRejections', () => {
   beforeEach(async () => {
     vi.clearAllMocks()
