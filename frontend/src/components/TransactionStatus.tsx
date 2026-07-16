@@ -1,5 +1,5 @@
 import React from 'react'
-import { useTransactionPolling } from '../hooks/useTransactionPolling'
+import { useTransactionPolling } from '../hooks/useTransaction'
 import { useNetwork } from '../context/NetworkContext'
 import { stellarExplorerUrl } from '../utils/stellarExplorer'
 import { Spinner } from './UI/Spinner'
