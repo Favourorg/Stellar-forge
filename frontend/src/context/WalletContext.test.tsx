@@ -185,7 +185,9 @@ describe('WalletProvider', () => {
 
   it('re-connecting after disconnect shows fresh data, not stale cached values', async () => {
     // First user connects with address GUSER1
-    vi.mocked(walletService.connect).mockResolvedValueOnce('GUSER1AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA')
+    vi.mocked(walletService.connect).mockResolvedValueOnce(
+      'GUSER1AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    )
     // Use mockResolvedValue (persistent) — fetchBalance is called twice on connect
     // (once explicitly in connect(), once from the network useEffect that reacts to
     // wallet state change). Using Once would only cover the first call; the second
@@ -216,7 +218,9 @@ describe('WalletProvider', () => {
     expect(screen.getByTestId('consumer-balance').textContent).toBe('null')
 
     // Second user connects — must see their own address and a fresh balance fetch
-    vi.mocked(walletService.connect).mockResolvedValueOnce('GUSER2BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB')
+    vi.mocked(walletService.connect).mockResolvedValueOnce(
+      'GUSER2BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB',
+    )
     // Persistent mock so both implicit fetchBalance calls return User 2's balance
     vi.mocked(walletService.getBalance).mockResolvedValue('99.0000000')
 

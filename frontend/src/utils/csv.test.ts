@@ -1,12 +1,12 @@
-import { describe, it, expect } from 'vitest';
-import { serializeTransactionsToCSV } from './csv';
-import { TransactionHistoryItem } from '../hooks/useTransactionHistory';
+import { describe, it, expect } from 'vitest'
+import { serializeTransactionsToCSV } from './csv'
+import { TransactionHistoryItem } from '../hooks/useTransactionHistory'
 
 describe('serializeTransactionsToCSV', () => {
   it('returns only headers when transactions list is empty', () => {
-    const csv = serializeTransactionsToCSV([]);
-    expect(csv).toBe('date,type,token,amount,tx hash');
-  });
+    const csv = serializeTransactionsToCSV([])
+    expect(csv).toBe('date,type,token,amount,tx hash')
+  })
 
   it('serializes standard transaction items correctly', () => {
     const items: TransactionHistoryItem[] = [
@@ -28,17 +28,17 @@ describe('serializeTransactionsToCSV', () => {
         status: 'failed',
         hash: '0xfedcba0987654321',
       },
-    ];
+    ]
 
-    const csv = serializeTransactionsToCSV(items);
+    const csv = serializeTransactionsToCSV(items)
     const expected = [
       'date,type,token,amount,tx hash',
       '2026-06-26T12:00:00Z,mint,USDC,100.50,0x1234567890abcdef',
       '2026-06-26T12:05:00Z,burn,XLM,10.00,0xfedcba0987654321',
-    ].join('\n');
+    ].join('\n')
 
-    expect(csv).toBe(expected);
-  });
+    expect(csv).toBe(expected)
+  })
 
   it('escapes fields containing commas, newlines, or double quotes', () => {
     const items: TransactionHistoryItem[] = [
@@ -60,15 +60,15 @@ describe('serializeTransactionsToCSV', () => {
         status: 'success',
         hash: 'normalhash',
       },
-    ];
+    ]
 
-    const csv = serializeTransactionsToCSV(items);
+    const csv = serializeTransactionsToCSV(items)
     const expected = [
       'date,type,token,amount,tx hash',
       '2026-06-26T12:10:00Z,create,"My,Token",500,"hash""with""quotes"',
       '2026-06-26T12:15:00Z,other,"Newline\nToken",1.00,normalhash',
-    ].join('\n');
+    ].join('\n')
 
-    expect(csv).toBe(expected);
-  });
-});
+    expect(csv).toBe(expected)
+  })
+})

@@ -55,7 +55,7 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
   const handleExportCSV = () => {
     if (transactions.length === 0) return
     const csvContent = serializeTransactionsToCSV(transactions)
-    const BOM = new Uint8Array([0xEF, 0xBB, 0xBF])
+    const BOM = new Uint8Array([0xef, 0xbb, 0xbf])
     const blob = new Blob([BOM, csvContent], { type: 'text/csv;charset=utf-8;' })
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
