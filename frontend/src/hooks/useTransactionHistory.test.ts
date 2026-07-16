@@ -2,7 +2,7 @@ import { renderHook, act } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { useTransactionHistory } from './useTransactionHistory'
 
-// Mutable so individual tests can override network
+// vi.mock is hoisted, so mockConfig must use vi.hoisted() to be available inside the factory
 const mockConfig = vi.hoisted(() => ({
   network: 'testnet' as 'testnet' | 'mainnet',
   testnet: { horizonUrl: 'https://horizon-testnet.stellar.org' },
@@ -124,7 +124,7 @@ describe('useTransactionHistory', () => {
       mockOk(page([paymentOp()]))
       renderHook(() => useTransactionHistory(PUB))
       await fireDebounce()
-      expect(vi.mocked(global.fetch).mock.calls[0][0]).toContain(TESTNET)
+      expect(vi.mocked(global.fetch).mock.calls[0]![0]).toContain(TESTNET)
     })
 
     it('uses the mainnet Horizon URL when network is mainnet', async () => {
@@ -132,7 +132,7 @@ describe('useTransactionHistory', () => {
       mockOk(page([paymentOp()]))
       renderHook(() => useTransactionHistory(PUB))
       await fireDebounce()
-      expect(vi.mocked(global.fetch).mock.calls[0][0]).toContain(MAINNET)
+      expect(vi.mocked(global.fetch).mock.calls[0]![0]).toContain(MAINNET)
     })
   })
 
@@ -170,7 +170,7 @@ describe('useTransactionHistory', () => {
       })
       // Exactly one fetch for GKEY2, none for GKEY1
       expect(global.fetch).toHaveBeenCalledTimes(1)
-      expect(vi.mocked(global.fetch).mock.calls[0][0]).toContain('GKEY2')
+      expect(vi.mocked(global.fetch).mock.calls[0]![0]).toContain('GKEY2')
     })
   })
 
@@ -178,11 +178,22 @@ describe('useTransactionHistory', () => {
 
   describe('initial fetch', () => {
     it('reflects loading=true during the in-flight request', async () => {
-      mockOk(page([paymentOp()]))
+      let resolveJson!: (v: unknown) => void
+      vi.mocked(global.fetch).mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          new Promise((r) => {
+            resolveJson = r
+          }),
+      } as Response)
 
       const { result } = renderHook(() => useTransactionHistory(PUB))
-      act(() => {
+      // Advance the debounce timer and flush microtasks so fetch() resolves
+      // and resp.json() is called (setting resolveJson) before we invoke it
+      await act(async () => {
         vi.advanceTimersByTime(400)
+        await Promise.resolve()
+        await Promise.resolve()
       })
       expect(result.current.loading).toBe(true)
 
@@ -283,7 +294,7 @@ describe('useTransactionHistory', () => {
         await Promise.resolve()
       })
 
-      const secondUrl = vi.mocked(global.fetch).mock.calls[1][0] as string
+      const secondUrl = vi.mocked(global.fetch).mock.calls[1]![0] as string
       expect(secondUrl).toContain('cursor=tok_last')
     })
 
@@ -291,7 +302,7 @@ describe('useTransactionHistory', () => {
       mockOk(page([paymentOp()]))
       renderHook(() => useTransactionHistory(PUB))
       await fireDebounce()
-      const firstUrl = vi.mocked(global.fetch).mock.calls[0][0] as string
+      const firstUrl = vi.mocked(global.fetch).mock.calls[0]![0] as string
       expect(firstUrl).toContain('cursor=')
       // cursor param is present but empty (reset path)
       expect(firstUrl).toMatch(/cursor=$/)
@@ -401,7 +412,7 @@ describe('useTransactionHistory', () => {
 
     it('transaction_successful=false maps to status=failed', async () => {
       const txns = await fetchSingle(paymentOp({ transaction_successful: false }))
-      expect(txns[0].status).toBe('failed')
+      expect(txns[0]!.status).toBe('failed')
     })
   })
 
@@ -418,7 +429,7 @@ describe('useTransactionHistory', () => {
       const { result } = renderHook(() => useTransactionHistory(PUB, { assetCodes: ['TKB'] }))
       await fireDebounce()
       expect(result.current.transactions).toHaveLength(1)
-      expect(result.current.transactions[0].token).toBe('TKB')
+      expect(result.current.transactions[0]!.token).toBe('TKB')
     })
 
     it('excludes operations whose asset_issuer does not match issuer filter', async () => {

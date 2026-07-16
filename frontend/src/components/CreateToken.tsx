@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { useToast } from '../context/ToastContext'
 import { useStellarContext } from '../context/StellarContext'
 import { useWalletContext } from '../context/WalletContext'
+import { useFactoryState } from '../hooks/useFactoryState'
 import { TokenForm } from './TokenForm'
 import { ShareButton } from './ShareButton'
 import { CopyButton } from './CopyButton'
@@ -21,6 +22,7 @@ export const CreateToken: React.FC = () => {
   const { addToast } = useToast()
   const { stellarService } = useStellarContext()
   const { refreshBalance } = useWalletContext()
+  const { state: factoryState } = useFactoryState()
 
   const [isDeploying, setIsDeploying] = useState(false)
   const [deployedToken, setDeployedToken] = useState<DeployedToken | null>(null)
@@ -38,7 +40,8 @@ export const CreateToken: React.FC = () => {
         salt:
           Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15),
         tokenWasmHash: STELLAR_CONFIG.tokenWasmHash || '',
-        feePayment: '100000',
+        // Pay the real on-chain base_fee; the contract rejects create if fee_payment < base_fee.
+        feePayment: factoryState?.baseFee ?? '100000',
       }
 
       const result = await stellarService.deployToken(deployParams)
@@ -103,7 +106,7 @@ export const CreateToken: React.FC = () => {
 
       <div className="bg-white dark:bg-gray-800 rounded-lg p-4 sm:p-6 shadow-sm">
         <ErrorBoundary>
-          <TokenForm onSubmit={handleTokenFormSubmit} isLoading={isDeploying} estimatedFee="0.01" />
+          <TokenForm onSubmit={handleTokenFormSubmit} isLoading={isDeploying} />
         </ErrorBoundary>
       </div>
     </div>

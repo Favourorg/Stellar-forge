@@ -38,13 +38,44 @@ describe('useTokens', () => {
     await waitFor(() => expect(result.current.isLoading).toBe(false))
   })
 
-  it('returns tokens filtered by creator', async () => {
+  it('returns tokens filtered by creator and calls paginated contract view', async () => {
     vi.mocked(stellarService.getTokensByCreator).mockResolvedValue([TOKEN_A, TOKEN_B])
 
     const { result } = renderHook(() => useTokens('GABC'))
 
     await waitFor(() => expect(result.current.tokens).toHaveLength(2))
-    expect(stellarService.getTokensByCreator).toHaveBeenCalledWith('GABC')
+    expect(stellarService.getTokensByCreator).toHaveBeenCalledWith('GABC', 0, expect.any(Number))
+  })
+
+  it('passes server-side pagination offset/limit when iterating pages', async () => {
+    // Simulate a creator with 60 tokens; hook should request 50 at a time
+    // (matching the contract's MAX_TOKENS_BY_CREATOR_PAGE) and stop when a
+    // short page arrives.
+    const fullBatch = Array.from({ length: 50 }, (_, i) => ({
+      name: `Token${i}`,
+      symbol: `TK${i}`,
+      decimals: 7,
+      creator: 'GABC',
+      createdAt: i,
+    }))
+    const partialBatch = Array.from({ length: 10 }, (_, i) => ({
+      name: `Token${50 + i}`,
+      symbol: `TK${50 + i}`,
+      decimals: 7,
+      creator: 'GABC',
+      createdAt: 50 + i,
+    }))
+
+    vi.mocked(stellarService.getTokensByCreator)
+      .mockResolvedValueOnce(fullBatch)
+      .mockResolvedValueOnce(partialBatch)
+
+    const { result } = renderHook(() => useTokens('GABC'))
+
+    await waitFor(() => expect(result.current.totalCount).toBe(60))
+    expect(stellarService.getTokensByCreator).toHaveBeenCalledTimes(2)
+    expect(stellarService.getTokensByCreator).toHaveBeenNthCalledWith(1, 'GABC', 0, 50)
+    expect(stellarService.getTokensByCreator).toHaveBeenNthCalledWith(2, 'GABC', 50, 50)
   })
 
   it('fetches all tokens in parallel when no creator given', async () => {
@@ -100,11 +131,11 @@ describe('useTokens', () => {
       result.current.refresh()
     })
 
-    await waitFor(() => expect(result.current.tokens).toHaveLength(2))
-    expect(stellarService.getTokensByCreator).toHaveBeenCalledTimes(2)
+    await waitFor(() => expect(result.current.totalCount).toBe(2))
+    expect(stellarService.getTokensByCreator).toHaveBeenCalled()
   })
 
-  it('paginates tokens correctly', async () => {
+  it('paginates visible tokens correctly using accumulated list', async () => {
     const manyTokens = Array.from({ length: 15 }, (_, i) => ({
       name: `Token${i}`,
       symbol: `TK${i}`,

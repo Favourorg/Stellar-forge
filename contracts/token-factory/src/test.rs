@@ -799,7 +799,7 @@ fn test_get_tokens_by_creator() {
     let creator = Address::generate(&s.env);
     seed_token(&s, &creator, true, None);
     seed_token(&s, &creator, true, None);
-    let indices = s.client.get_tokens_by_creator(&creator);
+    let indices = s.client.get_tokens_by_creator(&creator, &0_u32, &10_u32);
     assert_eq!(indices.len(), 2);
 }
 
@@ -807,7 +807,143 @@ fn test_get_tokens_by_creator() {
 fn test_get_tokens_by_creator_empty_for_unknown() {
     let s = Setup::new();
     let stranger = Address::generate(&s.env);
-    assert_eq!(s.client.get_tokens_by_creator(&stranger).len(), 0);
+    assert_eq!(
+        s.client
+            .get_tokens_by_creator(&stranger, &0_u32, &10_u32)
+            .len(),
+        0
+    );
+}
+
+// ── get_tokens_by_creator pagination ─────────────────────────────────────────
+
+/// Helper that seeds `n` tokens owned by `creator`, returning their indices
+/// in storage order. Indices are computed locally from a baseline read of
+/// `FactoryState.token_count` rather than re-reading `DataKey::TokenIndex`
+/// for each seed — re-reading would require entering the contract context
+/// for every seed, which conflicts with `seed_token`'s own `as_contract`
+/// wrapping.
+fn seed_many(s: &Setup, creator: &Address, n: u32) -> Vec<u32> {
+    let mut expected: Vec<u32> = Vec::new(&s.env);
+    let mut base: u32 = 0;
+    s.env.as_contract(&s.client.address, || {
+        let state: FactoryState = s.env.storage().instance().get(&DataKey::State).unwrap();
+        base = state.token_count;
+    });
+    for i in 0..n {
+        seed_token(s, creator, true, None);
+        expected.push_back(base.saturating_add(i).saturating_add(1));
+    }
+    expected
+}
+
+#[test]
+fn test_get_tokens_by_creator_first_page() {
+    let s = Setup::new();
+    let creator = Address::generate(&s.env);
+    let expected = seed_many(&s, &creator, 15);
+    let page = s.client.get_tokens_by_creator(&creator, &0_u32, &10_u32);
+    assert_eq!(page.len(), 10);
+    for i in 0..10 {
+        assert_eq!(page.get(i).unwrap(), expected.get(i).unwrap());
+    }
+}
+
+#[test]
+fn test_get_tokens_by_creator_second_page() {
+    let s = Setup::new();
+    let creator = Address::generate(&s.env);
+    let expected = seed_many(&s, &creator, 15);
+    let page = s.client.get_tokens_by_creator(&creator, &10_u32, &10_u32);
+    assert_eq!(page.len(), 5);
+    for i in 0..5 {
+        assert_eq!(page.get(i).unwrap(), expected.get(10 + i).unwrap());
+    }
+}
+
+#[test]
+fn test_get_tokens_by_creator_offset_past_end() {
+    let s = Setup::new();
+    let creator = Address::generate(&s.env);
+    seed_many(&s, &creator, 5);
+    // offset >= total → empty result
+    let page = s.client.get_tokens_by_creator(&creator, &5_u32, &10_u32);
+    assert_eq!(page.len(), 0);
+    let page_far = s.client.get_tokens_by_creator(&creator, &u32::MAX, &10_u32);
+    assert_eq!(page_far.len(), 0);
+}
+
+#[test]
+fn test_get_tokens_by_creator_zero_limit() {
+    let s = Setup::new();
+    let creator = Address::generate(&s.env);
+    seed_many(&s, &creator, 3);
+    let page = s.client.get_tokens_by_creator(&creator, &0_u32, &0_u32);
+    assert_eq!(page.len(), 0);
+}
+
+#[test]
+fn test_get_tokens_by_creator_clamps_oversized_limit() {
+    let s = Setup::new();
+    let creator = Address::generate(&s.env);
+    // Seed just enough tokens to exceed the configured cap so the clamping
+    // path is exercised. Seeding too many tokens would exceed the test
+    // runtime's per-instance storage budget — 60 fits comfortably while
+    // being > MAX_TOKENS_BY_CREATOR_PAGE (50).
+    seed_many(&s, &creator, 60);
+    // Requesting a limit larger than the configured cap must not return more
+    // than the cap. This guards against callers asking for arbitrarily large
+    // pages that could exceed ledger entry size limits on mainnet.
+    let page = s.client.get_tokens_by_creator(&creator, &0_u32, &u32::MAX);
+    assert!(
+        page.len() <= super::MAX_TOKENS_BY_CREATOR_PAGE,
+        "page size ({}) must be ≤ the contract-level cap ({})",
+        page.len(),
+        super::MAX_TOKENS_BY_CREATOR_PAGE,
+    );
+    // The first page should be filled to the cap (we have 60 tokens, the
+    // contract requested 50). This is the load-bearing assertion: the page
+    // actually clamps down to MAX rather than silently truncating at offset
+    // + u32::MAX.
+    assert_eq!(page.len(), super::MAX_TOKENS_BY_CREATOR_PAGE);
+}
+
+#[test]
+fn test_get_tokens_by_creator_isolated_per_creator() {
+    let s = Setup::new();
+    let creator_a = Address::generate(&s.env);
+    let creator_b = Address::generate(&s.env);
+    seed_many(&s, &creator_a, 4);
+    seed_many(&s, &creator_b, 7);
+
+    let a = s.client.get_tokens_by_creator(&creator_a, &0_u32, &10_u32);
+    let b = s.client.get_tokens_by_creator(&creator_b, &0_u32, &10_u32);
+
+    assert_eq!(a.len(), 4);
+    assert_eq!(b.len(), 7);
+
+    // None of A's indices should appear in B's slice.
+    for idx in a.iter() {
+        for other in b.iter() {
+            assert_ne!(idx, other);
+        }
+    }
+}
+
+#[test]
+fn test_get_tokens_by_creator_partial_last_page() {
+    let s = Setup::new();
+    let creator = Address::generate(&s.env);
+    seed_many(&s, &creator, 7);
+    // Page of exactly 7 splits into [3, 4] for limit=3, offset=0 / 3.
+    let p1 = s.client.get_tokens_by_creator(&creator, &0_u32, &3_u32);
+    assert_eq!(p1.len(), 3);
+    let p2 = s.client.get_tokens_by_creator(&creator, &3_u32, &3_u32);
+    assert_eq!(p2.len(), 3);
+    let p3 = s.client.get_tokens_by_creator(&creator, &6_u32, &3_u32);
+    assert_eq!(p3.len(), 1);
+    let p4 = s.client.get_tokens_by_creator(&creator, &7_u32, &3_u32);
+    assert_eq!(p4.len(), 0);
 }
 
 // ── TTL ───────────────────────────────────────────────────────────────────────

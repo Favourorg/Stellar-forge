@@ -98,11 +98,14 @@ export const ipfsToGatewayUrl = (uri: string): string => {
 }
 
 type ExplorerLinkType = 'tx' | 'contract' | 'account'
-type Network = 'testnet' | 'mainnet'
+type Network = 'testnet' | 'mainnet' | 'standalone'
 
 const EXPLORER_BASES: Record<Network, string> = {
   mainnet: 'https://stellar.expert/explorer/public',
   testnet: 'https://stellar.expert/explorer/testnet',
+  // A local `standalone` network has no public explorer; fall back to testnet
+  // as a best-effort so links don't break in dev/E2E.
+  standalone: 'https://stellar.expert/explorer/testnet',
 }
 
 /** Build a stellar.expert explorer URL for a tx, contract, or account. */

@@ -14,11 +14,11 @@ export interface TransactionHistoryItem {
 }
 
 interface UseTransactionHistoryOptions {
-  assetCodes?: string[]
-  issuer?: string
-  contractIds?: string[]
-  pageSize?: number
-  pollIntervalMs?: number
+  assetCodes?: string[] | undefined
+  issuer?: string | undefined
+  contractIds?: string[] | undefined
+  pageSize?: number | undefined
+  pollIntervalMs?: number | undefined
 }
 
 /** The subset of Horizon's polymorphic operation record shape this hook reads. */
@@ -46,7 +46,7 @@ export function useTransactionHistory(
   const [page, setPage] = useState(1)
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
   const cacheRef = useRef<{ [key: string]: TransactionHistoryItem[] }>({})
-  const debounceRef = useRef<number | null>(null)
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Tracks the paging_token of the last fetched record for cursor-based pagination
   const cursorRef = useRef<string>('')
   const fetchRef = useRef<(reset?: boolean) => void>(() => {})
@@ -92,7 +92,7 @@ export function useTransactionHistory(
           .map((op: HorizonOperationRecord) => parseOperation(op, options))
           .filter((item): item is TransactionHistoryItem => item !== null)
         if (records.length > 0) {
-          cursorRef.current = records[records.length - 1].paging_token ?? ''
+          cursorRef.current = records[records.length - 1]!.paging_token ?? ''
         }
         cacheRef.current[cacheKey] = items
         setTransactions((prev: TransactionHistoryItem[]) => (reset ? items : [...prev, ...items]))
@@ -116,7 +116,7 @@ export function useTransactionHistory(
     pageRef.current = page
   }, [page])
 
-  // Debounce on publicKey change
+  // Debounce re-fetch when publicKey or filter options change
   useEffect(() => {
     if (!publicKey) return
     if (debounceRef.current) clearTimeout(debounceRef.current)
@@ -124,10 +124,9 @@ export function useTransactionHistory(
       cursorRef.current = ''
       setPage(1)
       setTransactions([])
-      fetchTransactions(true)
+      fetchRef.current(true)
     }, 400)
-    // eslint-disable-next-line
-  }, [publicKey])
+  }, [publicKey, filterKey])
 
   // Fetch on page change
   useEffect(() => {

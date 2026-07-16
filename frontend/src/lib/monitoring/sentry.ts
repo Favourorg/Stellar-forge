@@ -30,9 +30,7 @@ const PRIVATE_KEY_PATTERN = /S[A-Z2-7]{55}/g
  * Scrub sensitive data (wallet addresses, private keys) from error context
  * before sending to Sentry to ensure privacy compliance
  */
-function scrubSensitiveData(
-  event: Sentry.ErrorEvent | Sentry.Transaction,
-): Sentry.ErrorEvent | Sentry.Transaction {
+function scrubSensitiveData(event: Sentry.ErrorEvent): Sentry.ErrorEvent {
   if (!event) return event
 
   // Scrub from message
@@ -44,7 +42,7 @@ function scrubSensitiveData(
 
   // Scrub from exception messages
   if (event.exception?.values) {
-    event.exception.values.forEach((exception) => {
+    event.exception.values.forEach((exception: { value?: string }) => {
       if (exception.value) {
         exception.value = exception.value
           .replace(STELLAR_ADDRESS_PATTERN, '[WALLET_ADDRESS]')
@@ -87,7 +85,7 @@ export interface ErrorContext {
  * Context for contract call errors
  */
 export interface ContractErrorContext extends ErrorContext {
-  network?: 'testnet' | 'mainnet'
+  network?: 'testnet' | 'mainnet' | 'standalone'
   contractId?: string
   functionName?: string
   params?: Record<string, unknown>

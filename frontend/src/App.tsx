@@ -5,6 +5,7 @@ import {
   SkeletonCard,
   SkeletonTokenCard,
   TokenDetailSkeleton,
+  OnboardingModal,
 } from './components/UI'
 import './App.css'
 import { useTranslation } from 'react-i18next'
@@ -28,6 +29,10 @@ import { TokenExplorer } from './components/TokenExplorer'
 import { AdminPanel } from './components/AdminPanel'
 import { MetadataForm } from './components/MetadataForm'
 import { NotFound } from './components/NotFound'
+import { TransactionHistory } from './components/TransactionHistory'
+import { AnalyticsOptOut } from './components/AnalyticsOptOut'
+import { NetworkMismatchBanner } from './components/NetworkBadge'
+import { FAQ } from './components/FAQ'
 
 const TokenDashboard = React.lazy(() =>
   import('./components/TokenDashboard').then((m) => ({ default: m.TokenDashboard })),
@@ -220,7 +225,9 @@ function AppContent() {
             <NavBar onHelpClick={() => setShowOnboarding(true)} isAdmin={isAdmin} />
           </div>
         </header>
-        {showOnboarding && null /* OnboardingModal placeholder */}
+        {showOnboarding && <OnboardingModal forceOpen onClose={() => setShowOnboarding(false)} />}
+
+        <NetworkMismatchBanner />
 
         {!isFactoryConfigured() && (
           <div
@@ -300,24 +307,21 @@ function AppContent() {
                   </ProtectedRoute>
                 }
               />
+              {/* Token detail is public so shared deep links work without a wallet (#880). */}
               <Route
                 path="/tokens/:address"
                 element={
-                  <ProtectedRoute>
-                    <RouteBoundary routeName="Token Detail" fallback={<TokenDetailSkeleton />}>
-                      <TokenDetail />
-                    </RouteBoundary>
-                  </ProtectedRoute>
+                  <RouteBoundary routeName="Token Detail" fallback={<TokenDetailSkeleton />}>
+                    <TokenDetail />
+                  </RouteBoundary>
                 }
               />
               <Route
                 path="/token/:address"
                 element={
-                  <ProtectedRoute>
-                    <RouteBoundary routeName="Token Detail" fallback={<TokenDetailSkeleton />}>
-                      <TokenDetail />
-                    </RouteBoundary>
-                  </ProtectedRoute>
+                  <RouteBoundary routeName="Token Detail" fallback={<TokenDetailSkeleton />}>
+                    <TokenDetail />
+                  </RouteBoundary>
                 }
               />
               <Route
@@ -325,6 +329,14 @@ function AppContent() {
                 element={
                   <RouteBoundary routeName="Explorer">
                     <TokenExplorer />
+                  </RouteBoundary>
+                }
+              />
+              <Route
+                path="/faq"
+                element={
+                  <RouteBoundary routeName="FAQ">
+                    <FAQ />
                   </RouteBoundary>
                 }
               />
@@ -373,10 +385,24 @@ function AppContent() {
                   </ProtectedRoute>
                 }
               />
+              <Route
+                path="/activity"
+                element={
+                  <ProtectedRoute>
+                    <RouteBoundary routeName="Activity">
+                      <TransactionHistory publicKey={wallet.address ?? ''} />
+                    </RouteBoundary>
+                  </ProtectedRoute>
+                }
+              />
               <Route path="*" element={<NotFound />} />
             </Routes>
           </div>
         </div>
+
+        <footer className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 mt-4 border-t border-gray-200 dark:border-slate-700 flex justify-center">
+          <AnalyticsOptOut />
+        </footer>
 
         <ToastContainer />
       </div>

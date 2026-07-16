@@ -58,7 +58,7 @@ describe('ErrorBoundary', () => {
     // can't silently "absorb" the throw by re-invoking with different state.
     const shouldThrow = { current: true }
 
-    function FlakyRoute(): JSX.Element {
+    function FlakyRoute(): React.ReactElement {
       if (shouldThrow.current) {
         throw new Error('boom-once')
       }

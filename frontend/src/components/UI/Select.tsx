@@ -8,8 +8,8 @@ interface SelectOption {
 interface SelectProps extends React.SelectHTMLAttributes<HTMLSelectElement> {
   label?: string
   options: SelectOption[]
-  error?: string
-  placeholder?: string
+  error?: string | undefined
+  placeholder?: string | undefined
 }
 
 export const Select: React.FC<SelectProps> = ({

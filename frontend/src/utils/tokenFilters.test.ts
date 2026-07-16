@@ -13,7 +13,7 @@ const mockTokens: TokenInfo[] = [
     totalSupply: '1000000000',
     creator: CREATOR_A,
     createdAt: 1000000,
-    metadataUri: null,
+    metadataUri: '',
   },
   {
     name: 'Beta Coin',
@@ -31,7 +31,7 @@ const mockTokens: TokenInfo[] = [
     totalSupply: '500000000',
     creator: CREATOR_A,
     createdAt: 3000000,
-    metadataUri: null,
+    metadataUri: '',
   },
   {
     name: 'Delta Finance',
@@ -51,19 +51,19 @@ describe('applyFilters', () => {
     it('filters by token name', () => {
       const result = applyFilters(mockTokens, 'Alpha', '', 'newest')
       expect(result).toHaveLength(1)
-      expect(result[0].name).toBe('Alpha Token')
+      expect(result[0]!.name).toBe('Alpha Token')
     })
 
     it('filters by token symbol', () => {
       const result = applyFilters(mockTokens, 'BETA', '', 'newest')
       expect(result).toHaveLength(1)
-      expect(result[0].symbol).toBe('BETA')
+      expect(result[0]!.symbol).toBe('BETA')
     })
 
     it('is case-insensitive', () => {
       const result = applyFilters(mockTokens, 'gamma', '', 'newest')
       expect(result).toHaveLength(1)
-      expect(result[0].name).toBe('Gamma Token')
+      expect(result[0]!.name).toBe('Gamma Token')
     })
 
     it('matches partial strings', () => {
@@ -143,13 +143,13 @@ describe('applyFilters', () => {
     it('keeps newest-first order by default', () => {
       const result = applyFilters(mockTokens, '', '', 'newest')
       // Array order is maintained (newest-first is assumed to be input order)
-      expect(result[0].name).toBe('Alpha Token')
+      expect(result[0]!.name).toBe('Alpha Token')
     })
 
     it('sorts by oldest-first when specified', () => {
       const result = applyFilters(mockTokens, '', '', 'oldest')
-      expect(result[0].name).toBe('Delta Finance')
-      expect(result[result.length - 1].name).toBe('Alpha Token')
+      expect(result[0]!.name).toBe('Delta Finance')
+      expect(result[result.length - 1]!.name).toBe('Alpha Token')
     })
 
     it('sorts alphabetically by name when specified', () => {
@@ -190,7 +190,7 @@ describe('applyFilters', () => {
     it('handles all filters combined with sorts', () => {
       const filtered = applyFilters(mockTokens, 'Coin', CREATOR_B, 'alphabetical')
       expect(filtered).toHaveLength(1)
-      expect(filtered[0].symbol).toBe('BETA')
+      expect(filtered[0]!.symbol).toBe('BETA')
     })
 
     it('handles whitespace as part of search pattern', () => {
@@ -203,7 +203,7 @@ describe('applyFilters', () => {
     it('finds tokens when search pattern matches', () => {
       const result = applyFilters(mockTokens, 'Alpha', '', 'newest')
       expect(result).toHaveLength(1)
-      expect(result[0].name).toBe('Alpha Token')
+      expect(result[0]!.name).toBe('Alpha Token')
     })
   })
 })

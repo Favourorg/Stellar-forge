@@ -103,6 +103,12 @@ pub struct TokenFactory;
 
 const MIN_TTL: u32 = 100_000;
 const MAX_TTL: u32 = 535_000;
+/// Maximum number of token indices returned in a single
+/// `get_tokens_by_creator` call. Capping this keeps the resulting Vec well
+/// below Stellar ledger entry size limits (~64KB) even if a prolific creator
+/// has registered many tokens, which is the problem this cap was added to
+/// address.
+const MAX_TOKENS_BY_CREATOR_PAGE: u32 = 50;
 
 #[contractimpl]
 impl TokenFactory {
@@ -893,12 +899,73 @@ impl TokenFactory {
             .ok_or(Error::TokenNotFound)
     }
 
-    pub fn get_tokens_by_creator(env: Env, creator: Address) -> Vec<u32> {
+    /// Return a paginated slice of token indices for `creator`.
+    ///
+    /// `offset` is the 0-based index of the first element to return, and
+    /// `limit` is the maximum number of elements to return. Both must be `u32`.
+    ///
+    /// The returned `Vec` size is bounded by `MAX_TOKENS_BY_CREATOR_PAGE` so
+    /// the function never produces a value large enough to exceed Stellar
+    /// ledger entry size limits, even on mainnet where prolific creators can
+    /// have hundreds of registered tokens. Callers that need to iterate
+    /// through more than one page should advance `offset` by the previous
+    /// page's length until the returned Vec is shorter than `limit`.
+    ///
+    /// Edge cases:
+    /// - `limit == 0` → empty `Vec` (requesting zero items is invalid but
+    ///   handled defensively rather than erroring, since this is a read-only
+    ///   view function).
+    /// - `limit > MAX_TOKENS_BY_CREATOR_PAGE` → `limit` is clamped down to
+    ///   the cap, defending the contract against callers requesting
+    ///   arbitrarily large pages.
+    /// - `offset >= total` → empty `Vec` (past-the-end iteration).
+    /// - `creator` has no stored entries → empty `Vec`.
+    pub fn get_tokens_by_creator(env: Env, creator: Address, offset: u32, limit: u32) -> Vec<u32> {
         let key = DataKey::CreatorTokens(creator);
-        env.storage()
+        let list: Vec<u32> = env
+            .storage()
             .instance()
             .get(&key)
-            .unwrap_or_else(|| vec![&env])
+            .unwrap_or_else(|| vec![&env]);
+
+        if limit == 0 {
+            return vec![&env];
+        }
+
+        // Clamp the requested page size to prevent pathologically large
+        // responses from causing ledger entry size errors.
+        let effective_limit = if limit > MAX_TOKENS_BY_CREATOR_PAGE {
+            MAX_TOKENS_BY_CREATOR_PAGE
+        } else {
+            limit
+        };
+
+        let total = list.len();
+        if offset >= total {
+            return vec![&env];
+        }
+
+        // Saturating arithmetic: `offset + effective_limit` could overflow
+        // when callers pass `offset = u32::MAX - small`; cap at `total`.
+        let end = core::cmp::min(offset.saturating_add(effective_limit), total);
+
+        let mut page: Vec<u32> = vec![&env];
+        let mut i: u32 = offset;
+        // `Vec::try_get` returns `Result<Option<u32>, ConversionError>`.
+        // Using `Vec::get` instead would panic on bounds and (via its
+        // internal unwrap) trigger the workspace's denied
+        // `clippy::expect_used` / `clippy::panic` lints. Treating any
+        // conversion error or missing entry as end-of-iteration matches the
+        // storage invariant: a creator's `Vec<u32>` has no holes.
+        while i < end {
+            if let Ok(Some(val)) = list.try_get(i) {
+                page.push_back(val);
+                i = i.saturating_add(1);
+            } else {
+                break;
+            }
+        }
+        page
     }
 }
 

@@ -83,7 +83,7 @@ export function useTokenDashboard(): UseTokenDashboardResult {
         const rows: TokenRow[] = results
           .map((r, i) => {
             if (r.status !== 'fulfilled') return null
-            const address = indexToAddress.get(indices[i]) ?? ''
+            const address = indexToAddress.get(indices[i]!) ?? ''
             if (!address) return null
             return { ...r.value, address } as TokenRow
           })

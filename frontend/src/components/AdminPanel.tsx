@@ -5,6 +5,7 @@ import { useStellarContext } from '../context/StellarContext'
 import { useToast } from '../context/ToastContext'
 import { useFactoryState } from '../hooks/useFactoryState'
 import { useTransaction } from '../hooks/useTransaction'
+import { useNetworkGuard } from '../hooks/useNetworkGuard'
 
 // Stroops → display XLM (7 decimals)
 function stroopsToDisplay(stroops: string): string {
@@ -26,6 +27,7 @@ export const AdminPanel: React.FC = () => {
   const { stellarService } = useStellarContext()
   const { addToast } = useToast()
   const { state, isLoading: stateLoading, refetch } = useFactoryState()
+  const { blocked: networkBlocked, reason: networkReason } = useNetworkGuard()
 
   const [baseFee, setBaseFee] = useState('')
   const [metadataFee, setMetadataFee] = useState('')
@@ -149,11 +151,17 @@ export const AdminPanel: React.FC = () => {
           type="submit"
           variant="primary"
           loading={isPending}
-          disabled={isPending}
+          disabled={isPending || networkBlocked}
           className="w-full"
         >
           {isPending ? 'Submitting…' : 'Submit Changes'}
         </Button>
+
+        {networkBlocked && networkReason && (
+          <p className="mt-2 text-sm text-red-600 dark:text-red-400" role="alert">
+            {networkReason}
+          </p>
+        )}
       </form>
 
       <ConfirmModal

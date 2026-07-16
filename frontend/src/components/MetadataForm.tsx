@@ -7,6 +7,7 @@ import { useToast } from '../context/ToastContext'
 import { useStellarContext } from '../context/StellarContext'
 import { useBalanceCheck } from '../hooks/useBalanceCheck'
 import { useNetwork } from '../context/NetworkContext'
+import { useNetworkGuard } from '../hooks/useNetworkGuard'
 import { useTos } from '../context/TosContext'
 import { isIpfsConfigured } from '../config/env'
 import { ExplorerLink } from './ExplorerLink'
@@ -26,6 +27,7 @@ export const MetadataForm: React.FC<MetadataFormProps> = ({ initialTokenAddress 
   const { ipfsService, stellarService } = useStellarContext()
   const { addToast } = useToast()
   const { network } = useNetwork()
+  const { blocked: networkBlocked, reason: networkReason } = useNetworkGuard()
   const { requireTos } = useTos()
   const { state: factoryState } = useFactoryState()
 
@@ -349,11 +351,17 @@ export const MetadataForm: React.FC<MetadataFormProps> = ({ initialTokenAddress 
 
         <Button
           type="submit"
-          disabled={!imageFile || !tokenAddress.trim() || !hasSufficientBalance}
+          disabled={!imageFile || !tokenAddress.trim() || !hasSufficientBalance || networkBlocked}
           className="w-full"
         >
           Set Metadata
         </Button>
+
+        {networkBlocked && networkReason && (
+          <p className="text-sm text-red-600 dark:text-red-400" role="alert">
+            {networkReason}
+          </p>
+        )}
       </form>
 
       <ConfirmModal

@@ -4,6 +4,7 @@ import { Input, Button, ConfirmModal, InsufficientBalanceWarning } from './UI'
 import { isValidIPFSUri } from '../utils/validation'
 import { useToast } from '../context/ToastContext'
 import { useBalanceCheck } from '../hooks/useBalanceCheck'
+import { useNetworkGuard } from '../hooks/useNetworkGuard'
 import { isIpfsConfigured } from '../config/env'
 
 const ESTIMATED_FEE = '0.01' // XLM
@@ -25,6 +26,7 @@ export const SetMetadataForm: React.FC<Props> = ({
   const [pending, setPending] = useState(false)
   const { addToast } = useToast()
   const ipfsReady = isIpfsConfigured()
+  const { blocked: networkBlocked, reason: networkReason } = useNetworkGuard()
   const { hasSufficientBalance, shortfall, isTestnet } = useBalanceCheck(ESTIMATED_FEE_XLM)
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -79,10 +81,18 @@ export const SetMetadataForm: React.FC<Props> = ({
           disabled={!ipfsReady}
         />
         <div title={!ipfsReady ? 'IPFS credentials are not configured' : undefined}>
-          <Button type="submit" disabled={loading || !ipfsReady || !hasSufficientBalance}>
+          <Button
+            type="submit"
+            disabled={loading || !ipfsReady || !hasSufficientBalance || networkBlocked}
+          >
             {loading ? 'Submitting...' : 'Set Metadata'}
           </Button>
         </div>
+        {networkBlocked && networkReason && (
+          <p className="text-sm text-red-600 dark:text-red-400" role="alert">
+            {networkReason}
+          </p>
+        )}
         {!hasSufficientBalance && (
           <InsufficientBalanceWarning shortfall={shortfall} isTestnet={isTestnet} />
         )}

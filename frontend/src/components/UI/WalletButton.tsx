@@ -1,7 +1,7 @@
 import React from 'react'
 import { useWallet } from '../../hooks/useWallet'
 import { useTos } from '../../context/TosContext'
-import { truncateAddress } from '../../utils/formatting'
+import { truncateAddress } from '../../utils/truncateAddress'
 import { Button } from './Button'
 import { Spinner } from './Spinner'
 

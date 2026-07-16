@@ -15,7 +15,7 @@ vi.mock('../context/ToastContext', () => ({
 }))
 
 vi.mock('../context/NetworkContext', () => ({
-  useNetwork: () => ({ network: 'testnet' }),
+  useNetwork: () => ({ network: 'testnet', mismatch: { isMismatch: false } }),
 }))
 
 vi.mock('../hooks/useFactoryState', () => ({

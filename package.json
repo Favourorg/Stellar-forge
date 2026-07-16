@@ -7,7 +7,7 @@
   "scripts": {
     "prepare": "husky",
     "release": "semantic-release",
-    "contract:compile": "cd contracts/token-factory && cargo build --target wasm32-unknown-unknown --release",
+    "contract:compile": "cd contracts/token-factory && cargo build --target wasm32v1-none --release",
     "frontend:dev": "cd frontend && npm run dev",
     "start": "npm run contract:compile && npm run frontend:dev",
     "dev:all": "concurrently -n contract,frontend -c cyan,green \"npm run contract:compile\" \"npm run frontend:dev\""

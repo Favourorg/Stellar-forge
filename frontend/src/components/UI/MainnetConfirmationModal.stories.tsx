@@ -7,6 +7,9 @@ const baseToken = {
   symbol: 'MTK',
   decimals: 7,
   initialSupply: '1000000',
+  salt: '0'.repeat(64),
+  tokenWasmHash: '0'.repeat(64),
+  feePayment: '0.5',
 }
 
 const meta: Meta<typeof MainnetConfirmationModal> = {

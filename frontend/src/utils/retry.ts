@@ -3,8 +3,8 @@
 export interface RetryOptions {
   maxAttempts?: number
   baseDelayMs?: number
-  shouldRetry?: (error: unknown) => boolean
-  onRetry?: (attempt: number, delayMs: number) => void
+  shouldRetry?: ((error: unknown) => boolean) | undefined
+  onRetry?: ((attempt: number, delayMs: number) => void) | undefined
 }
 
 const DEFAULT_MAX_ATTEMPTS = 3

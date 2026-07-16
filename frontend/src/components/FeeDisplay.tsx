@@ -1,27 +1,14 @@
-import React, { useEffect, useState } from 'react'
+import React from 'react'
 
-import { stellarService, type FactoryState } from '../services/stellar'
 import { stroopsToXLM, formatXLM } from '../utils/formatting'
 import { useXlmPrice } from '../hooks/useXlmPrice'
+import { useFactoryState } from '../hooks/useFactoryState'
 
 interface FeeDisplayProps {
   feeType: 'base' | 'metadata'
   className?: string
-}
-
-// Module-level cache — shared across all FeeDisplay instances
-let cachedFactoryState: FactoryState | null = null
-let pendingRequest: Promise<FactoryState> | null = null
-
-function getFactoryState(): Promise<FactoryState> {
-  if (cachedFactoryState) return Promise.resolve(cachedFactoryState)
-  if (pendingRequest) return pendingRequest
-  pendingRequest = stellarService.getFactoryState().then((state) => {
-    cachedFactoryState = state
-    pendingRequest = null
-    return state
-  })
-  return pendingRequest
+  /** When false, render only the amount (+USD) without the "Creation Fee:" prefix. */
+  showLabel?: boolean
 }
 
 const LABELS: Record<FeeDisplayProps['feeType'], string> = {
@@ -32,26 +19,13 @@ const LABELS: Record<FeeDisplayProps['feeType'], string> = {
 export const FeeDisplay: React.FC<FeeDisplayProps> = ({
   feeType,
   className = '',
+  showLabel = true,
 }: FeeDisplayProps) => {
-  const [xlm, setXlm] = useState<number | null>(null)
-  const [error, setError] = useState(false)
+  // Source fees from useFactoryState (env-resolved network) so the value matches
+  // the rest of the app. The module `stellarService` singleton is never synced
+  // to the active network, so reading fees from it would always return testnet.
+  const { state, error } = useFactoryState()
   const { price: xlmUsdPrice } = useXlmPrice()
-
-  useEffect(() => {
-    let cancelled = false
-    getFactoryState()
-      .then((state) => {
-        if (cancelled) return
-        const stroops = feeType === 'base' ? state.baseFee : state.metadataFee
-        setXlm(stroopsToXLM(stroops))
-      })
-      .catch(() => {
-        if (!cancelled) setError(true)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [feeType])
 
   const label = LABELS[feeType]
 
@@ -59,7 +33,7 @@ export const FeeDisplay: React.FC<FeeDisplayProps> = ({
     return <span className={`text-sm text-red-500 ${className}`}>{label}: unavailable</span>
   }
 
-  if (xlm === null) {
+  if (!state) {
     // Loading skeleton
     return (
       <span
@@ -70,11 +44,15 @@ export const FeeDisplay: React.FC<FeeDisplayProps> = ({
     )
   }
 
+  const stroops = feeType === 'base' ? state.baseFee : state.metadataFee
+  const xlm = stroopsToXLM(stroops)
   const usdAmount = xlmUsdPrice !== null ? (xlm * xlmUsdPrice).toFixed(2) : null
 
   return (
     <span className={`text-sm text-gray-700 ${className}`}>
-      {label}: {formatXLM(xlm)}
+      {showLabel && `${label}: `}
+      {/* formatXLM expects stroops, not the converted XLM value */}
+      {formatXLM(stroops)}
       {usdAmount !== null && <span className="text-gray-400 ml-1">≈ ${usdAmount} USD</span>}
     </span>
   )

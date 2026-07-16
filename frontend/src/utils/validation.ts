@@ -12,7 +12,7 @@ function base32Decode(input: string): Uint8Array {
   let next = 0
 
   for (let i = 0; i < length; i++) {
-    const val = ALPHABET.indexOf(upper[i])
+    const val = ALPHABET.indexOf(upper[i]!)
     if (val === -1) throw new Error('Invalid base32 character')
     buffer = (buffer << 5) | val
     bitsLeft += 5
@@ -27,7 +27,7 @@ function base32Decode(input: string): Uint8Array {
 function crc16(data: Uint8Array): number {
   let crc = 0x0000
   for (let i = 0; i < data.length; i++) {
-    const byte = data[i]
+    const byte = data[i]!
     let code = (crc >>> 8) & 0xff
     code ^= byte
     code ^= code >>> 4
@@ -49,7 +49,7 @@ export const isValidStellarAddress = (address: string): boolean => {
     const payload = decoded.slice(1, 33)
     const checksum = decoded.slice(33, 35)
     const calculatedCrc = crc16(new Uint8Array([versionByte, ...payload]))
-    const expectedCrc = checksum[0] | (checksum[1] << 8)
+    const expectedCrc = checksum[0]! | (checksum[1]! << 8)
     return calculatedCrc === expectedCrc
   } catch {
     return false
@@ -68,7 +68,7 @@ export const isValidContractAddress = (address: string): boolean => {
     const payload = decoded.slice(1, 33)
     const checksum = decoded.slice(33, 35)
     const calculatedCrc = crc16(new Uint8Array([versionByte, ...payload]))
-    const expectedCrc = checksum[0] | (checksum[1] << 8)
+    const expectedCrc = checksum[0]! | (checksum[1]! << 8)
     return calculatedCrc === expectedCrc
   } catch {
     return false

@@ -9,6 +9,7 @@ import { useTos } from '../context/TosContext'
 import { useStellarContext } from '../context/StellarContext'
 import { useToast } from '../context/ToastContext'
 import { useNetwork } from '../context/NetworkContext'
+import { useNetworkGuard } from '../hooks/useNetworkGuard'
 import { useBalanceCheck } from '../hooks/useBalanceCheck'
 import { useTokenDashboard } from '../hooks/useTokenDashboard'
 import { isValidContractAddress } from '../utils/validation'
@@ -38,6 +39,7 @@ export const BurnForm: React.FC<BurnFormProps> = ({
   const { network } = useNetwork()
   const { addToast } = useToast()
   const { requireTos } = useTos()
+  const { blocked: networkBlocked, reason: networkReason } = useNetworkGuard()
   const { hasSufficientBalance, shortfall, isTestnet } = useBalanceCheck(ESTIMATED_FEE_XLM)
   const { rows: myTokens } = useTokenDashboard()
   const mountedRef = useRef(true)
@@ -60,7 +62,7 @@ export const BurnForm: React.FC<BurnFormProps> = ({
     formState: { errors },
   } = useForm<BurnFormData>({
     defaultValues: {
-      tokenSelect: initialAddress || (myTokens.length > 0 ? myTokens[0].address : MANUAL_VALUE),
+      tokenSelect: initialAddress || (myTokens.length > 0 ? myTokens[0]!.address : MANUAL_VALUE),
       tokenManual: initialAddress,
       amount: '',
     },
@@ -256,11 +258,17 @@ export const BurnForm: React.FC<BurnFormProps> = ({
         <Button
           type="submit"
           loading={isSubmitting}
-          disabled={isSubmitting || amountExceedsBalance || !hasSufficientBalance}
+          disabled={isSubmitting || amountExceedsBalance || !hasSufficientBalance || networkBlocked}
           className="w-full sm:w-auto bg-red-600 hover:bg-red-700 focus:ring-red-500 text-white disabled:opacity-50"
         >
           {isSubmitting ? 'Processing…' : '🔥 Burn Tokens'}
         </Button>
+
+        {networkBlocked && networkReason && (
+          <p className="text-sm text-red-600 dark:text-red-400" role="alert">
+            {networkReason}
+          </p>
+        )}
 
         {!hasSufficientBalance && (
           <InsufficientBalanceWarning shortfall={shortfall} isTestnet={isTestnet} />

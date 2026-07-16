@@ -19,6 +19,10 @@ vi.mock('../hooks/useTransaction', () => ({
   useTransaction: vi.fn(),
 }))
 
+vi.mock('../context/NetworkContext', () => ({
+  useNetwork: () => ({ network: 'testnet', mismatch: { isMismatch: false } }),
+}))
+
 const mockAddToast = vi.fn()
 const mockUpdateFees = vi.fn()
 const mockExecute = vi.fn()
@@ -77,6 +81,7 @@ const renderWithProviders = async (
         },
         connect: vi.fn(),
         disconnect: vi.fn(),
+        refreshBalance: vi.fn(),
         isConnecting: false,
         error: null,
         isInstalled: true,
@@ -87,6 +92,7 @@ const renderWithProviders = async (
           stellarService: {
             updateFees: mockUpdateFees,
           } as unknown as StellarService,
+          ipfsService: {} as unknown as import('../services/ipfs').IPFSService,
         }}
       >
         <ToastContext.Provider

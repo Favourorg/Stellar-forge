@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { TokenMetadata } from './TokenMetadata'
-import { ipfsService } from '../services/ipfs'
+import { ipfsService, type TokenMetadata as TokenMetadataType } from '../services/ipfs'
 
 vi.mock('../services/ipfs', () => ({
   ipfsService: {
@@ -16,7 +16,7 @@ describe('TokenMetadata', () => {
     mockedGetMetadata.mockResolvedValueOnce({
       image: 'ipfs://QmTokenImage',
       description: 'Pinned token artwork',
-    })
+    } as unknown as TokenMetadataType)
 
     render(<TokenMetadata metadataUri="ipfs://QmMetadata" name="Forge Token" symbol="FORGE" />)
 
@@ -31,7 +31,7 @@ describe('TokenMetadata', () => {
   it('shows the placeholder when metadata has no image', async () => {
     mockedGetMetadata.mockResolvedValueOnce({
       description: 'No artwork was pinned',
-    })
+    } as unknown as TokenMetadataType)
 
     render(<TokenMetadata metadataUri="ipfs://QmMetadata" name="Forge Token" symbol="FORGE" />)
 
@@ -44,7 +44,7 @@ describe('TokenMetadata', () => {
   it('falls back to the placeholder when the image fails to load', async () => {
     mockedGetMetadata.mockResolvedValueOnce({
       image: 'ipfs://QmBrokenImage',
-    })
+    } as unknown as TokenMetadataType)
 
     render(<TokenMetadata metadataUri="ipfs://QmMetadata" name="Forge Token" symbol="FORGE" />)
 

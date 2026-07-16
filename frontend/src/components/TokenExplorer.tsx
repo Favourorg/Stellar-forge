@@ -54,7 +54,7 @@ export const TokenExplorer: React.FC = () => {
         let metadata: IPFSMetadata | null = null
         if (info.metadataUri) {
           try {
-            metadata = await ipfsService.getMetadata(info.metadataUri)
+            metadata = (await ipfsService.getMetadata(info.metadataUri)) as IPFSMetadata
           } catch {
             // Metadata fetch failure is non-fatal
           }

@@ -10,13 +10,15 @@ import { useNetwork } from '../context/NetworkContext'
 import { useBalanceCheck } from '../hooks/useBalanceCheck'
 import { useTokenDashboard } from '../hooks/useTokenDashboard'
 import { isValidStellarAddress, isValidContractAddress } from '../utils/validation'
-import { stellarExplorerUrl } from '../utils/formatting'
+import { stellarExplorerUrl, stroopsToXLM, formatXLM } from '../utils/formatting'
 import { useDebounce } from '../hooks/useDebounce'
+import { useFactoryState } from '../hooks/useFactoryState'
+import { useNetworkGuard } from '../hooks/useNetworkGuard'
+import { FeeDisplay } from './FeeDisplay'
 import { useState } from 'react'
 
+// Fallback fee used only until the on-chain factory state loads.
 const BASE_FEE_STROOPS = '100000'
-const ESTIMATED_FEE_DISPLAY = '0.01 XLM'
-const ESTIMATED_FEE_XLM = 0.01
 const MANUAL_VALUE = '__manual__'
 
 interface MintFormData {
@@ -40,7 +42,12 @@ export const MintForm: React.FC<MintFormProps> = ({
   const { network } = useNetwork()
   const { addToast } = useToast()
   const { requireTos } = useTos()
-  const { hasSufficientBalance, shortfall, isTestnet } = useBalanceCheck(ESTIMATED_FEE_XLM)
+  const { state: factoryState } = useFactoryState()
+  const { blocked: networkBlocked, reason: networkReason } = useNetworkGuard()
+  // Pay the real on-chain base_fee; the contract rejects mint if fee_payment < base_fee.
+  const feePaymentStroops = factoryState?.baseFee ?? BASE_FEE_STROOPS
+  const feeXlm = stroopsToXLM(feePaymentStroops)
+  const { hasSufficientBalance, shortfall, isTestnet } = useBalanceCheck(feeXlm)
   const { rows: myTokens } = useTokenDashboard()
 
   const [pending, setPending] = useState(false)
@@ -64,7 +71,7 @@ export const MintForm: React.FC<MintFormProps> = ({
     formState: { errors },
   } = useForm<MintFormData>({
     defaultValues: {
-      tokenSelect: initialAddress || (myTokens.length > 0 ? myTokens[0].address : MANUAL_VALUE),
+      tokenSelect: initialAddress || (myTokens.length > 0 ? myTokens[0]!.address : MANUAL_VALUE),
       tokenManual: initialAddress,
       recipient: '',
       amount: '',
@@ -120,9 +127,9 @@ export const MintForm: React.FC<MintFormProps> = ({
         tokenAddress: resolvedTokenAddress,
         to: recipient.trim(),
         amount,
-        feePayment: BASE_FEE_STROOPS,
+        feePayment: feePaymentStroops,
       }),
-    [stellarService, resolvedTokenAddress, recipient, amount],
+    [stellarService, resolvedTokenAddress, recipient, amount, feePaymentStroops],
   )
 
   const { execute: executeMint, status: txStatus } = useTransaction(mintBuilder)
@@ -260,18 +267,24 @@ export const MintForm: React.FC<MintFormProps> = ({
 
         {/* Fee display */}
         <p className="text-xs text-gray-500 dark:text-gray-400">
-          Estimated fee: <span className="font-medium">{ESTIMATED_FEE_DISPLAY}</span>
+          Estimated fee: <FeeDisplay feeType="base" showLabel={false} className="text-xs" />
         </p>
 
         <Button
           type="submit"
           variant="primary"
           loading={isSubmitting}
-          disabled={isSubmitting || !hasSufficientBalance}
+          disabled={isSubmitting || !hasSufficientBalance || networkBlocked}
           className="w-full sm:w-auto"
         >
           {isSubmitting ? 'Processing Transaction…' : 'Mint Tokens'}
         </Button>
+
+        {networkBlocked && networkReason && (
+          <p className="text-sm text-red-600 dark:text-red-400" role="alert">
+            {networkReason}
+          </p>
+        )}
 
         {!hasSufficientBalance && (
           <InsufficientBalanceWarning shortfall={shortfall} isTestnet={isTestnet} />
@@ -309,7 +322,7 @@ export const MintForm: React.FC<MintFormProps> = ({
           },
           { label: 'Recipient', value: recipient },
           { label: 'Amount', value: amount },
-          { label: 'Estimated Fee', value: ESTIMATED_FEE_DISPLAY },
+          { label: 'Estimated Fee', value: formatXLM(feePaymentStroops) },
         ]}
         onConfirm={handleConfirm}
         onCancel={() => setPending(false)}

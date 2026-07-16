@@ -23,7 +23,9 @@ import {
   xdr,
   FeeBumpTransaction,
   Transaction,
+  StrKey,
 } from 'stellar-sdk'
+import type { Network } from '../config/stellar'
 import { withRetry, HttpError } from '../utils/retry'
 import { parseContractError } from '../utils/contractErrors'
 
@@ -50,15 +52,17 @@ function toAppError(err: unknown): AppError {
 
 // ── Network helpers ───────────────────────────────────────────────────────────
 
-function getNetworkConfig(network: 'testnet' | 'mainnet') {
+function getNetworkConfig(network: Network) {
   return NETWORK_CONFIGS[network]
 }
 
-function getNetworkPassphrase(network: 'testnet' | 'mainnet'): string {
-  return network === 'mainnet' ? Networks.PUBLIC : Networks.TESTNET
+function getNetworkPassphrase(network: Network): string {
+  if (network === 'mainnet') return Networks.PUBLIC
+  if (network === 'testnet') return Networks.TESTNET
+  return NETWORK_CONFIGS[network].networkPassphrase
 }
 
-function getRpcServer(network: 'testnet' | 'mainnet'): rpc.Server {
+function getRpcServer(network: Network): rpc.Server {
   return new rpc.Server(getNetworkConfig(network).sorobanRpcUrl, { allowHttp: false })
 }
 
@@ -71,7 +75,7 @@ function getRpcServer(network: 'testnet' | 'mainnet'): rpc.Server {
 async function simulateAndSubmit(
   server: rpc.Server,
   tx: ReturnType<TransactionBuilder['build']>,
-  network: 'testnet' | 'mainnet',
+  network: Network,
 ): Promise<string> {
   const simResult = await server.simulateTransaction(tx)
 
@@ -102,8 +106,9 @@ async function simulateAndSubmit(
 async function pollTransaction(
   server: rpc.Server,
   hash: string,
-  maxAttempts = 30,
-  intervalMs = 2000,
+  maxAttempts = 20,
+  initialDelayMs = 500,
+  maxDelayMs = 4_000,
 ): Promise<rpc.Api.GetTransactionResponse> {
   for (let i = 0; i < maxAttempts; i++) {
     const result = (await withRetry(() =>
@@ -113,7 +118,11 @@ async function pollTransaction(
     if (result.status === rpc.Api.GetTransactionStatus.FAILED) {
       throw parseContractError(new Error(`Transaction failed: ${hash}`))
     }
-    await new Promise((r) => setTimeout(r, intervalMs))
+    // Exponential backoff capped at maxDelayMs, with ±10% jitter to avoid
+    // thundering-herd bursts when many transactions confirm around the same time.
+    const base = Math.min(initialDelayMs * Math.pow(2, i), maxDelayMs)
+    const jitter = Math.floor(Math.random() * 0.2 * base) - Math.floor(0.1 * base)
+    await new Promise((r) => setTimeout(r, base + jitter))
   }
   throw new Error(`Transaction ${hash} timed out after ${maxAttempts} attempts`)
 }
@@ -127,7 +136,7 @@ async function pollTransaction(
 export async function buildFeeBumpTransaction(
   innerTxXdr: string,
   feeSource: string,
-  network: 'testnet' | 'mainnet',
+  network: Network,
   baseFee: string = String(Number(BASE_FEE) * 10),
 ): Promise<string> {
   const networkPassphrase = getNetworkPassphrase(network)
@@ -146,7 +155,7 @@ export async function buildFeeBumpTransaction(
  */
 export async function submitFeeBumpTransaction(
   signedFeeBumpXdr: string,
-  network: 'testnet' | 'mainnet',
+  network: Network,
 ): Promise<string> {
   const server = getRpcServer(network)
   const feeBumpTx = TransactionBuilder.fromXDR(
@@ -169,7 +178,7 @@ export async function submitFeeBumpTransaction(
 async function buildTxBuilder(
   server: rpc.Server,
   sourceAddress: string,
-  network: 'testnet' | 'mainnet',
+  network: Network,
 ): Promise<TransactionBuilder> {
   const account = await server.getAccount(sourceAddress)
   return new TransactionBuilder(account, {
@@ -189,7 +198,7 @@ async function callView(
   method: string,
   args: xdr.ScVal[],
   sourceAddress: string,
-  network: 'testnet' | 'mainnet',
+  network: Network,
 ): Promise<xdr.ScVal> {
   const contract = new Contract(contractId)
   const account = await server.getAccount(sourceAddress)
@@ -233,13 +242,14 @@ interface RpcGetEventsResult {
 
 // ── XDR decode helper ─────────────────────────────────────────────────────────
 
-function scValToString(val: xdr.ScVal): string {
+function scValToString(val: xdr.ScVal | undefined): string {
+  if (!val) return ''
   try {
     const type = val.switch()
     if (type === xdr.ScValType.scvAddress()) {
       const addr = val.address()
       if (addr.switch() === xdr.ScAddressType.scAddressTypeAccount()) {
-        return addr.accountId().publicKey().toString()
+        return StrKey.encodeEd25519PublicKey(addr.accountId().ed25519())
       }
       return Array.from(addr.contractId() as Uint8Array)
         .map((b) => b.toString(16).padStart(2, '0'))
@@ -281,7 +291,7 @@ const EVENT_TOPICS: ContractEventType[] = [
 async function parseRpcEvent(raw: RpcEventResponse): Promise<ContractEvent | null> {
   try {
     if (!raw.topic?.length || raw.topic.length < 2) return null
-    const topicVal = xdr.ScVal.fromXDR(raw.topic[1], 'base64') // second topic is the action
+    const topicVal = xdr.ScVal.fromXDR(raw.topic[1]!, 'base64') // second topic is the action
     const eventType = scValToString(topicVal) as ContractEventType
     if (!EVENT_TOPICS.includes(eventType)) return null
 
@@ -343,11 +353,7 @@ async function parseRpcEvent(raw: RpcEventResponse): Promise<ContractEvent | nul
 
 // ── JSON-RPC helper ───────────────────────────────────────────────────────────
 
-async function rpcCall<T>(
-  method: string,
-  params: unknown,
-  network: 'testnet' | 'mainnet',
-): Promise<T> {
+async function rpcCall<T>(method: string, params: unknown, network: Network): Promise<T> {
   return withRetry(async () => {
     const res = await fetch(getNetworkConfig(network).sorobanRpcUrl, {
       method: 'POST',
@@ -375,13 +381,13 @@ async function rpcCall<T>(
 // ── StellarService ────────────────────────────────────────────────────────────
 
 export class StellarService {
-  private network: 'testnet' | 'mainnet'
+  private network: Network
 
-  constructor(network: 'testnet' | 'mainnet' = 'testnet') {
+  constructor(network: Network = 'testnet') {
     this.network = network
   }
 
-  setNetwork(network: 'testnet' | 'mainnet') {
+  setNetwork(network: Network) {
     this.network = network
   }
 
@@ -812,24 +818,61 @@ export class StellarService {
   // ── getTokensByCreator ───────────────────────────────────────────────────────
 
   /**
-   * Fetch all tokens created by a given address by reading factory events.
+   * Fetch a paginated slice of tokens created by `creator`.
+   *
+   * This calls the contract's `get_tokens_by_creator` view function with the
+   * supplied `offset` and `limit`, then resolves each returned index to a
+   * full `TokenInfo` via `get_token_info`. Failed index lookups are skipped
+   * (the page may end up smaller than `limit` when one token's metadata is
+   * temporarily unavailable).
+   *
+   * The contract caps the `limit` it will service per call to keep responses
+   * below Stellar ledger entry size limits, so callers should treat responses
+   * shorter than `limit` as "end of available data" and stop iterating.
    */
-  async getTokensByCreator(creator: string): Promise<TokenInfo[]> {
+  async getTokensByCreator(creator: string, offset: number, limit: number): Promise<TokenInfo[]> {
     const contractId = STELLAR_CONFIG.factoryContractId
     if (!contractId) throw new Error('Factory contract ID is not configured')
 
-    const { events } = await this.getContractEvents(contractId, 100)
-    const addresses = events
-      .filter((e) => e.type === 'created' && e.data.creator === creator)
-      .map((e) => e.data.tokenAddress)
-      .filter((addr): addr is string => !!addr)
+    const sourceAddress = walletService.getConnectedAddress()
+    if (!sourceAddress) throw new Error('Wallet not connected')
 
-    const results = await Promise.allSettled(
-      addresses.map((addr) => this.getTokenInfoByAddress(addr)),
-    )
-    return results
-      .filter((r): r is PromiseFulfilledResult<TokenInfo> => r.status === 'fulfilled')
-      .map((r) => r.value)
+    try {
+      const server = getRpcServer(this.network)
+      const indicesRetval = await callView(
+        server,
+        contractId,
+        'get_tokens_by_creator',
+        [
+          new Address(creator).toScVal(),
+          nativeToScVal(offset, { type: 'u32' }),
+          nativeToScVal(limit, { type: 'u32' }),
+        ],
+        sourceAddress,
+        this.network,
+      )
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const native = scValToNative(indicesRetval) as any
+      const indices: number[] = Array.isArray(native) ? native.map((v: unknown) => Number(v)) : []
+
+      if (indices.length === 0) return []
+
+      const results = await Promise.allSettled(indices.map((i) => this.getTokenInfo(i)))
+      return results
+        .filter((r): r is PromiseFulfilledResult<TokenInfo> => r.status === 'fulfilled')
+        .map((r) => r.value)
+    } catch (err) {
+      const appErr = toAppError(err)
+      const factoryContractId = STELLAR_CONFIG.factoryContractId ?? 'unknown'
+      captureContractError(err instanceof Error ? err : new Error(String(err)), {
+        network: this.network,
+        contractId: factoryContractId,
+        functionName: 'getTokensByCreator',
+        params: { creator, offset, limit },
+      })
+      throw new Error(appErr.message)
+    }
   }
 
   // ── getTokenInfoByAddress ────────────────────────────────────────────────────
@@ -857,7 +900,7 @@ export class StellarService {
       decimals: 7,
       creator: createdEvent?.data.creator ?? '',
       createdAt: createdEvent?.timestamp ?? 0,
-      metadataUri: metaEvent?.data.metadataUri,
+      metadataUri: metaEvent?.data.metadataUri ?? '',
     }
   }
 

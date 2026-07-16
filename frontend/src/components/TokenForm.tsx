@@ -5,10 +5,10 @@ import { Button } from './UI/Button'
 import { useToast } from '../context/ToastContext'
 import { useWalletContext } from '../context/WalletContext'
 import { useNetwork } from '../context/NetworkContext'
+import { useNetworkGuard } from '../hooks/useNetworkGuard'
 import { validateTokenParams } from '../utils/validation'
-import { formatXLM, stroopsToXLM } from '../utils/formatting'
-import { useFactoryState } from '../hooks/useFactoryState'
 import { logger } from '../utils/logger'
+import { FeeDisplay } from './FeeDisplay'
 
 interface TokenFormProps {
   onSubmit: (params: {
@@ -18,8 +18,6 @@ interface TokenFormProps {
     initialSupply: string
   }) => Promise<void>
   isLoading?: boolean
-  /** Override the fee shown in the preview (stroops). Falls back to on-chain base_fee. */
-  estimatedFee?: string
 }
 
 interface FormErrors {
@@ -29,23 +27,12 @@ interface FormErrors {
   initialSupply?: string
 }
 
-export const TokenForm: React.FC<TokenFormProps> = ({
-  onSubmit,
-  isLoading = false,
-  estimatedFee,
-}) => {
+export const TokenForm: React.FC<TokenFormProps> = ({ onSubmit, isLoading = false }) => {
   const { t } = useTranslation()
   const { addToast } = useToast()
   const { wallet } = useWalletContext()
   const { network } = useNetwork()
-  const { state: factoryState } = useFactoryState()
-
-  // Resolve fee: prop override → on-chain base_fee → fallback 0
-  const feeXLM = estimatedFee
-    ? stroopsToXLM(estimatedFee)
-    : factoryState?.baseFee
-      ? stroopsToXLM(factoryState.baseFee)
-      : 0
+  const { blocked: networkBlocked, reason: networkReason } = useNetworkGuard()
 
   const [formData, setFormData] = useState({
     name: '',
@@ -206,9 +193,11 @@ export const TokenForm: React.FC<TokenFormProps> = ({
               {t('tokenForm.feeDescription')}
             </p>
           </div>
-          <p className="text-lg font-semibold text-blue-900 dark:text-blue-300">
-            {formatXLM(feeXLM)}
-          </p>
+          <FeeDisplay
+            feeType="base"
+            showLabel={false}
+            className="text-lg font-semibold text-blue-900 dark:text-blue-300"
+          />
         </div>
       </div>
 
@@ -220,9 +209,19 @@ export const TokenForm: React.FC<TokenFormProps> = ({
       </div>
 
       {/* Submit Button */}
-      <Button type="submit" disabled={!isFormValid() || isLoading} className="w-full">
+      <Button
+        type="submit"
+        disabled={!isFormValid() || isLoading || networkBlocked}
+        className="w-full"
+      >
         {isLoading ? t('tokenForm.deploying') : t('tokenForm.deploy')}
       </Button>
+
+      {networkBlocked && networkReason && (
+        <p className="text-sm text-red-600 dark:text-red-400 text-center" role="alert">
+          {networkReason}
+        </p>
+      )}
 
       {!wallet.isConnected && (
         <p className="text-sm text-amber-600 dark:text-amber-400 text-center">

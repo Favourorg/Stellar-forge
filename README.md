@@ -1,6 +1,6 @@
 # StellarForge - Stellar Token Deployer
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/Ejirowebfi/Stellar-forge&root=frontend&env=VITE_FACTORY_CONTRACT_ID,VITE_TOKEN_WASM_HASH,VITE_IPFS_API_KEY,VITE_IPFS_API_SECRET&envDescription=Required%20environment%20variables%20for%20StellarForge&envLink=https://github.com/Ejirowebfi/Stellar-forge/blob/main/docs/deployment-vercel.md)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/Favourorg/Stellar-forge&root=frontend&env=VITE_FACTORY_CONTRACT_ID,VITE_TOKEN_WASM_HASH,VITE_IPFS_API_KEY,VITE_IPFS_API_SECRET&envDescription=Required%20environment%20variables%20for%20StellarForge&envLink=https://github.com/Favourorg/Stellar-forge/blob/main/docs/deployment-vercel.md)
 
 StellarForge is a user-friendly decentralized application (dApp) that enables creators, entrepreneurs, and businesses in emerging markets to deploy custom tokens on the Stellar blockchain without writing a single line of code.
 
@@ -175,7 +175,7 @@ npm run lint         # Lint code
 - `get_base_fee()`: Get token creation fee
 - `get_metadata_fee()`: Get metadata setting fee
 - `get_token_info(index)`: Get token information by index
-- `get_tokens_by_creator(creator)`: Get all token indices created by a given address
+- `get_tokens_by_creator(creator, offset, limit)`: Get a paginated slice of token indices created by a given address. The contract caps `limit` at `MAX_TOKENS_BY_CREATOR_PAGE` (currently 50) per call, so list iteration should advance `offset` by the previous page's length until a short page is returned. See [`docs/contract-abi.md`](./docs/contract-abi.md).
 
 ## Usage
 
@@ -676,7 +676,7 @@ StellarForge consists of three main components that work together:
 If you're still experiencing issues:
 
 1. **Check the logs**: Open browser DevTools (F12) and check the Console tab
-2. **Search existing issues**: [GitHub Issues](https://github.com/Ejirowebfi/Stellar-forge/issues)
+2. **Search existing issues**: [GitHub Issues](https://github.com/Favourorg/Stellar-forge/issues)
 3. **Ask for help**: Create a new issue with:
    - Description of the problem
    - Steps to reproduce
