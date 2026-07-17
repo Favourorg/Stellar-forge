@@ -110,6 +110,44 @@ describe('useTokens', () => {
     expect(stellarService.getTokenInfoByAddress).toHaveBeenCalledTimes(2)
   })
 
+  // Regression test: a single fixed-size getContractEvents() call silently
+  // drops any `created` events beyond the page limit. This asserts the "all
+  // tokens" path pages through the full event history via the returned
+  // cursor instead, so every token is still found once the factory has
+  // emitted more than one page's worth of events.
+  it('pages through the full event history when there are more than one page of created events', async () => {
+    const makeEvent = (i: number) => ({
+      id: String(i),
+      type: 'created' as const,
+      ledger: i,
+      timestamp: i,
+      txHash: `tx${i}`,
+      data: { tokenAddress: `CADDR${i}` },
+    })
+    const page1 = Array.from({ length: 100 }, (_, i) => makeEvent(i))
+    const page2 = Array.from({ length: 20 }, (_, i) => makeEvent(100 + i))
+
+    vi.mocked(stellarService.getContractEvents)
+      .mockResolvedValueOnce({ events: page1, cursor: 'cursor-1' })
+      .mockResolvedValueOnce({ events: page2, cursor: 'cursor-2' })
+    vi.mocked(stellarService.getTokenInfoByAddress).mockImplementation((addr: string) =>
+      Promise.resolve({ ...TOKEN_A, name: addr }),
+    )
+
+    const { result } = renderHook(() => useTokens())
+
+    await waitFor(() => expect(result.current.totalCount).toBe(120))
+    expect(stellarService.getContractEvents).toHaveBeenCalledTimes(2)
+    expect(stellarService.getContractEvents).toHaveBeenNthCalledWith(1, 'CFACTORY123', 100, undefined)
+    expect(stellarService.getContractEvents).toHaveBeenNthCalledWith(
+      2,
+      'CFACTORY123',
+      100,
+      'cursor-1',
+    )
+    expect(stellarService.getTokenInfoByAddress).toHaveBeenCalledTimes(120)
+  })
+
   it('populates error on RPC failure', async () => {
     vi.mocked(stellarService.getTokensByCreator).mockRejectedValue(new Error('RPC down'))
 

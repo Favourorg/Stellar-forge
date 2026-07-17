@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { stellarService } from '../services/stellar'
 import { STELLAR_CONFIG } from '../config/stellar'
+import { fetchAllContractEvents } from '../utils/fetchAllContractEvents'
 import type { TokenInfo } from '../types'
 
 // ── Module-level cache keyed by creator address ('' = all tokens) ─────────────
@@ -172,12 +173,18 @@ export function useTokens(creator?: string): UseTokensResult {
 }
 
 // ── Fallback "all tokens" fetcher (kept from the original hook) ──────────────
+//
+// There's no `get_all_tokens` contract view (only the per-creator, paginated
+// `get_tokens_by_creator`), so the global explorer has to derive the token
+// list from factory `created` events instead. See fetchAllContractEvents for
+// why a single fixed-size getContractEvents() call is not safe here — it
+// silently drops the newest tokens once event history exceeds one page.
 
 async function fetchAllTokens(): Promise<TokenInfo[]> {
   const contractId = STELLAR_CONFIG.factoryContractId
   if (!contractId) throw new Error('VITE_FACTORY_CONTRACT_ID is not configured')
 
-  const { events } = await stellarService.getContractEvents(contractId, 100)
+  const events = await fetchAllContractEvents(stellarService, contractId)
   const addresses = [
     ...new Set(
       events

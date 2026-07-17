@@ -12,6 +12,7 @@ import { Card, Button, Input, Spinner } from './UI'
 import { CopyButton } from './CopyButton'
 import { PaginationControls } from './UI/PaginationControls'
 import { useDebounce } from '../hooks/useDebounce'
+import { fetchAllContractEvents } from '../utils/fetchAllContractEvents'
 
 interface TokenWithMetadata extends TokenInfo {
   address: string
@@ -80,10 +81,12 @@ export const TokenExplorer: React.FC = () => {
     const startIndex = (currentPage - 1) * tokensPerPage
     const endIndex = Math.min(startIndex + tokensPerPage, totalTokens)
 
-    // Get all token_created events to map indices to addresses
-    stellarService
-      .getContractEvents(STELLAR_CONFIG.factoryContractId || '', 1000)
-      .then(({ events }) => {
+    // Get all token_created events to map indices to addresses. Paginated
+    // via fetchAllContractEvents rather than a single capped
+    // getContractEvents() call — see that helper for why a fixed limit
+    // would silently drop the newest tokens once history exceeds one page.
+    fetchAllContractEvents(stellarService, STELLAR_CONFIG.factoryContractId || '')
+      .then((events) => {
         const tokenCreatedEvents = events
           .filter((e) => e.type === 'created')
           .sort((a, b) => a.ledger - b.ledger) // Sort by creation order
@@ -137,9 +140,9 @@ export const TokenExplorer: React.FC = () => {
         }
 
         // Get token address from events
-        const { events } = await stellarService.getContractEvents(
+        const events = await fetchAllContractEvents(
+          stellarService,
           STELLAR_CONFIG.factoryContractId || '',
-          1000,
         )
         const tokenCreatedEvents = events
           .filter((e) => e.type === 'created')
