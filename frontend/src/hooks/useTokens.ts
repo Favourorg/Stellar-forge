@@ -6,8 +6,17 @@ import type { TokenInfo } from '../types'
 // ── Module-level cache keyed by creator address ('' = all tokens) ─────────────
 // Shared across all hook instances — any component mounting within the TTL
 // window reuses the same result without an extra network round-trip.
+//
+// LRU eviction: JavaScript's Map preserves insertion order, so we implement
+// LRU by deleting and re-inserting a key on every read or write (moving it
+// to the "most-recently-used" tail). When the map exceeds CACHE_MAX_SIZE the
+// first (oldest / least-recently-used) entry is evicted. This caps memory
+// use regardless of how many distinct creator addresses are queried in a
+// long-lived session (e.g. the Token Explorer browsing hundreds of creators).
 
 const CACHE_TTL_MS = 30_000
+/** Maximum number of creator-keyed entries kept in memory at one time. */
+export const CACHE_MAX_SIZE = 50
 
 interface CacheEntry {
   tokens: TokenInfo[]
@@ -15,6 +24,36 @@ interface CacheEntry {
 }
 
 const cache = new Map<string, CacheEntry>()
+
+/**
+ * Read an entry and promote it to most-recently-used.
+ * Returns undefined on a cache miss.
+ */
+function cacheGet(key: string): CacheEntry | undefined {
+  const entry = cache.get(key)
+  if (entry === undefined) return undefined
+  // Re-insert to move to tail (most-recently-used position).
+  cache.delete(key)
+  cache.set(key, entry)
+  return entry
+}
+
+/**
+ * Write an entry, promote it to MRU, and evict the LRU entry when the cap
+ * is exceeded.
+ */
+function cacheSet(key: string, entry: CacheEntry): void {
+  // Delete first so a re-write moves the key to the tail.
+  cache.delete(key)
+  cache.set(key, entry)
+  if (cache.size > CACHE_MAX_SIZE) {
+    // The first key in iteration order is the least-recently-used one.
+    const lruKey = cache.keys().next().value
+    if (lruKey !== undefined) {
+      cache.delete(lruKey)
+    }
+  }
+}
 
 /** Exposed for testing only */
 export function _clearCache() {
@@ -83,7 +122,7 @@ export interface UseTokensResult {
 export function useTokens(creator?: string): UseTokensResult {
   const cacheKey = creator ?? ''
 
-  const [tokens, setTokens] = useState<TokenInfo[]>(() => cache.get(cacheKey)?.tokens ?? [])
+  const [tokens, setTokens] = useState<TokenInfo[]>(() => cacheGet(cacheKey)?.tokens ?? [])
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<Error | null>(null)
   const [page, setPageRaw] = useState(1)
@@ -95,7 +134,7 @@ export function useTokens(creator?: string): UseTokensResult {
   const load = useCallback(
     async (bypassCache: boolean) => {
       const now = Date.now()
-      const hit = cache.get(cacheKey)
+      const hit = cacheGet(cacheKey)
 
       if (!bypassCache && hit && now - hit.fetchedAt < CACHE_TTL_MS) {
         setTokens(hit.tokens)
@@ -115,7 +154,7 @@ export function useTokens(creator?: string): UseTokensResult {
         } else {
           result = await fetchAllTokens()
         }
-        cache.set(cacheKey, { tokens: result, fetchedAt: Date.now() })
+        cacheSet(cacheKey, { tokens: result, fetchedAt: Date.now() })
         setTokens(result)
         // Reset to first page whenever data is refreshed
         setPageRaw(1)
