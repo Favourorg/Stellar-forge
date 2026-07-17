@@ -41,6 +41,19 @@ export function parseContractError(err: unknown): Error {
     return new Error('Insufficient funds. Your XLM balance is too low to cover this transaction.')
   }
 
+  // Rate limiting / 429
+  if (
+    msg.toLowerCase().includes('rate limit') ||
+    msg.toLowerCase().includes('too many requests') ||
+    msg.toLowerCase().includes('http error 429') ||
+    msg.toLowerCase().includes('status 429')
+  ) {
+    return new Error(
+      'The server is currently rate-limiting requests. Please wait a moment and try again. ' +
+        'If this persists, consider using a dedicated RPC provider.',
+    )
+  }
+
   // Network / RPC timeout
   if (
     msg.toLowerCase().includes('timeout') ||

@@ -27,12 +27,13 @@ describe('unhandledRejections', () => {
   })
 
   function fireRejection(reason: unknown) {
-    const event = new PromiseRejectionEvent('unhandledrejection', {
-      promise: Promise.resolve(),
-      reason,
+    const event = new Event('unhandledrejection', {
       cancelable: true,
       bubbles: false,
     })
+    // jsdom does not define PromiseRejectionEvent, so we set the properties directly
+    ;(event as unknown as { promise: Promise<unknown> }).promise = Promise.resolve()
+    ;(event as unknown as { reason: unknown }).reason = reason
     window.dispatchEvent(event)
   }
 

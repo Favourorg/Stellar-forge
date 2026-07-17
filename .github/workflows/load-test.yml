@@ -1,0 +1,79 @@
+name: Load Test — Soroban RPC Rate Limits
+
+on:
+  workflow_dispatch:
+    inputs:
+      concurrent_sessions:
+        description: Number of concurrent browser sessions to simulate
+        required: false
+        default: '5'
+      operations_per_session:
+        description: Number of operations per session
+        required: false
+        default: '10'
+      network:
+        description: 'Target network (testnet or mainnet)'
+        required: false
+        default: 'testnet'
+
+jobs:
+  load-test:
+    name: Playwright Load Test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    env:
+      VITE_NETWORK: ${{ github.event.inputs.network || 'testnet' }}
+      VITE_FACTORY_CONTRACT_ID: ${{ secrets.E2E_FACTORY_CONTRACT_ID }}
+      VITE_TOKEN_WASM_HASH: '0000000000000000000000000000000000000000000000000000000000000000'
+      VITE_IPFS_API_KEY: ${{ secrets.E2E_IPFS_API_KEY }}
+      VITE_IPFS_API_SECRET: ${{ secrets.E2E_IPFS_API_SECRET }}
+      TESTNET_SECRET: ${{ secrets.E2E_TESTNET_WALLET_SECRET }}
+      LOAD_TEST_RUN: 'true'
+      LOAD_TEST_SESSIONS: ${{ github.event.inputs.concurrent_sessions || '5' }}
+      LOAD_TEST_OPS: ${{ github.event.inputs.operations_per_session || '10' }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Build app
+        run: npm run build
+        env:
+          VITE_NETWORK: ${{ github.event.inputs.network || 'testnet' }}
+          VITE_FACTORY_CONTRACT_ID: ${{ secrets.E2E_FACTORY_CONTRACT_ID }}
+          VITE_TOKEN_WASM_HASH: '0000000000000000000000000000000000000000000000000000000000000000'
+          VITE_IPFS_API_KEY: ${{ secrets.E2E_IPFS_API_KEY }}
+          VITE_IPFS_API_SECRET: ${{ secrets.E2E_IPFS_API_SECRET }}
+
+      - name: Run load test
+        run: npx playwright test --grep "load-test" --reporter=html
+        timeout-minutes: 15
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-load-test-report
+          path: frontend/playwright-report/
+          retention-days: 30
+
+      - name: Upload load test metrics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: load-test-metrics
+          path: frontend/test-results/
+          retention-days: 30
