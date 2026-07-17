@@ -2,37 +2,166 @@ name: CI
 
 on:
   push:
-    branches: [main, master, develop]
+    branches: [main]
   pull_request:
-    branches: [main, master, develop]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      wasm_size_limit_bytes:
+        description: Maximum optimized contract WASM size in bytes
+        required: false
+        default: "65536"
 
 jobs:
-  test:
-    name: Test & Coverage
+  contract-build:
+    name: Contract Build
     runs-on: ubuntu-latest
-
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          node-version: '22'
-          cache: 'npm'
+          targets: wasm32v1-none
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: contracts
+
+      - name: Build contract
+        run: cargo build --target wasm32v1-none --release
+        working-directory: contracts
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+
+      - name: Check optimized WASM size
+        run: node scripts/check-wasm-size.mjs --file contracts/target/wasm32v1-none/release/token_factory.wasm --max-bytes "$WASM_SIZE_LIMIT_BYTES"
+        env:
+          WASM_SIZE_LIMIT_BYTES: ${{ github.event.inputs.wasm_size_limit_bytes || '65536' }}
+
+  contract-test:
+    name: Contract Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: contracts
+
+      - name: Run contract tests
+        run: cargo test
+        working-directory: contracts/token-factory
+
+  contract-fmt:
+    name: Rust Formatting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Check Rust formatting
+        run: cargo fmt -- --check
+        working-directory: contracts
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: npm ci --legacy-peer-deps
+
+      - name: Check formatting
+        run: npm run format:check
+
+      - name: Lint
+        run: npm run lint
+
+      - name: i18n Parity Check
+        run: node scripts/check-i18n-parity.mjs
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm run test -- --run
+
+      - name: Build
+        run: npm run build
+
+  e2e:
+    name: End-to-End Tests
+    runs-on: ubuntu-latest
+    needs: [contract-build]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Start Local Stellar Network
+        run: docker compose -f docker-compose.e2e.yml up -d
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
           cache-dependency-path: frontend/package-lock.json
 
       - name: Install dependencies
-        run: npm install --legacy-peer-deps
+        run: npm ci --legacy-peer-deps
         working-directory: frontend
 
-      - name: Run tests with coverage
-        run: npm run test:coverage -- --run
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
         working-directory: frontend
 
-      - name: Upload coverage report
+      - name: Wait for Stellar Quickstart to be ready
+        run: |
+          for i in {1..20}; do
+            if curl -s http://localhost:8000/health | grep -q '"core_synced":true'; then
+              echo "Stellar is ready!"
+              break
+            fi
+            echo "Waiting for Stellar... ($i/20)"
+            sleep 15
+          done
+
+      - name: Build frontend
+        run: npm run build
+        working-directory: frontend
+        env:
+          VITE_NETWORK: standalone
+          # placeholder — no factory contract is deployed onto the local network in this job
+          VITE_FACTORY_CONTRACT_ID: CCN6L3B2R6G2H5J4J4J4J4J4J4J4J4J4J4J4J4J4J4J4J4J4J4
+          VITE_TOKEN_WASM_HASH: "0000000000000000000000000000000000000000000000000000000000000000"
+          VITE_IPFS_API_KEY: mock-key
+          VITE_IPFS_API_SECRET: mock-secret
+
+      - name: Run E2E tests
+        run: npm run test:e2e
+        working-directory: frontend
+        env:
+          VITE_NETWORK: standalone
+          # placeholder — no factory contract is deployed onto the local network in this job
+          VITE_FACTORY_CONTRACT_ID: CCN6L3B2R6G2H5J4J4J4J4J4J4J4J4J4J4J4J4J4J4J4J4J4J4
+          VITE_TOKEN_WASM_HASH: "0000000000000000000000000000000000000000000000000000000000000000"
+          VITE_IPFS_API_KEY: mock-key
+          VITE_IPFS_API_SECRET: mock-secret
+
+      - name: Stop Local Stellar Network
         if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-report
-          path: frontend/coverage/
-          retention-days: 30
+        run: docker compose -f docker-compose.e2e.yml down

@@ -1,98 +1,149 @@
-import React, { useState, useMemo, useCallback } from 'react'
-import { Input } from './UI'
-import { TransactionHistory } from './TransactionHistory'
-import { useClipboard } from '../hooks/useClipboard'
+import React, { useState, useMemo, useCallback, memo } from 'react'
+import type { SortOrder } from '../types'
+import { applyFilters } from '../utils/tokenFilters'
 import { useDebounce } from '../hooks/useDebounce'
-import { useTokens } from '../hooks/useTokens'
-import { STELLAR_CONFIG } from '../config/stellar'
-import { useWallet } from '../hooks/useWallet'
+import { useTokenDashboard } from '../hooks/useTokenDashboard'
+import { Input } from './UI/Input'
+import { Card } from './UI/Card'
+import { TokenCardSkeleton } from './UI/Skeleton'
 
-export const TokenDashboard: React.FC = () => {
-  const { tokens, isLoading, error } = useTokens()
-  const { copied, copy } = useClipboard()
-  const [search, setSearch] = useState('')
-  const debouncedSearch = useDebounce(search, 300)
+interface DashboardProps {
+  tokens?: never // legacy prop — data is now fetched internally
+}
 
-  const formatCreationDate = useCallback((createdAt: number | undefined) => {
-    if (!createdAt) return 'Unknown'
-    return new Date(createdAt * 1000).toLocaleString()
+/**
+ * Memoized with React.memo — re-renders only when the tokens prop changes.
+ * Internal filter/sort state changes are isolated here and don't propagate upward.
+ *
+ * filteredTokens is wrapped in useMemo so the applyFilters computation only
+ * re-runs when tokens, search, creator, or sort actually change.
+ *
+ * Event handlers are wrapped in useCallback so their references stay stable
+ * across renders, which is important if they are ever passed to memoized children.
+ */
+const Dashboard: React.FC<DashboardProps> = memo(() => {
+  const { rows, isLoading, refresh } = useTokenDashboard()
+
+  const [searchQuery, setSearchQuery] = useState('')
+  const [creatorFilter, setCreatorFilter] = useState('')
+  const [sortOrder, setSortOrder] = useState<SortOrder>('newest')
+
+  const debouncedSearch = useDebounce(searchQuery, 300)
+  const debouncedCreator = useDebounce(creatorFilter, 300)
+
+  // Expensive filter + sort — only recomputes when inputs change
+  const filteredTokens = useMemo(
+    () => applyFilters(rows, debouncedSearch, debouncedCreator, sortOrder),
+    [rows, debouncedSearch, debouncedCreator, sortOrder],
+  )
+
+  const isFilterActive = debouncedSearch !== '' || debouncedCreator !== ''
+
+  // Stable callback references so child inputs don't re-render unnecessarily
+  const handleSearchChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    setSearchQuery(e.target.value)
   }, [])
 
-  const filteredTokens = useMemo(() => {
-    if (!debouncedSearch.trim()) return tokens
-    const query = debouncedSearch.toLowerCase()
-    return tokens.filter(
-      (t) =>
-        t.name.toLowerCase().includes(query) ||
-        t.symbol.toLowerCase().includes(query) ||
-        t.creator.toLowerCase().includes(query),
-    )
-  }, [tokens, debouncedSearch])
+  const handleCreatorChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    setCreatorFilter(e.target.value)
+  }, [])
 
-  const factoryContractId = STELLAR_CONFIG.factoryContractId
+  const handleSortChange = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
+    setSortOrder(e.target.value as SortOrder)
+  }, [])
 
   return (
-    <div className="space-y-6">
-      <div className="space-y-4">
-        <Input
-          label={t('dashboard.searchLabel')}
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search by address, name or symbol..."
-        />
-
-        {isLoading && (
-          <p className="text-sm text-gray-500">Loading tokens...</p>
-        )}
-
-        {error && (
-          <p className="text-sm text-red-500">{error.message}</p>
-        )}
-
-        {!isLoading && !error && (
-          <>
-            <ul className="space-y-2">
-              {filteredTokens.length === 0 ? (
-                <li className="text-sm text-gray-500">No tokens found.</li>
-              ) : (
-                filteredTokens.map((token, i) => (
-                  <li
-                    key={token.creator + i}
-                    className="p-3 border rounded text-sm flex items-center justify-between gap-2"
-                  >
-                    <div>
-                      <span className="font-medium">{token.name}</span>
-                      <span className="ml-2 text-gray-500">({token.symbol})</span>
-                      <div className="text-xs text-gray-400 mt-0.5">
-                        Created: {formatCreationDate(token.createdAt)}
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => copy(token.creator)}
-                      className="text-xs text-blue-500 hover:underline shrink-0"
-                      aria-label={`Copy address for ${token.name}`}
-                    >
-                      {copied ? 'Copied!' : 'Copy address'}
-                    </button>
-                  </li>
-                ))
-              )}
-            </ul>
-
-            {/* Only show pagination when not filtering by search */}
-            {!debouncedSearch.trim() && null}
-          </>
-        )}
+    <div className="space-y-4">
+      {/* FilterBar */}
+      <div className="flex flex-col sm:flex-row gap-3">
+        <div className="flex-1 min-w-0">
+          <Input
+            label="Search by name or symbol"
+            value={searchQuery}
+            onChange={handleSearchChange}
+          />
+        </div>
+        <div className="flex-1 min-w-0">
+          <Input
+            label="Filter by creator address"
+            value={creatorFilter}
+            onChange={handleCreatorChange}
+          />
+        </div>
+        <div className="space-y-1 w-full sm:w-auto sm:min-w-[180px]">
+          <label
+            htmlFor="sort-order"
+            className="block text-sm font-medium text-gray-700 dark:text-gray-300"
+          >
+            Sort order
+          </label>
+          <select
+            id="sort-order"
+            value={sortOrder}
+            onChange={handleSortChange}
+            className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm bg-white dark:bg-gray-800 dark:border-gray-600 dark:text-gray-100"
+          >
+            <option value="newest">Newest first</option>
+            <option value="oldest">Oldest first</option>
+            <option value="alphabetical">Alphabetical</option>
+          </select>
+        </div>
+        <button
+          onClick={refresh}
+          disabled={isLoading}
+          aria-label="Refresh token list"
+          className="self-end px-3 py-2 text-sm rounded-md border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50 min-h-[44px]"
+        >
+          ↺ Refresh
+        </button>
       </div>
 
-      {factoryContractId && (
-        <div className="space-y-2">
-          <h2 className="text-base font-semibold text-gray-800">{t('dashboard.recentActivity')}</h2>
-          <TransactionHistory contractId={factoryContractId} />
-        </div>
+      {isLoading ? (
+        <ul className="space-y-3" aria-busy="true" aria-label="Loading tokens...">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <TokenCardSkeleton key={i} />
+          ))}
+        </ul>
+      ) : filteredTokens.length === 0 ? (
+        <p className="text-center text-gray-500 dark:text-gray-400 py-8 text-sm sm:text-base">
+          {isFilterActive ? 'No tokens match your search.' : 'No tokens have been deployed yet.'}
+        </p>
+      ) : (
+        <ul className="space-y-3">
+          {filteredTokens.map((token, i) => (
+            <li key={i}>
+              <Card>
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                  <div className="min-w-0">
+                    <span className="text-base sm:text-lg font-semibold text-gray-900 dark:text-white break-words">
+                      {token.name}
+                    </span>
+                    <span className="ml-2 text-sm text-gray-500 dark:text-gray-400">
+                      ({token.symbol})
+                    </span>
+                  </div>
+                  <span className="text-xs text-gray-400 dark:text-gray-500 shrink-0">
+                    Decimals: {token.decimals}
+                  </span>
+                </div>
+                <div className="mt-2 text-sm text-gray-600 dark:text-gray-300 space-y-1">
+                  <div>
+                    <span className="font-medium">Total Supply:</span> {token.totalSupply}
+                  </div>
+                  <div className="break-all sm:truncate">
+                    <span className="font-medium">Creator:</span>{' '}
+                    <span className="font-mono text-xs">{token.creator}</span>
+                  </div>
+                </div>
+              </Card>
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   )
-}
+})
 
-export const Dashboard = TokenDashboard
+Dashboard.displayName = 'Dashboard'
+
+export { Dashboard }

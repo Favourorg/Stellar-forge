@@ -2,7 +2,7 @@ import React from 'react'
 
 interface InputProps extends React.InputHTMLAttributes<HTMLInputElement> {
   label?: string
-  error?: string
+  error?: string | undefined
 }
 
 export const Input: React.FC<InputProps> = ({
@@ -19,9 +19,16 @@ export const Input: React.FC<InputProps> = ({
   return (
     <div className="space-y-1">
       {label && (
-        <label htmlFor={inputId} className="block text-sm font-medium text-gray-700">
+        <label
+          htmlFor={inputId}
+          className="block text-sm font-medium text-gray-700 dark:text-gray-300"
+        >
           {label}
-          {required && <span aria-hidden="true" className="ml-1 text-red-600">*</span>}
+          {required && (
+            <span aria-hidden="true" className="ml-1 text-red-600">
+              *
+            </span>
+          )}
         </label>
       )}
       <input
@@ -30,7 +37,7 @@ export const Input: React.FC<InputProps> = ({
         aria-required={required}
         aria-invalid={error ? true : undefined}
         aria-describedby={error && errorId ? errorId : undefined}
-        className={`block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm bg-white dark:bg-gray-800 dark:border-gray-600 dark:text-gray-100 dark:placeholder-gray-500 ${error ? 'border-red-300 dark:border-red-500' : ''} ${className}`}
+        className={`block w-full px-3 py-3 border border-gray-300 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-blue-500 focus:border-blue-500 text-base sm:text-sm min-h-[44px] bg-white dark:bg-gray-800 dark:border-gray-600 dark:text-gray-100 dark:placeholder-gray-500 ${error ? 'border-red-300 dark:border-red-500' : ''} ${className}`}
         {...props}
       />
       {error && (

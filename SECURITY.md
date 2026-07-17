@@ -1,90 +1,64 @@
 # Security Policy
 
-## Supported Versions
+## Reporting a vulnerability
 
-We actively support the following versions of StellarForge:
+If you discover a security vulnerability in StellarForge, please **do not** open a public GitHub issue.
 
-| Version | Supported          |
-| ------- | ------------------ |
-| main    | :white_check_mark: |
-| develop | :white_check_mark: |
-| < 1.0   | :x:                |
+Instead, report it privately using one of the following channels:
 
-Security updates are applied to the `main` branch and backported to active release branches when applicable.
+1. **GitHub private security advisory** — open a [private advisory](https://github.com/Favourorg/Stellar-forge/security/advisories/new) in this repository.
+2. **Email** — send details to `security@stellarforge.app` with the subject line `[SECURITY] <brief description>`.
 
-## Reporting a Vulnerability
+Please include:
+- A clear description of the vulnerability and its impact.
+- Steps to reproduce (proof-of-concept code or exploit path).
+- Affected contract addresses or frontend versions.
+- Your suggested severity (Critical / High / Medium / Low).
 
-We take security seriously and appreciate responsible disclosure of vulnerabilities. If you discover a security issue, please follow these steps:
+We will acknowledge your report within **72 hours** and provide an estimated fix timeline within **7 days**. Please allow us a reasonable time to patch and deploy a fix before public disclosure.
 
-### How to Report
+## Scope
 
-**DO NOT** open a public GitHub issue for security vulnerabilities.
+| Component | In scope |
+|---|---|
+| Token factory Soroban contract (mainnet + testnet) | ✅ |
+| React frontend (wallet integration, transaction flow) | ✅ |
+| IPFS / Pinata integration | ✅ |
+| Admin key custody and access controls | ✅ |
+| Dependency vulnerabilities with active exploit paths | ✅ |
+| Third-party services (Stellar network itself, Pinata, Freighter) | ❌ — report to the respective vendor |
+| Theoretical issues with no practical exploit path | ❌ |
 
-Instead, please report security vulnerabilities by:
+## Severity definitions
 
-1. **Email**: Send details to [security contact email - replace with actual email]
-2. **GitHub Security Advisories**: Use the [private vulnerability reporting feature](https://github.com/Ejirowebfi/Stellar-forge/security/advisories/new)
+| Severity | Description |
+|---|---|
+| **Critical** | Remote code execution, admin key theft, total loss of funds, contract upgrade to attacker WASM |
+| **High** | Partial fund loss, admin privilege escalation, persistent denial of service |
+| **Medium** | Temporary DoS, fee manipulation without fund loss, user-data leakage |
+| **Low** | Minor information disclosure, UX security issues |
 
-### What to Include
+## Incident response
 
-Please provide as much information as possible:
+For details on how the team responds to a confirmed security incident — including the procedure for a compromised admin key, the break-glass recovery mechanism, and user communication templates — see the [Incident Response Runbook](./docs/incident-response.md).
 
-- Type of vulnerability (e.g., contract exploit, frontend XSS, wallet integration issue)
-- Steps to reproduce the issue
-- Potential impact and severity assessment
-- Suggested fix (if available)
-- Your contact information for follow-up questions
+## Disclosure policy
 
-### Response Timeline
+- We follow a **90-day coordinated disclosure** timeline.
+- If a fix cannot be delivered within 90 days, we will publish a mitigation advisory and negotiate an extension with the reporter.
+- We will credit reporters in the security advisory unless they request anonymity.
+- We do not offer a bug-bounty programme at this time, but we genuinely appreciate responsible disclosures and will acknowledge all valid reports publicly.
 
-- **Initial Response**: Within 48 hours of report submission
-- **Status Update**: Within 7 days with assessment and planned actions
-- **Fix Timeline**: Critical issues will be addressed within 30 days; lower severity issues within 90 days
-- **Disclosure**: Coordinated disclosure after fix is deployed and users have time to update
+## Known security considerations
 
-## Security Best Practices
+### Admin key is a single point of trust
 
-### For Users
+The factory contract's `admin` address can upgrade the contract, change fees, redirect treasury funds, and transfer admin rights. Key custody is documented in the [Mainnet Deployment Checklist](./docs/mainnet-deployment-checklist.md). A compromised admin key is a **Critical** severity event; see the [Incident Response Runbook](./docs/incident-response.md) for the response procedure.
 
-- **Always Test on Testnet First**: Deploy and test your tokens on testnet before mainnet deployment
-- **Verify Contract Addresses**: Double-check the factory contract ID in your environment configuration
-- **Review Parameters**: Use the mainnet deployment checklist to review all token parameters before deployment
-- **Secure Your Keys**: Never share your wallet private keys or seed phrases
-- **Check Transaction Details**: Review all transaction details in Freighter before signing
+### Upgrade lacks an on-chain event (issue #9)
 
-### For Developers
+The `upgrade` function currently emits no Soroban event. Detection of a malicious WASM replacement currently requires active polling of the on-chain WASM hash. The monitoring script is documented in the [Incident Response Runbook](./docs/incident-response.md#22-wasm-hash-polling-required-until-issue-9-is-resolved).
 
-- **Smart Contract Security**: All contract changes should be reviewed for reentrancy, overflow, and access control issues
-- **Dependency Updates**: Keep dependencies up to date, especially Soroban SDK and Stellar SDK
-- **Input Validation**: Validate all user inputs on both frontend and contract level
-- **Test Coverage**: Maintain comprehensive test coverage for contracts and critical frontend logic
-- **Audit Before Mainnet**: Consider professional security audits before mainnet deployment
+### Content Security Policy
 
-## Known Considerations
-
-- This project is in active development and has not undergone a formal security audit
-- Smart contracts are immutable once deployed - thorough testing is essential
-- Users are responsible for securing their own wallet credentials
-- Transaction fees and token creation fees are paid in XLM and are non-refundable
-
-## Disclosure Policy
-
-- We follow a coordinated disclosure policy
-- Security researchers will be credited (with permission) in release notes
-- We aim to disclose vulnerabilities publicly after fixes are deployed and users have had reasonable time to update (typically 30 days)
-- Critical vulnerabilities may require immediate disclosure if actively exploited
-
-## Security Updates
-
-Security updates will be announced through:
-- GitHub Security Advisories
-- Release notes in CHANGELOG.md
-- Repository README updates
-
-## Contact
-
-For security-related questions or concerns, please contact:
-- Email: [security contact email]
-- GitHub: [@Ejirowebfi](https://github.com/Ejirowebfi)
-
-Thank you for helping keep StellarForge and its users safe!
+A strict CSP is enforced both as a `<meta>` tag and via HTTP response headers on the hosted deployment. See the [README](./README.md#content-security-policy-csp) for configuration details.

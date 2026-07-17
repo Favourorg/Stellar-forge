@@ -75,12 +75,17 @@ export interface AppError {
   message: string
 }
 
+export type SortOrder = 'newest' | 'oldest' | 'alphabetical'
 export type ContractEventType =
-  | 'token_created'
-  | 'tokens_minted'
-  | 'tokens_burned'
-  | 'metadata_set'
-  | 'fees_updated'
+  | 'init'
+  | 'created'
+  | 'meta'
+  | 'mint'
+  | 'burn'
+  | 'fees'
+  | 'pause'
+  | 'unpause'
+  | 'admin_update'
 
 export interface ContractEvent {
   id: string
@@ -95,5 +100,3 @@ export interface GetEventsResult {
   events: ContractEvent[]
   cursor: string | null // opaque cursor for pagination
 }
-
-

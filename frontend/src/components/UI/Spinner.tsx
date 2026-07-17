@@ -6,7 +6,11 @@ interface SpinnerProps {
   label?: string
 }
 
-export const Spinner: React.FC<SpinnerProps> = ({ size = 'md', className = '', label = 'Loading…' }) => {
+export const Spinner: React.FC<SpinnerProps> = ({
+  size = 'md',
+  className = '',
+  label = 'Loading…',
+}) => {
   const sizeClasses = { sm: 'h-4 w-4', md: 'h-6 w-6', lg: 'h-8 w-8' }
 
   return (
@@ -18,7 +22,14 @@ export const Spinner: React.FC<SpinnerProps> = ({ size = 'md', className = '', l
         aria-hidden="true"
         focusable="false"
       >
-        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+        <circle
+          className="opacity-25"
+          cx="12"
+          cy="12"
+          r="10"
+          stroke="currentColor"
+          strokeWidth="4"
+        />
         <path
           className="opacity-75"
           fill="currentColor"
