@@ -180,6 +180,9 @@ impl TokenFactory {
         {
             let mut distributed: i128 = 0;
             for (recipient, bps) in splits.iter() {
+                // Safe: `bps` is a fee basis-points value validated by
+                // `set_fee_split` to sum to exactly 10_000 (≤ i16::MAX),
+                // so the cast to i128 is always lossless.
                 let share = amount
                     .checked_mul(bps as i128)
                     .ok_or(Error::ArithmeticOverflow)?
@@ -328,6 +331,14 @@ impl TokenFactory {
             state.locked = false;
             return Err(Error::ArithmeticOverflow);
         }
+        // Guard: u128 values above i128::MAX would wrap silently to a negative
+        // number when cast to i128, allowing a negative mint.  Reject them
+        // with InvalidParameters before the cast so the invariant
+        // "minted supply ≥ 0" is always upheld.
+        if initial_supply > i128::MAX as u128 {
+            state.locked = false;
+            return Err(Error::InvalidParameters);
+        }
 
         // Transfer fee from creator to treasury using the dedicated fee_token
         Self::distribute_fee(env, state, &creator, fee_payment)?;
@@ -340,6 +351,7 @@ impl TokenFactory {
         TokenInitClient::new(env, &token_address).initialize(&creator, &decimals, &name, &symbol);
 
         if initial_supply > 0 {
+            // Safe: value is guaranteed ≤ i128::MAX by the guard above.
             token::StellarAssetClient::new(env, &token_address)
                 .mint(&creator, &(initial_supply as i128));
         }
@@ -493,6 +505,9 @@ impl TokenFactory {
             return Err(Error::Reentrancy);
         }
 
+        // Safe: Soroban `Vec::len()` returns a `u32` (at most u32::MAX ≈ 4 × 10⁹),
+        // which is well within i128's positive range.  The empty-batch check
+        // below immediately rejects the count == 0 case.
         let count = tokens.len() as i128;
         if count == 0 {
             return Err(Error::InvalidParameters);
