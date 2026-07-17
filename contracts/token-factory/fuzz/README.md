@@ -143,12 +143,21 @@ cargo +nightly run --release --bin fuzz_create_token -- -max_len=10000 -timeout=
 
 ## CI Integration
 
-Fuzz tests are automatically run by GitHub Actions:
+Fuzz tests are automatically run by GitHub Actions in two separate jobs:
 
+### PR Smoke (`smoke`)
 - **Trigger**: Pull requests modifying contract code
-- **Schedule**: Daily at 2 AM UTC
+- **Duration**: 12 seconds per target
+- **Behaviour**: Hard failure — any crash fails the PR check. This is a required status check on protected branches.
+- **Corpus**: Starts from committed `corpus/` seeds and the cached runtime corpus, but does not save back (ephemeral PR branches do not pollute the shared corpus).
+- **Artifacts**: Crash artifacts uploaded on failure (7-day retention).
+
+### Scheduled Full Fuzz (`fuzz`)
+- **Trigger**: Daily at 2 AM UTC (also manually via `workflow_dispatch`)
 - **Duration**: 60 seconds per target
-- **Artifacts**: Crash artifacts uploaded on failure
+- **Behaviour**: Hard failure — any crash fails the workflow. Runs a thorough sweep to catch edge cases that the smoke test may miss.
+- **Corpus**: Starts from committed seeds and cached corpus, saves newly-discovered inputs back to the cache so coverage accumulates across runs.
+- **Artifacts**: Crash artifacts uploaded on failure (7-day retention).
 
 See `.github/workflows/fuzz-testing.yml` for the workflow configuration.
 
@@ -256,16 +265,6 @@ node scripts/generate_seeds.mjs
 # Or manually: place any interesting binary input in the target's corpus directory
 cp my_edge_case.bin corpus/fuzz_create_token/
 ```
-
-## CI Integration
-
-Fuzz tests are automatically run by GitHub Actions:
-
-- **Trigger**: Pull requests modifying contract code
-- **Schedule**: Daily at 2 AM UTC
-- **Duration**: 60 seconds per target
-- **Corpus**: Each run starts from the committed `corpus/` seeds and uses an actions/cache to persist the runtime corpus across runs, so coverage accumulates over time.
-- **Artifacts**: Crash artifacts uploaded on failure (7-day retention).
 
 ## Known Limitations
 
