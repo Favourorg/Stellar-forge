@@ -158,7 +158,8 @@ export function useTransactionPolling(txHash: string): UseTransactionPollingResu
           settled = true
           clearInterval(intervalId)
           setStatus('failed')
-          const errorMessage = typeof result.error === 'string' ? result.error : 'Transaction failed'
+          const errorMessage =
+            typeof result.error === 'string' ? result.error : 'Transaction failed'
           setError(errorMessage)
 
           // Capture to Sentry with full transaction correlation tags
@@ -222,6 +223,6 @@ export function useTransactionPolling(txHash: string): UseTransactionPollingResu
     }
   }, [txHash])
 
-  if (error === undefined) return { status, sentryEventId }
-  return { status, error, sentryEventId }
+  if (error === undefined) return sentryEventId ? { status, sentryEventId } : { status }
+  return sentryEventId ? { status, error, sentryEventId } : { status, error }
 }

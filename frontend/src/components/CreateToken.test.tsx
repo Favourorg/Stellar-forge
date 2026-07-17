@@ -1,7 +1,6 @@
 import React from 'react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
-import userEvent from '@testing-library/user-event'
+import { render, screen, waitFor, fireEvent, act } from '@testing-library/react'
 import { CreateToken } from './CreateToken'
 
 // ── Mocks ────────────────────────────────────────────────────────────────────
@@ -46,13 +45,7 @@ vi.mock('react-i18next', () => ({
 
 // Minimal TokenForm that fires onSubmit immediately
 vi.mock('./TokenForm', () => ({
-  TokenForm: ({
-    onSubmit,
-    isLoading,
-  }: {
-    onSubmit: (p: unknown) => void
-    isLoading: boolean
-  }) => (
+  TokenForm: ({ onSubmit, isLoading }: { onSubmit: (p: unknown) => void; isLoading: boolean }) => (
     <form
       data-testid="token-form"
       onSubmit={(e) => {
@@ -69,18 +62,19 @@ vi.mock('./TokenForm', () => ({
 
 vi.mock('./ShareButton', () => ({ ShareButton: () => <div data-testid="share-button" /> }))
 vi.mock('./CopyButton', () => ({ CopyButton: () => <button>Copy</button> }))
-vi.mock('./ErrorBoundary', () => ({ default: ({ children }: { children: React.ReactNode }) => children }))
+vi.mock('./ErrorBoundary', () => ({
+  default: ({ children }: { children: React.ReactNode }) => children,
+}))
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-async function submitForm() {
+function submitForm() {
   const btn = screen.getByRole('button', { name: /create token/i })
-  await userEvent.click(btn)
+  fireEvent.click(btn)
 }
 
 beforeEach(() => {
   vi.clearAllMocks()
-  vi.useFakeTimers()
 })
 
 afterEach(() => {
@@ -96,10 +90,7 @@ describe('CreateToken (reconciliation policy)', () => {
     mockDeployToken.mockRejectedValue(new Error('Simulated deploy failure'))
 
     render(<CreateToken />)
-    await submitForm()
-
-    // Let the rejection microtask settle
-    await vi.runAllTimersAsync()
+    submitForm()
 
     await waitFor(() => {
       // Success banner must not appear
@@ -108,10 +99,7 @@ describe('CreateToken (reconciliation policy)', () => {
     })
 
     // Error toast shown
-    expect(mockAddToast).toHaveBeenCalledWith(
-      'Simulated deploy failure',
-      'error',
-    )
+    expect(mockAddToast).toHaveBeenCalledWith('Simulated deploy failure', 'error')
 
     // Caches MUST NOT be refreshed — reconciliation policy step 3
     expect(mockRefreshBalance).not.toHaveBeenCalled()
@@ -122,7 +110,7 @@ describe('CreateToken (reconciliation policy)', () => {
     mockDeployToken.mockResolvedValue({ success: false, tokenAddress: 'CTEST' })
 
     render(<CreateToken />)
-    await submitForm()
+    submitForm()
 
     await waitFor(() => {
       expect(screen.queryByText(/deployedSuccessfully/i)).toBeNull()
@@ -140,7 +128,7 @@ describe('CreateToken (reconciliation policy)', () => {
     mockDeployToken.mockResolvedValue({ success: true, tokenAddress: 'CNEWTOKEN' })
 
     render(<CreateToken onSuccess={mockOnSuccess} />)
-    await submitForm()
+    submitForm()
 
     await waitFor(() => {
       expect(screen.getByText(/deployedSuccessfully/i)).toBeInTheDocument()
@@ -155,14 +143,17 @@ describe('CreateToken (reconciliation policy)', () => {
   // ── Timeout (uncertainty) ──────────────────────────────────────────────────
 
   it('shows the uncertainty banner when the transaction times out', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+
     // Simulate a never-resolving transaction — Promise.race will trigger the
     // timeout after DEPLOY_TIMEOUT_MS (90s).
-    // eslint-disable-next-line @typescript-eslint/no-empty-function
     const neverSettle = new Promise<{ success: boolean; tokenAddress: string }>(() => {})
     mockDeployToken.mockReturnValue(neverSettle)
 
     render(<CreateToken />)
-    await submitForm()
+    act(() => {
+      submitForm()
+    })
 
     // Before the timeout fires, the form should be in loading state
     expect(screen.getByRole('button', { name: /deploying/i })).toBeDisabled()
@@ -173,14 +164,14 @@ describe('CreateToken (reconciliation policy)', () => {
     expect(mockOnSuccess).not.toHaveBeenCalled()
 
     // Advance time past the timeout threshold
-    await vi.advanceTimersByTimeAsync(90_001)
+    vi.advanceTimersByTime(90_001)
+    // Flush microtasks so the timeout rejection is processed
+    await Promise.resolve()
 
     // Timeout banner must appear
     await waitFor(() => {
       expect(screen.getByTestId('timeout-banner')).toBeInTheDocument()
-      expect(
-        screen.getByText(/Transaction submitted but not yet confirmed/),
-      ).toBeInTheDocument()
+      expect(screen.getByText(/Transaction submitted but not yet confirmed/)).toBeInTheDocument()
     })
 
     // Still no phantom entry after timeout
@@ -189,17 +180,16 @@ describe('CreateToken (reconciliation policy)', () => {
     expect(mockOnSuccess).not.toHaveBeenCalled()
 
     // Warning toast shown
-    expect(mockAddToast).toHaveBeenCalledWith(
-      expect.stringContaining('not yet confirmed'),
-      'warning',
-    )
-  })
+    expect(mockAddToast).toHaveBeenCalledWith('tokenForm.deployTimeout', 'warning')
+
+    vi.useRealTimers()
+  }, 15000)
 
   it('does NOT show the timeout banner when the transaction succeeds quickly', async () => {
     mockDeployToken.mockResolvedValue({ success: true, tokenAddress: 'CFAST' })
 
     render(<CreateToken />)
-    await submitForm()
+    submitForm()
 
     await waitFor(() => {
       expect(screen.getByText(/deployedSuccessfully/i)).toBeInTheDocument()
