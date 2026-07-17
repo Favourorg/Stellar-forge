@@ -47,3 +47,16 @@ Every mainnet deployment **must** be accompanied by a signed, annotated git tag 
 - [ ] Run the [WASM Hash Verification workflow](https://github.com/Favourorg/Stellar-forge/actions/workflows/wasm-verify.yml) as the final post-deployment check, using the deployment tag as `git_ref` and the new factory contract ID. The job must pass before the deployment is considered complete.
 - [ ] Monitor application errors, failed transactions, fee spikes, and user-reported issues during the release window.
 
+## Incident Readiness
+
+These items must be verified before the factory is accessible to end users on mainnet. A deployed contract is only as safe as the team's ability to respond when things go wrong.
+
+- [ ] Read the [Incident Response Runbook](./incident-response.md) in full and confirm the team understands every section.
+- [ ] Break-glass admin address is generated, funded with at least 5 XLM, and recorded in the deployment log (see [runbook section 7](./incident-response.md#7-break-glass-recovery-mechanism)).
+- [ ] WASM hash monitoring script (`check-wasm-hash.sh`) is deployed on a cron schedule (≤ 5 minutes) and confirmed to send alerts.
+- [ ] Sentry alert rules for mainnet anomalous-fee events and admin transfers are active (see [runbook section 2](./incident-response.md#2-how-compromise-would-be-detected)).
+- [ ] Incident commander and break-glass custodian contact details are documented in the team's private channel, not in this file.
+- [ ] Tabletop exercise (runbook section 10) has been completed and dated in the deployment log.
+
+> See [SECURITY.md](../SECURITY.md) for the responsible disclosure policy and further security context.
+
