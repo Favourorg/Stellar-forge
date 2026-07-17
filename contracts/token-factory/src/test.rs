@@ -160,6 +160,90 @@ fn test_initialize_already_initialized() {
     assert_eq!(result, Err(Ok(Error::AlreadyInitialized)));
 }
 
+// ── supply boundary tests (issue #909) ───────────────────────────────────────
+
+/// u128 value just above i128::MAX wraps to a negative i128 without a guard.
+/// The fix must reject this with InvalidParameters before any mint occurs.
+#[test]
+fn test_create_token_supply_above_i128_max_rejected() {
+    let s = Setup::new();
+    let creator = Address::generate(&s.env);
+    s.fund(&creator, 1_000);
+    let overflow_supply: u128 = (i128::MAX as u128).saturating_add(1); // i128::MAX + 1
+    let result = s.client.try_create_token(
+        &creator,
+        &s.salt(0),
+        &String::from_str(&s.env, "MyToken"),
+        &String::from_str(&s.env, "MTK"),
+        &7,
+        &overflow_supply,
+        &1_000,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidParameters)));
+}
+
+/// u128::MAX is the largest possible overflow value — must also be rejected.
+#[test]
+fn test_create_token_supply_u128_max_rejected() {
+    let s = Setup::new();
+    let creator = Address::generate(&s.env);
+    s.fund(&creator, 1_000);
+    let result = s.client.try_create_token(
+        &creator,
+        &s.salt(0),
+        &String::from_str(&s.env, "MyToken"),
+        &String::from_str(&s.env, "MTK"),
+        &7,
+        &u128::MAX,
+        &1_000,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidParameters)));
+}
+
+/// i128::MAX is the largest value that fits exactly — must pass validation.
+/// The test will reach the deploy step and fail there because the hash is a
+/// dummy, but the error must NOT be InvalidParameters (supply is valid).
+#[test]
+fn test_create_token_supply_i128_max_passes_validation() {
+    let s = Setup::new();
+    let creator = Address::generate(&s.env);
+    s.fund(&creator, 1_000);
+    let max_valid: u128 = i128::MAX as u128;
+    let result = s.client.try_create_token(
+        &creator,
+        &s.salt(0),
+        &String::from_str(&s.env, "MyToken"),
+        &String::from_str(&s.env, "MTK"),
+        &7,
+        &max_valid,
+        &1_000,
+    );
+    // Supply is valid, so we must not get InvalidParameters.
+    // The call may fail for other reasons (dummy wasm hash), but not supply.
+    assert_ne!(result, Err(Ok(Error::InvalidParameters)));
+}
+
+/// Zero supply is explicitly allowed — token is created without minting.
+/// The call will fail at the deploy step (dummy hash) but not at supply
+/// validation, confirming zero is accepted.
+#[test]
+fn test_create_token_supply_zero_passes_validation() {
+    let s = Setup::new();
+    let creator = Address::generate(&s.env);
+    s.fund(&creator, 1_000);
+    let result = s.client.try_create_token(
+        &creator,
+        &s.salt(0),
+        &String::from_str(&s.env, "MyToken"),
+        &String::from_str(&s.env, "MTK"),
+        &7,
+        &0_u128,
+        &1_000,
+    );
+    // Must not be rejected for supply reasons.
+    assert_ne!(result, Err(Ok(Error::InvalidParameters)));
+}
+
 // ── create_token (error paths only — deploy requires real wasm) ───────────────
 
 #[test]
