@@ -65,10 +65,7 @@ async function decodeFactoryState(scVal: unknown): Promise<FactoryState> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const map: Map<string, any> = new Map(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (val.map() as any[]).map((entry: any) => [
-      entry.key().sym().toString() as string,
-      entry.val(),
-    ]),
+    (val.map() as any[]).map((entry: any) => [entry.key().sym().toString() as string, entry.val()]),
   )
 
   function getAddress(key: string): string {

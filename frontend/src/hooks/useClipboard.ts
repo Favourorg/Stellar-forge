@@ -27,24 +27,23 @@ export const useClipboard = (resetDelay = 2000) => {
           // Fallback to execCommand for older browsers or non-secure contexts
           const textArea = document.createElement('textarea')
           textArea.value = text
-          
+
           // Ensure textarea is not visible but part of DOM
           textArea.style.position = 'fixed'
           textArea.style.left = '-9999px'
           textArea.style.top = '0'
           document.body.appendChild(textArea)
-          
+
           textArea.focus()
           textArea.select()
-          
+
           const successful = document.execCommand('copy')
           document.body.removeChild(textArea)
-          
+
           if (successful) {
             setCopied(true)
-          } else {
-            console.error('Fallback copy failed')
           }
+          // Fallback copy silently failed — nothing to surface to the user
         }
 
         // Reset copied state after delay
@@ -52,12 +51,11 @@ export const useClipboard = (resetDelay = 2000) => {
           setCopied(false)
           timeoutRef.current = null
         }, resetDelay)
-      } catch (err) {
-        console.error('Failed to copy to clipboard:', err)
+      } catch {
         setCopied(false)
       }
     },
-    [resetDelay]
+    [resetDelay],
   )
 
   // Cleanup timeout on unmount

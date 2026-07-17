@@ -37,7 +37,10 @@ describe('env config', () => {
   })
 
   it('isIpfsConfigured returns true when both keys are set', async () => {
-    const { isIpfsConfigured } = await loadEnv({ VITE_IPFS_API_KEY: 'key', VITE_IPFS_API_SECRET: 'secret' })
+    const { isIpfsConfigured } = await loadEnv({
+      VITE_IPFS_API_KEY: 'key',
+      VITE_IPFS_API_SECRET: 'secret',
+    })
     expect(isIpfsConfigured()).toBe(true)
   })
 })

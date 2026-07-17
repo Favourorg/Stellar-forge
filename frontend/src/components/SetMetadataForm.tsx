@@ -1,23 +1,33 @@
-import { useState } from 'react'
-import { Input, Button, ConfirmModal } from './UI'
+import React, { useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import { Input, Button, ConfirmModal, InsufficientBalanceWarning } from './UI'
 import { isValidIPFSUri } from '../utils/validation'
 import { useToast } from '../context/ToastContext'
+import { useBalanceCheck } from '../hooks/useBalanceCheck'
+import { useNetworkGuard } from '../hooks/useNetworkGuard'
 import { isIpfsConfigured } from '../config/env'
 
 const ESTIMATED_FEE = '0.01' // XLM
+const ESTIMATED_FEE_XLM = 0.01
 
 interface Props {
   tokenAddress?: string
   onSubmit: (tokenAddress: string, metadataUri: string) => Promise<void>
 }
 
-export const SetMetadataForm: React.FC<Props> = ({ tokenAddress: initialAddress = '', onSubmit }) => {
+export const SetMetadataForm: React.FC<Props> = ({
+  tokenAddress: initialAddress = '',
+  onSubmit,
+}) => {
+  const { t } = useTranslation()
   const [tokenAddress, setTokenAddress] = useState(initialAddress)
   const [metadataUri, setMetadataUri] = useState('')
   const [loading, setLoading] = useState(false)
   const [pending, setPending] = useState(false)
   const { addToast } = useToast()
   const ipfsReady = isIpfsConfigured()
+  const { blocked: networkBlocked, reason: networkReason } = useNetworkGuard()
+  const { hasSufficientBalance, shortfall, isTestnet } = useBalanceCheck(ESTIMATED_FEE_XLM)
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
@@ -44,8 +54,14 @@ export const SetMetadataForm: React.FC<Props> = ({ tokenAddress: initialAddress 
   return (
     <>
       {!ipfsReady && (
-        <div className="mb-4 rounded-lg bg-yellow-50 border border-yellow-300 px-4 py-3 text-yellow-800 text-sm" role="alert">
-          IPFS upload is disabled. Set <code className="font-mono bg-yellow-100 px-1 rounded">VITE_IPFS_API_KEY</code> and <code className="font-mono bg-yellow-100 px-1 rounded">VITE_IPFS_API_SECRET</code> to enable metadata uploads.
+        <div
+          className="mb-4 rounded-lg bg-yellow-50 border border-yellow-300 px-4 py-3 text-yellow-800 text-sm"
+          role="alert"
+        >
+          IPFS upload is disabled. Set{' '}
+          <code className="font-mono bg-yellow-100 px-1 rounded">VITE_IPFS_API_KEY</code> and{' '}
+          <code className="font-mono bg-yellow-100 px-1 rounded">VITE_IPFS_API_SECRET</code> to
+          enable metadata uploads.
         </div>
       )}
       <form onSubmit={handleSubmit} className="space-y-4">
@@ -65,10 +81,21 @@ export const SetMetadataForm: React.FC<Props> = ({ tokenAddress: initialAddress 
           disabled={!ipfsReady}
         />
         <div title={!ipfsReady ? 'IPFS credentials are not configured' : undefined}>
-          <Button type="submit" disabled={loading || !ipfsReady}>
+          <Button
+            type="submit"
+            disabled={loading || !ipfsReady || !hasSufficientBalance || networkBlocked}
+          >
             {loading ? 'Submitting...' : 'Set Metadata'}
           </Button>
         </div>
+        {networkBlocked && networkReason && (
+          <p className="text-sm text-red-600 dark:text-red-400" role="alert">
+            {networkReason}
+          </p>
+        )}
+        {!hasSufficientBalance && (
+          <InsufficientBalanceWarning shortfall={shortfall} isTestnet={isTestnet} />
+        )}
       </form>
 
       <ConfirmModal

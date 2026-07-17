@@ -1,3 +1,4 @@
+import React from 'react'
 import { renderHook } from '@testing-library/react'
 import { vi, describe, it, expect } from 'vitest'
 import { StellarProvider, useStellarContext } from '../context/StellarContext'
@@ -14,7 +15,7 @@ const wrapper = ({ children }: { children: React.ReactNode }) => (
 describe('useStellarContext', () => {
   it('throws when used outside StellarProvider', () => {
     expect(() => renderHook(() => useStellarContext())).toThrow(
-      'useStellarContext must be used within a StellarProvider'
+      'useStellarContext must be used within a StellarProvider',
     )
   })
 
@@ -36,7 +37,9 @@ describe('useStellarContext', () => {
   })
 
   it('can be mocked for component tests', () => {
-    const mockStellar = { getContractEvents: vi.fn().mockResolvedValue({ events: [], cursor: null }) }
+    const mockStellar = {
+      getContractEvents: vi.fn().mockResolvedValue({ events: [], cursor: null }),
+    }
     const mockIpfs = { uploadMetadata: vi.fn().mockResolvedValue('ipfs://cid') }
 
     const mockWrapper = ({ children }: { children: React.ReactNode }) => (

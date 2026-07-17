@@ -7,7 +7,9 @@ describe('isValidIPFSUri', () => {
   })
 
   it('accepts a valid CIDv1 URI', () => {
-    expect(isValidIPFSUri('ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi')).toBe(true)
+    expect(
+      isValidIPFSUri('ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi'),
+    ).toBe(true)
   })
 
   it('rejects an empty string', () => {
@@ -57,7 +59,7 @@ describe('validateTokenParams - decimals', () => {
   })
 
   it('rejects missing decimals', () => {
-    const { valid, errors } = validateTokenParams({ ...base, decimals: undefined })
+    const { valid, errors } = validateTokenParams({ ...base })
     expect(valid).toBe(false)
     expect(errors.decimals).toBeDefined()
   })
@@ -72,10 +74,11 @@ import {
   validateDecimals,
 } from '../utils/validation'
 
-// A real valid Ed25519 public key (Stellar foundation account)
-const VALID_ACCOUNT = 'GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN'
+// A real valid Ed25519 public key (generated via Keypair.random())
+const VALID_ACCOUNT = 'GDNQ2ULB7MXLA4GJBTAAZQON3IEO4HUCYFQMAHVAA2RTC4L4B4G5IK4C'
 // Same address with last char flipped — valid format, invalid checksum
-const INVALID_CHECKSUM_ACCOUNT = VALID_ACCOUNT.slice(0, 55) + (VALID_ACCOUNT[55] === 'N' ? 'M' : 'N')
+const INVALID_CHECKSUM_ACCOUNT =
+  VALID_ACCOUNT.slice(0, 55) + (VALID_ACCOUNT[55] === 'N' ? 'M' : 'N')
 // A real valid contract address (C...)
 const VALID_CONTRACT = 'CA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKERYNZGGA5SOAOPIFY6YQGAXE'
 
@@ -124,7 +127,7 @@ describe('isValidContractAddress', () => {
 })
 
 describe('isValidImageFile', () => {
-  const makeFile = (type: string, size: number) => ({ type, size } as File)
+  const makeFile = (type: string, size: number) => ({ type, size }) as File
 
   it('accepts a valid JPEG under 5MB', () => {
     expect(isValidImageFile(makeFile('image/jpeg', 1024)).valid).toBe(true)
@@ -164,12 +167,36 @@ describe('validateTokenName', () => {
     expect(validateTokenName('A'.repeat(32))).toBe(true)
   })
 
+  it('accepts a name with spaces, hyphens, and underscores', () => {
+    expect(validateTokenName('My Token-Name_1')).toBe(true)
+  })
+
+  it('strips leading/trailing whitespace before validating', () => {
+    expect(validateTokenName('  MyToken  ')).toBe(true)
+  })
+
   it('rejects an empty name', () => {
     expect(validateTokenName('')).toBe(false)
   })
 
   it('rejects a name over 32 characters', () => {
     expect(validateTokenName('A'.repeat(33))).toBe(false)
+  })
+
+  it('rejects a name with HTML tags', () => {
+    expect(validateTokenName('<script>alert(1)</script>')).toBe(false)
+  })
+
+  it('rejects a name with angle brackets', () => {
+    expect(validateTokenName('Token<Name>')).toBe(false)
+  })
+
+  it('rejects a name with ampersand', () => {
+    expect(validateTokenName('Token&Name')).toBe(false)
+  })
+
+  it('rejects a name with quotes', () => {
+    expect(validateTokenName('Token"Name')).toBe(false)
   })
 })
 
@@ -186,12 +213,28 @@ describe('validateTokenSymbol', () => {
     expect(validateTokenSymbol('A'.repeat(12))).toBe(true)
   })
 
+  it('strips leading/trailing whitespace before validating', () => {
+    expect(validateTokenSymbol('  MTK  ')).toBe(true)
+  })
+
   it('rejects an empty symbol', () => {
     expect(validateTokenSymbol('')).toBe(false)
   })
 
   it('rejects a symbol over 12 characters', () => {
     expect(validateTokenSymbol('A'.repeat(13))).toBe(false)
+  })
+
+  it('rejects a symbol with special characters', () => {
+    expect(validateTokenSymbol('MT<K>')).toBe(false)
+  })
+
+  it('rejects a symbol with spaces', () => {
+    expect(validateTokenSymbol('MT K')).toBe(false)
+  })
+
+  it('rejects a symbol with HTML entities', () => {
+    expect(validateTokenSymbol('MT&K')).toBe(false)
   })
 })
 
