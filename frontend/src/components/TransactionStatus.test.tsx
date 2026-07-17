@@ -100,4 +100,30 @@ describe('TransactionStatus Component', () => {
 
     expect(onError).toHaveBeenCalledWith('Timeout')
   })
+
+  test('grows the poll interval instead of polling at a fixed cadence', async () => {
+    ;(stellarService.getTransaction as Mock).mockResolvedValue({ status: 'pending' })
+    const setTimeoutSpy = vi.spyOn(global, 'setTimeout')
+
+    render(<TransactionStatus txHash="test-hash" />)
+
+    // Let several poll/schedule cycles run.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20000)
+    })
+
+    // Delays passed to setTimeout for the poll chain (excludes the initial
+    // synchronous call and the fixed 60s overall timeout).
+    const scheduledDelays = setTimeoutSpy.mock.calls
+      .map((call) => call[1] as number)
+      .filter((delay): delay is number => typeof delay === 'number' && delay > 0 && delay !== 60000)
+
+    expect(scheduledDelays.length).toBeGreaterThan(1)
+    // Fixed-cadence polling (the regression this guards against) would mean
+    // every scheduled delay is identical; backoff means they are not.
+    const allEqual = scheduledDelays.every((d) => d === scheduledDelays[0])
+    expect(allEqual).toBe(false)
+
+    setTimeoutSpy.mockRestore()
+  })
 })

@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect } from 'react'
 import { stellarService } from '../services/stellar'
 import { captureTransactionError } from '../lib/monitoring/sentry'
 import { STELLAR_CONFIG } from '../config/stellar'
+import { nextBackoffDelay } from '../utils/pollWithBackoff'
 
 /*
  * ┌──────────────────────────────────────────────────────────────────┐
@@ -118,12 +119,16 @@ export interface UseTransactionPollingResult {
   sentryEventId?: string
 }
 
-const POLL_INTERVAL_MS = 250
+const INITIAL_DELAY_MS = 500
+const MAX_DELAY_MS = 4000
 const TIMEOUT_MS = 60000
 
 /**
  * Polls stellarService.getTransaction(txHash) until it resolves to a
- * terminal status (success/error) or TIMEOUT_MS elapses.
+ * terminal status (success/error) or TIMEOUT_MS elapses. Uses the same
+ * exponential-backoff-with-jitter schedule (via nextBackoffDelay) as
+ * stellar-impl.ts's pollTransaction, so there is one growth curve for
+ * "poll a transaction hash until terminal status" across the codebase.
  *
  * Thin, justified wrapper: TransactionStatus.tsx needs to poll an
  * *already-submitted* transaction by hash independently of the builder
@@ -144,6 +149,8 @@ export function useTransactionPolling(txHash: string): UseTransactionPollingResu
     setSentryEventId(undefined)
 
     let settled = false
+    let attempt = 0
+    let pollTimeoutId: ReturnType<typeof setTimeout> | undefined
 
     const poll = async () => {
       try {
@@ -152,11 +159,11 @@ export function useTransactionPolling(txHash: string): UseTransactionPollingResu
 
         if (result.status === 'success') {
           settled = true
-          clearInterval(intervalId)
+          clearTimeout(pollTimeoutId)
           setStatus('success')
         } else if (result.status === 'error' || result.status === 'failed') {
           settled = true
-          clearInterval(intervalId)
+          clearTimeout(pollTimeoutId)
           setStatus('failed')
           const errorMessage =
             typeof result.error === 'string' ? result.error : 'Transaction failed'
@@ -173,12 +180,19 @@ export function useTransactionPolling(txHash: string): UseTransactionPollingResu
             },
           )
           if (eventId) setSentryEventId(eventId)
+        } else {
+          // status === 'pending' — schedule the next attempt with backoff
+          const delay = nextBackoffDelay(attempt, {
+            initialDelayMs: INITIAL_DELAY_MS,
+            maxDelayMs: MAX_DELAY_MS,
+          })
+          attempt += 1
+          pollTimeoutId = setTimeout(poll, delay)
         }
-        // status === 'pending' — keep polling
       } catch (err) {
         if (settled) return
         settled = true
-        clearInterval(intervalId)
+        clearTimeout(pollTimeoutId)
         setStatus('failed')
         const errorMessage = err instanceof Error ? err.message : 'Transaction failed'
         setError(errorMessage)
@@ -197,13 +211,12 @@ export function useTransactionPolling(txHash: string): UseTransactionPollingResu
       }
     }
 
-    const intervalId = setInterval(poll, POLL_INTERVAL_MS)
     void poll()
 
     const timeoutId = setTimeout(() => {
       if (settled) return
       settled = true
-      clearInterval(intervalId)
+      clearTimeout(pollTimeoutId)
       setStatus('failed')
       const errorMessage = 'Timeout'
       setError(errorMessage)
@@ -218,7 +231,7 @@ export function useTransactionPolling(txHash: string): UseTransactionPollingResu
 
     return () => {
       settled = true
-      clearInterval(intervalId)
+      clearTimeout(pollTimeoutId)
       clearTimeout(timeoutId)
     }
   }, [txHash])
