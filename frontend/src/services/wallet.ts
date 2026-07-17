@@ -1,6 +1,7 @@
 import {
   isConnected,
   getAddress,
+  getNetworkDetails,
   signTransaction as freighterSignTransaction,
 } from '@stellar/freighter-api'
 import { NETWORK_CONFIGS, type Network } from '../config/stellar'
@@ -96,9 +97,19 @@ export class WalletService {
       throw new Error('Wallet not connected. Please connect first.')
     }
 
-    try {
-      const networkPassphrase = NETWORK_CONFIGS[network].networkPassphrase
+    const networkPassphrase = NETWORK_CONFIGS[network].networkPassphrase
 
+    // Freighter's active network isn't push-notified to the page — useNetworkMismatch
+    // only polls every few seconds, so its cached state can be stale by the time the
+    // user hits submit. Re-check fresh, right before dispatching the sign request, so
+    // the actual gate that matters (can *this* transaction be signed) never relies on
+    // a value that's up to one poll interval old.
+    const freshDetails = await getNetworkDetails()
+    if (!freshDetails.error && freshDetails.networkPassphrase !== networkPassphrase) {
+      throw new Error(`Network mismatch: Please switch Freighter to ${network}`)
+    }
+
+    try {
       const signedResult = await freighterSignTransaction(xdr, {
         networkPassphrase,
         address: this.connectedAddress,
