@@ -317,6 +317,12 @@ impl TokenFactory {
             state.locked = false;
             return Err(Error::InsufficientFee);
         }
+        // initial_supply is u128 but token::mint accepts i128.
+        // Values > i128::MAX silently wrap via `as i128`; reject them early.
+        if initial_supply > i128::MAX as u128 {
+            state.locked = false;
+            return Err(Error::InvalidParameters);
+        }
         // Fail fast if token count would overflow
         if state.token_count.checked_add(1).is_none() {
             state.locked = false;

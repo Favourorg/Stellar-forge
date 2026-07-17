@@ -162,6 +162,58 @@ fn test_initialize_already_initialized() {
 
 // ── create_token (error paths only — deploy requires real wasm) ───────────────
 
+/// Regression test for initial_supply overflow when casting u128 → i128.
+/// Discovered via fuzz_targets::fuzz_create_token.
+///
+/// The `create_token` function accepts `initial_supply: u128` but internally
+/// casts it to `i128` with `as`. Values > i128::MAX silently wrap to negative
+/// numbers, which would then be passed to `token::mint`. This test locks in
+/// the fix: the contract MUST reject initial_supply > i128::MAX before the
+/// cast.
+#[test]
+fn test_create_token_initial_supply_exceeds_i128_max() {
+    let s = Setup::new();
+    let creator = Address::generate(&s.env);
+    s.fund(&creator, 1_000);
+    // i128::MAX = 170141183460469231731687303715884105727
+    // u128 value one greater than i128::MAX
+    let overflow_supply = (i128::MAX as u128).checked_add(1).unwrap();
+    let result = s.client.try_create_token(
+        &creator,
+        &s.salt(0),
+        &String::from_str(&s.env, "Token"),
+        &String::from_str(&s.env, "TKN"),
+        &7,
+        &overflow_supply,
+        &1_000,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidParameters)));
+}
+
+/// Value exactly at i128::MAX must be accepted.
+#[test]
+fn test_create_token_initial_supply_at_i128_max() {
+    let s = Setup::new();
+    let creator = Address::generate(&s.env);
+    s.fund(&creator, 1_000);
+    // i128::MAX is the largest safe u128 → i128 value.
+    // The contract cannot deploy real WASM in tests, so inner deployment
+    // will fail with a host error — but the overflow guard must pass first.
+    let max_supply = i128::MAX as u128;
+    let result = s.client.try_create_token(
+        &creator,
+        &s.salt(0),
+        &String::from_str(&s.env, "Token"),
+        &String::from_str(&s.env, "TKN"),
+        &7,
+        &max_supply,
+        &1_000,
+    );
+    // The overflow guard should NOT trigger — the error should be something
+    // other than InvalidParameters (deploy failure).
+    assert!(result != Err(Ok(Error::InvalidParameters)));
+}
+
 #[test]
 fn test_set_metadata_fee_goes_to_treasury() {
     let s = Setup::new();
