@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useState, useCallback } from 'react'
 import {
   ToastContainer,
   WalletButton,
@@ -42,6 +42,7 @@ const TokenDetail = React.lazy(() =>
 )
 const Manage = React.lazy(() => import('./components/Manage').then((m) => ({ default: m.Manage })))
 import { useFactoryState } from './hooks/useFactoryState'
+import { useTokens } from './hooks/useTokens'
 import { isFactoryConfigured } from './config/env'
 import ErrorBoundary from './components/ErrorBoundary'
 import { TosProvider } from './context/TosContext'
@@ -51,6 +52,26 @@ const ProtectedRoute: React.FC<{ children: React.ReactElement }> = ({ children }
   const { wallet } = useWallet()
   if (!wallet.isConnected) return <Navigate to="/" replace />
   return children
+}
+
+/** Wraps CreateToken so the token-list cache is refreshed (via onSuccess)
+ *  after a confirmed on-chain deployment, per the reconciliation policy
+ *  documented in useTransaction.ts. */
+const CreateTokenWrapper: React.FC = () => {
+  const { wallet } = useWallet()
+  // Invalidate the per-creator and global token caches so the new token
+  // appears on the Dashboard / Explorer without waiting for TTL expiry.
+  // Only subscribe to per-creator tokens when a wallet is connected
+  // (avoids two useTokens instances sharing the same '' cache key).
+  const { refresh: refreshGlobal } = useTokens()
+  const { refresh: refreshMy } = useTokens(wallet.address || undefined)
+
+  const handleSuccess = useCallback(() => {
+    refreshGlobal()
+    refreshMy()
+  }, [refreshGlobal, refreshMy])
+
+  return <CreateToken onSuccess={handleSuccess} />
 }
 
 interface RouteErrorFallbackProps {
@@ -272,7 +293,7 @@ function AppContent() {
                 element={
                   <ProtectedRoute>
                     <RouteBoundary routeName="Create Token">
-                      <CreateToken />
+                      <CreateTokenWrapper />
                     </RouteBoundary>
                   </ProtectedRoute>
                 }

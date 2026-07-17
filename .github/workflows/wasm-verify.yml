@@ -1,0 +1,252 @@
+name: WASM Hash Verification
+
+on:
+  workflow_dispatch:
+    inputs:
+      git_ref:
+        description: 'Git ref to build from (tag, branch, or commit SHA)'
+        required: true
+        default: 'main'
+      factory_contract_id:
+        description: 'Factory contract ID on the target network (e.g. C...)'
+        required: true
+      rpc_url:
+        description: 'Soroban RPC URL'
+        required: false
+        default: 'https://soroban-mainnet.stellar.org'
+      network_passphrase:
+        description: 'Stellar network passphrase'
+        required: false
+        default: 'Public Global Stellar Network ; September 2015'
+  schedule:
+    # Run weekly on Sunday at 06:00 UTC as a safety net to detect drift
+    - cron: '0 6 * * 0'
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  verify-wasm:
+    name: Verify Deployed WASM Hash
+    runs-on: ubuntu-latest
+    # Use the inputs when triggered manually; for scheduled runs, use
+    # repository variables (which must be configured for the schedule to work).
+    env:
+      GIT_REF: ${{ github.event.inputs.git_ref || 'main' }}
+      FACTORY_CONTRACT_ID: ${{ github.event.inputs.factory_contract_id || '' }}
+      RPC_URL: ${{ github.event.inputs.rpc_url || 'https://soroban-mainnet.stellar.org' }}
+      NETWORK_PASSPHRASE: ${{ github.event.inputs.network_passphrase || 'Public Global Stellar Network ; September 2015' }}
+
+    steps:
+      - name: Validate required inputs
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "schedule" ] && [ -z "$FACTORY_CONTRACT_ID" ]; then
+            echo "::notice::Scheduled run skipped: FACTORY_CONTRACT_ID is not configured as a repository variable."
+            echo "Set the FACTORY_CONTRACT_ID repository variable to enable scheduled WASM verification."
+            exit 0
+          fi
+          if [ -z "$FACTORY_CONTRACT_ID" ]; then
+            echo "::error::FACTORY_CONTRACT_ID is required. For scheduled runs, set the FACTORY_CONTRACT_ID repository variable."
+            exit 1
+          fi
+          if ! echo "$FACTORY_CONTRACT_ID" | grep -qE '^C[A-Z0-9]{55}$'; then
+            echo "::error::FACTORY_CONTRACT_ID '$FACTORY_CONTRACT_ID' does not look like a valid Stellar contract address."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.GIT_REF }}
+          fetch-depth: 0
+
+      - name: Record build metadata
+        id: meta
+        run: |
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "commit_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "ref=$GIT_REF" >> "$GITHUB_OUTPUT"
+          TAG=$(git tag --points-at HEAD | head -1 || echo 'none')
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: contracts
+
+      - name: Install wasm-opt (Binaryen)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq binaryen
+          wasm-opt --version
+
+      - name: Reproducible build of token-factory
+        working-directory: contracts/token-factory
+        run: |
+          echo "▶ Building with cargo (target: wasm32-unknown-unknown, release)..."
+          # Use the Cargo.lock committed in the repo for reproducible deps.
+          cargo build --target wasm32-unknown-unknown --release --locked
+
+          echo "▶ Optimizing with wasm-opt -Oz..."
+          wasm-opt -Oz \
+            ../../target/wasm32-unknown-unknown/release/token_factory.wasm \
+            -o ../../target/wasm32-unknown-unknown/release/token_factory.optimized.wasm
+
+          echo "▶ Computing SHA-256 of optimized WASM..."
+          sha256sum ../../target/wasm32-unknown-unknown/release/token_factory.optimized.wasm \
+            | tee /tmp/built-wasm.sha256
+
+      - name: Capture built WASM hash
+        id: built-hash
+        run: |
+          HASH=$(awk '{print $1}' /tmp/built-wasm.sha256)
+          echo "hash=$HASH" >> "$GITHUB_OUTPUT"
+          echo "Built WASM SHA-256: $HASH"
+
+      - name: Install Stellar CLI
+        run: |
+          STELLAR_CLI_VERSION="22.5.0"
+          echo "▶ Installing stellar-cli v${STELLAR_CLI_VERSION}..."
+          curl -sSfL "https://github.com/stellar/stellar-cli/releases/download/v${STELLAR_CLI_VERSION}/stellar-cli-${STELLAR_CLI_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+            -o /tmp/stellar-cli.tar.gz
+          tar -xzf /tmp/stellar-cli.tar.gz -C /usr/local/bin stellar
+          chmod +x /usr/local/bin/stellar
+          stellar --version
+
+      - name: Compute deployed contract WASM hash via RPC
+        id: deployed-hash
+        run: |
+          echo "▶ Fetching deployed contract WASM..."
+          echo "   Contract ID: $FACTORY_CONTRACT_ID"
+          echo "   RPC URL:     $RPC_URL"
+
+          stellar contract fetch \
+            --id "$FACTORY_CONTRACT_ID" \
+            --rpc-url "$RPC_URL" \
+            --network-passphrase "$NETWORK_PASSPHRASE" \
+            --out-file /tmp/deployed.wasm
+
+          if [ ! -f /tmp/deployed.wasm ] || [ ! -s /tmp/deployed.wasm ]; then
+            echo "::error::Failed to fetch deployed contract WASM from $RPC_URL"
+            exit 1
+          fi
+
+          echo "▶ Computing SHA-256 of deployed WASM..."
+          HASH=$(sha256sum /tmp/deployed.wasm | awk '{print $1}')
+          echo "hash=$HASH" >> "$GITHUB_OUTPUT"
+          echo "Deployed WASM SHA-256: $HASH"
+
+      - name: Compare hashes
+        run: |
+          BUILT="${{ steps.built-hash.outputs.hash }}"
+          DEPLOYED="${{ steps.deployed-hash.outputs.hash }}"
+          COMMIT="${{ steps.meta.outputs.commit_short }}"
+          REF="${{ steps.meta.outputs.ref }}"
+          TAG="${{ steps.meta.outputs.tag }}"
+
+          echo "============================================"
+          echo "  WASM Hash Verification Report"
+          echo "============================================"
+          echo "  Git ref:       $REF"
+          echo "  Commit:        $COMMIT"
+          echo "  Tag:           $TAG"
+          echo "  Contract ID:   $FACTORY_CONTRACT_ID"
+          echo "  Network:       $NETWORK_PASSPHRASE"
+          echo "--------------------------------------------"
+          echo "  Built SHA-256:    $BUILT"
+          echo "  Deployed SHA-256: $DEPLOYED"
+          echo "============================================"
+
+          if [ "$BUILT" = "$DEPLOYED" ]; then
+            echo ""
+            echo "✅ VERIFIED: Deployed WASM matches the build from source at $REF ($COMMIT)."
+          else
+            echo ""
+            echo "❌ MISMATCH DETECTED!"
+            echo "   The WASM deployed on-chain does NOT match the build from source at $REF ($COMMIT)."
+            echo ""
+            echo "   This could mean:"
+            echo "   1. The contract was upgraded outside the reviewed release process."
+            echo "   2. The wrong git ref was used for comparison."
+            echo "   3. The build is not reproducible (toolchain or dependency drift)."
+            echo ""
+            echo "   Recommended actions:"
+            echo "   - Verify you are comparing against the correct git tag."
+            echo "   - Check recent upgrade transactions on the contract."
+            echo "   - Re-run with the expected deployment tag."
+            exit 1
+          fi
+
+      - name: Upload built WASM artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: built-wasm-${{ steps.meta.outputs.commit_short }}
+          path: target/wasm32-unknown-unknown/release/token_factory.optimized.wasm
+          retention-days: 90
+
+      - name: Upload deployed WASM artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployed-wasm-${{ steps.meta.outputs.commit_short }}
+          path: /tmp/deployed.wasm
+          retention-days: 90
+
+      - name: Create issue on mismatch
+        if: failure() && steps.deployed-hash.outcome == 'success'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const built = '${{ steps.built-hash.outputs.hash }}';
+            const deployed = '${{ steps.deployed-hash.outputs.hash }}';
+            const ref = '${{ env.GIT_REF }}';
+            const commit = '${{ steps.meta.outputs.commit }}';
+            const contractId = '${{ env.FACTORY_CONTRACT_ID }}';
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+
+            const title = `⚠️ WASM Hash Mismatch: deployed contract ${contractId.substring(0, 12)}… differs from ${ref}`;
+
+            // Search for an existing open issue with this title to avoid duplicates
+            const { data: issues } = await github.rest.search.issuesAndPullRequests({
+              q: `repo:${context.repo.owner}/${context.repo.repo} is:issue is:open ${title}`,
+            });
+
+            if (issues.total_count > 0) {
+              console.log(`Existing issue #${issues.items[0].number} already open — skipping.`);
+              return;
+            }
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body: [
+                '## 🔴 WASM Hash Mismatch Detected',
+                '',
+                'The automated WASM verification workflow detected that the on-chain contract bytecode does **not** match the build from the reviewed source code.',
+                '',
+                '| Field | Value |',
+                '|-------|-------|',
+                `| Git ref | \`${ref}\` |`,
+                `| Commit | \`${commit}\` |`,
+                `| Contract ID | \`${contractId}\` |`,
+                `| Built SHA-256 | \`${built}\` |`,
+                `| Deployed SHA-256 | \`${deployed}\` |`,
+                `| Workflow run | [View](${runUrl}) |`,
+                '',
+                '### Possible causes',
+                '- The contract was upgraded via `upgrade()` outside the reviewed release process.',
+                '- The wrong git ref was compared against the on-chain code.',
+                '- The build is not reproducible due to toolchain or dependency drift.',
+                '',
+                '### Next steps',
+                '1. Verify which git tag corresponds to the current on-chain deployment.',
+                '2. Re-run the workflow with that tag as `git_ref`.',
+                '3. If the mismatch persists, escalate for security review.',
+              ].join('\n'),
+              labels: ['security', 'bug', 'automated'],
+            });
