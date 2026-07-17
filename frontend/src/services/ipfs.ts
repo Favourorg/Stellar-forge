@@ -1,9 +1,73 @@
 // IPFS service for metadata upload via Pinata
 
 import { IPFS_CONFIG } from '../config/ipfs'
+import { isValidIPFSUri } from '../utils/validation'
+import type { IPFSMetadata } from '../types'
 
 const MAX_FILE_SIZE = 5 * 1024 * 1024 // 5MB
 const ALLOWED_TYPES = ['image/jpeg', 'image/png', 'image/gif']
+
+// ── Metadata validation constants ────────────────────────────────────────────
+
+const MAX_NAME_LENGTH = 32
+const MAX_DESCRIPTION_LENGTH = 500
+
+/**
+ * Validate IPFS-sourced token metadata before it enters app state.
+ *
+ * This is the sole gate between arbitrary IPFS-pinned JSON and values that
+ * downstream consumers (rendering, search/filter, CSV export) treat as
+ * well-formed TokenMetadata. Without these checks, any component that
+ * accesses `.name`, `.description`, or `.image` on the result of
+ * `getMetadata` is implicitly trusting data that a token creator controls
+ * entirely — token name/symbol validation at creation time only applies to
+ * on-chain parameters, not to the free-form JSON pinned to IPFS.
+ *
+ * Checks performed:
+ *   - `name`:    required, non-empty string, ≤ MAX_NAME_LENGTH chars
+ *   - `description`: required, non-empty string, ≤ MAX_DESCRIPTION_LENGTH chars
+ *   - `image`:   required, string, must be a valid IPFS URI per isValidIPFSUri
+ *
+ * @throws IPFSUploadError if any field fails validation.
+ * @returns The validated IPFSMetadata object.
+ */
+export function validateTokenMetadata(raw: Record<string, unknown>): IPFSMetadata {
+  const name = raw.name
+  if (typeof name !== 'string' || name.trim().length === 0) {
+    throw new IPFSUploadError('Token metadata "name" is missing or empty.')
+  }
+  if (name.length > MAX_NAME_LENGTH) {
+    throw new IPFSUploadError(
+      `Token metadata "name" exceeds ${MAX_NAME_LENGTH} characters (got ${name.length}).`
+    )
+  }
+
+  const description = raw.description
+  if (typeof description !== 'string' || description.trim().length === 0) {
+    throw new IPFSUploadError('Token metadata "description" is missing or empty.')
+  }
+  if (description.length > MAX_DESCRIPTION_LENGTH) {
+    throw new IPFSUploadError(
+      `Token metadata "description" exceeds ${MAX_DESCRIPTION_LENGTH} characters (got ${description.length}).`
+    )
+  }
+
+  const image = raw.image
+  if (typeof image !== 'string' || image.trim().length === 0) {
+    throw new IPFSUploadError('Token metadata "image" is missing or empty.')
+  }
+  if (!isValidIPFSUri(image)) {
+    throw new IPFSUploadError(
+      `Token metadata "image" is not a valid IPFS URI (got "${image}"). Expected format: ipfs://<CID>`
+    )
+  }
+
+  return {
+    name,
+    description,
+    image,
+  }
+}
 
 export class IPFSConfigError extends Error {
   constructor(message: string) {
@@ -72,9 +136,16 @@ export class IPFSService {
   }
 
   /**
-   * Fetch and parse metadata JSON from an ipfs:// URI via the Pinata gateway.
+   * Fetch, parse, and validate metadata JSON from an ipfs:// URI.
+   *
+   * After fetching and parsing the JSON from the Pinata gateway, the result
+   * is run through `validateTokenMetadata` to ensure all required fields
+   * (`name`, `description`, `image`) are present, non-empty, and within
+   * expected bounds before it reaches downstream consumers.
+   *
+   * @throws IPFSUploadError if fetching, parsing, or validation fails.
    */
-  async getMetadata(uri: string): Promise<Record<string, unknown>> {
+  async getMetadata(uri: string): Promise<IPFSMetadata> {
     if (!uri.startsWith('ipfs://')) {
       throw new IPFSUploadError(`Invalid IPFS URI: "${uri}". Expected format: ipfs://<CID>`)
     }
@@ -93,11 +164,15 @@ export class IPFSService {
       throw new IPFSUploadError(`Failed to fetch metadata (HTTP ${response.status}). The CID may not be pinned yet.`)
     }
 
+    let parsed: Record<string, unknown>
     try {
-      return (await response.json()) as Record<string, unknown>
+      parsed = (await response.json()) as Record<string, unknown>
     } catch {
       throw new IPFSUploadError('Metadata response is not valid JSON.')
     }
+
+    // Validate the parsed metadata before it enters app state
+    return validateTokenMetadata(parsed)
   }
 
   // ── Private helpers ──────────────────────────────────────────────────────────
