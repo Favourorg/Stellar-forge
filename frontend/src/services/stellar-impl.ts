@@ -1,7 +1,7 @@
 // Stellar SDK integration service
 import { STELLAR_CONFIG, NETWORK_CONFIGS } from '../config/stellar'
 import { walletService } from './wallet'
-import { captureContractError, captureTransactionError } from '../lib/monitoring/sentry'
+import { captureContractError } from '../lib/monitoring/sentry'
 import type {
   AppError,
   ContractEvent,
@@ -125,7 +125,7 @@ async function pollTransaction(
     await new Promise((r) => setTimeout(r, base + jitter))
   }
   throw new Error(`Transaction ${hash} timed out after ${maxAttempts} attempts`)
-}// ── Fee Bump Transactions ─────────────────────────────────────────────────────
+} // ── Fee Bump Transactions ─────────────────────────────────────────────────────
 
 /**
  * Wrap a signed inner transaction in a fee bump envelope.
@@ -679,7 +679,7 @@ export class StellarService {
       })
       throw new Error(appErr.message)
     }
-  } ─────────────────────────────────────────────────────────
+  }
 
   async getFactoryState(): Promise<FactoryState> {
     const functionName = 'getFactoryState'

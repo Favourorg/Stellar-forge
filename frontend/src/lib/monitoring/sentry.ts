@@ -113,7 +113,10 @@ export function captureException(error: Error, context?: ErrorContext): void {
  * Capture contract call errors with structured context
  * This helps track failed RPC calls and contract invocations in production
  */
-export function captureContractError(error: Error, context: ContractErrorContext & { txHash?: string }): void {
+export function captureContractError(
+  error: Error,
+  context: ContractErrorContext & { txHash?: string },
+): void {
   if (!IS_SENTRY_ENABLED) return
 
   Sentry.withScope((scope: Scope) => {

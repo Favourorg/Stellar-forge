@@ -55,6 +55,13 @@ export const CreateToken: React.FC<CreateTokenProps> = ({ onSuccess }) => {
   const [deployedToken, setDeployedToken] = useState<DeployedToken | null>(null)
   const [showTimeoutBanner, setShowTimeoutBanner] = useState(false)
 
+  const paramsRef = useRef<{
+    name: string
+    symbol: string
+    decimals: number
+    initialSupply: string
+  } | null>(null)
+
   const txBuilder = useCallback(
     () =>
       stellarService.deployToken({
@@ -63,8 +70,7 @@ export const CreateToken: React.FC<CreateTokenProps> = ({ onSuccess }) => {
         decimals: paramsRef.current!.decimals,
         initialSupply: paramsRef.current!.initialSupply,
         salt:
-          Math.random().toString(36).substring(2, 15) +
-          Math.random().toString(36).substring(2, 15),
+          Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15),
         tokenWasmHash: STELLAR_CONFIG.tokenWasmHash || '',
         feePayment: factoryState?.baseFee ?? '100000',
       }),
@@ -73,13 +79,6 @@ export const CreateToken: React.FC<CreateTokenProps> = ({ onSuccess }) => {
 
   const { execute, status } = useTransaction(txBuilder)
 
-  const paramsRef = useRef<{
-    name: string
-    symbol: string
-    decimals: number
-    initialSupply: string
-  } | null>(null)
-
   const isSubmitting =
     status === 'simulating' ||
     status === 'signing' ||
@@ -87,12 +86,7 @@ export const CreateToken: React.FC<CreateTokenProps> = ({ onSuccess }) => {
     status === 'polling'
 
   const handleTokenFormSubmit = useCallback(
-    async (params: {
-      name: string
-      symbol: string
-      decimals: number
-      initialSupply: string
-    }) => {
+    async (params: { name: string; symbol: string; decimals: number; initialSupply: string }) => {
       setShowTimeoutBanner(false)
       paramsRef.current = params
 
@@ -136,10 +130,7 @@ export const CreateToken: React.FC<CreateTokenProps> = ({ onSuccess }) => {
           )
         } else {
           logger.error('Deployment error:', err)
-          addToast(
-            err instanceof Error ? err.message : t('tokenForm.deployError'),
-            'error',
-          )
+          addToast(err instanceof Error ? err.message : t('tokenForm.deployError'), 'error')
         }
       }
     },
