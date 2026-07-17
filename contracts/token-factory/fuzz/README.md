@@ -167,11 +167,105 @@ No artifacts = no crashes found ✓
 
 A crash will be saved to the work directory. The file contains the input that triggered the crash.
 
-**Next Steps**:
-1. Note the failing input sequence
-2. Add regression test to contract test suite with the failing case
-3. Fix the underlying bug
-4. Verify crash is resolved in next fuzz run
+### Crash-to-Regression-Test Process
+
+When a fuzz target discovers a crash, follow this process to convert it into a permanent regression guard. **This is mandatory** — a crash that is fixed but never enshrined as a test will not protect against regressions once the 7-day CI artifact retention expires.
+
+#### Step 1: Reproduce locally
+
+```bash
+cd contracts/token-factory/fuzz
+cargo +nightly run --release --bin <fuzz_target> -- \
+  -max_len=10000 \
+  artifacts/<fuzz_target>/<crash-file>
+```
+
+Confirm the crash reproduces deterministically with the saved input.
+
+#### Step 2: Minimise the crashing input
+
+Use `cargo-fuzz`'s `tmin` to produce the smallest input that still triggers the crash:
+
+```bash
+cargo fuzz tmin <fuzz_target> artifacts/<fuzz_target>/<crash-file>
+```
+
+This writes the minimised input to stdout (or a file). A smaller input makes the root cause easier to reason about and keeps the test suite fast.
+
+#### Step 3: Convert into a `#[test]` regression test
+
+Add a regression test to `contracts/token-factory/src/test.rs` that:
+
+- Replicates the exact input/state that triggered the crash.
+- Asserts the **fixed** behaviour (e.g., the contract returns a specific error instead of panicking).
+- Includes a doc comment referencing the fuzz target that discovered it and the original crash file name.
+
+**Example** (initial_supply overflow discovered by `fuzz_create_token`):
+
+```rust
+/// Regression test for initial_supply overflow when casting u128 → i128.
+/// Discovered via fuzz_targets::fuzz_create_token.
+#[test]
+fn test_create_token_initial_supply_exceeds_i128_max() {
+    // ... setup ...
+    let overflow_supply = (i128::MAX as u128).checked_add(1).unwrap();
+    let result = s.client.try_create_token(
+        &creator, &s.salt(0),
+        &name, &symbol, &7, &overflow_supply, &1_000,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidParameters)));
+}
+```
+
+#### Step 4: Commit the minimised input as a corpus seed
+
+Copy the minimised crash input into the checked-in corpus so the fuzzer starts with it on every run:
+
+```bash
+cp artifacts/<fuzz_target>/<minimised-file> corpus/<fuzz_target>/regression_<description>.bin
+git add corpus/
+```
+
+Alternatively, use the seed generation script:
+
+```bash
+node scripts/generate_seeds.mjs
+```
+
+#### Step 5: Verify
+
+1. `cargo test` passes (the regression test succeeds).
+2. The fuzz target no longer crashes on the original input.
+3. Commit the test, the corpus seed, and the fix together.
+
+**Real example**: This process was applied to the `initial_supply` overflow bug discovered by `fuzz_create_token`. See:
+- Fix: `create_token_inner` overflow guard in `contracts/token-factory/src/lib.rs`
+- Regression test: `test_create_token_initial_supply_exceeds_i128_max` in `contracts/token-factory/src/test.rs`
+- Corpus seed: `corpus/fuzz_create_token/initial_supply_i128_max.bin`
+
+## Corpus Seeds
+
+The `corpus/` directory contains checked-in seed inputs organised per fuzz target. These seeds give the fuzzer a head start by pre-populating it with known edge cases (boundary values, overflow scenarios, etc.) rather than starting from scratch every run.
+
+To add new seeds:
+
+```bash
+# Automatically from the seed definitions:
+node scripts/generate_seeds.mjs
+
+# Or manually: place any interesting binary input in the target's corpus directory
+cp my_edge_case.bin corpus/fuzz_create_token/
+```
+
+## CI Integration
+
+Fuzz tests are automatically run by GitHub Actions:
+
+- **Trigger**: Pull requests modifying contract code
+- **Schedule**: Daily at 2 AM UTC
+- **Duration**: 60 seconds per target
+- **Corpus**: Each run starts from the committed `corpus/` seeds and uses an actions/cache to persist the runtime corpus across runs, so coverage accumulates over time.
+- **Artifacts**: Crash artifacts uploaded on failure (7-day retention).
 
 ## Known Limitations
 

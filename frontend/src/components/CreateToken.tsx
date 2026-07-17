@@ -1,9 +1,10 @@
-import React, { useState } from 'react'
+import React, { useState, useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useToast } from '../context/ToastContext'
 import { useStellarContext } from '../context/StellarContext'
 import { useWalletContext } from '../context/WalletContext'
 import { useFactoryState } from '../hooks/useFactoryState'
+import { useTransaction } from '../hooks/useTransaction'
 import { TokenForm } from './TokenForm'
 import { ShareButton } from './ShareButton'
 import { CopyButton } from './CopyButton'
@@ -11,59 +12,139 @@ import { STELLAR_CONFIG } from '../config/stellar'
 import ErrorBoundary from './ErrorBoundary'
 import { logger } from '../utils/logger'
 
+// ── Constants ────────────────────────────────────────────────────────────────
+
+/** Maximum time (ms) the component waits for deployToken to settle before
+ *  surfacing an uncertainty banner. Aligned with Soroban's ~60s ledger
+ *  close window plus network buffer. */
+const DEPLOY_TIMEOUT_MS = 90_000
+
+/** Error class used to distinguish a component-level timeout from a
+ *  genuine RPC / contract error. */
+class TimeoutError extends Error {
+  constructor() {
+    super('Transaction timed out')
+    this.name = 'TimeoutError'
+  }
+}
+
+// ── Types ───────────────────────────────────────────────────────────────────
+
 interface DeployedToken {
   address: string
   name: string
   symbol: string
 }
 
-export const CreateToken: React.FC = () => {
+export interface CreateTokenProps {
+  /** Called after the transaction is confirmed on-chain so the parent can
+   *  refresh caches (e.g. the token list). Follows the reconciliation
+   *  policy: caches are only invalidated after confirmed success. */
+  onSuccess?: () => void
+}
+
+// ── Component ───────────────────────────────────────────────────────────────
+
+export const CreateToken: React.FC<CreateTokenProps> = ({ onSuccess }) => {
   const { t } = useTranslation()
   const { addToast } = useToast()
   const { stellarService } = useStellarContext()
   const { refreshBalance } = useWalletContext()
   const { state: factoryState } = useFactoryState()
 
-  const [isDeploying, setIsDeploying] = useState(false)
   const [deployedToken, setDeployedToken] = useState<DeployedToken | null>(null)
+  const [showTimeoutBanner, setShowTimeoutBanner] = useState(false)
 
-  const handleTokenFormSubmit = async (params: {
+  const txBuilder = useCallback(
+    () =>
+      stellarService.deployToken({
+        name: paramsRef.current!.name,
+        symbol: paramsRef.current!.symbol,
+        decimals: paramsRef.current!.decimals,
+        initialSupply: paramsRef.current!.initialSupply,
+        salt:
+          Math.random().toString(36).substring(2, 15) +
+          Math.random().toString(36).substring(2, 15),
+        tokenWasmHash: STELLAR_CONFIG.tokenWasmHash || '',
+        feePayment: factoryState?.baseFee ?? '100000',
+      }),
+    [stellarService, factoryState?.baseFee],
+  )
+
+  const { execute, status } = useTransaction(txBuilder)
+
+  const paramsRef = useRef<{
     name: string
     symbol: string
     decimals: number
     initialSupply: string
-  }) => {
-    setIsDeploying(true)
-    try {
-      const deployParams = {
-        ...params,
-        salt:
-          Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15),
-        tokenWasmHash: STELLAR_CONFIG.tokenWasmHash || '',
-        // Pay the real on-chain base_fee; the contract rejects create if fee_payment < base_fee.
-        feePayment: factoryState?.baseFee ?? '100000',
-      }
+  } | null>(null)
 
-      const result = await stellarService.deployToken(deployParams)
+  const isSubmitting =
+    status === 'simulating' ||
+    status === 'signing' ||
+    status === 'submitting' ||
+    status === 'polling'
 
-      if (result.success) {
-        setDeployedToken({
-          address: result.tokenAddress,
-          name: params.name,
-          symbol: params.symbol,
-        })
-        addToast(t('tokenForm.deploySuccess'), 'success')
-        await refreshBalance()
-      } else {
-        addToast(t('tokenForm.deployFailed'), 'error')
+  const handleTokenFormSubmit = useCallback(
+    async (params: {
+      name: string
+      symbol: string
+      decimals: number
+      initialSupply: string
+    }) => {
+      setShowTimeoutBanner(false)
+      paramsRef.current = params
+
+      try {
+        // ── Component-level timeout ──────────────────────────────────────
+        // useTransaction doesn't impose a deadline — each write component
+        // guards its own builder with Promise.race so the timeout matches
+        // the expected confirmation window for the specific operation.
+        const result = await Promise.race([
+          execute(),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new TimeoutError()), DEPLOY_TIMEOUT_MS),
+          ),
+        ])
+
+        // ── Reconciliation policy step 2: only mutate on confirmed success
+        if (result.success) {
+          setDeployedToken({
+            address: result.tokenAddress,
+            name: params.name,
+            symbol: params.symbol,
+          })
+          addToast(t('tokenForm.deploySuccess'), 'success')
+          await refreshBalance()
+          onSuccess?.()
+        } else {
+          // ── Reconciliation policy step 3: failure → no cache mutation
+          addToast(t('tokenForm.deployFailed'), 'error')
+        }
+      } catch (err) {
+        // ── Reconciliation policy step 3: timeout → no cache mutation,
+        //     communicate uncertainty
+        if (err instanceof TimeoutError) {
+          setShowTimeoutBanner(true)
+          addToast(
+            t('tokenForm.deployTimeout', {
+              defaultValue:
+                'Transaction submitted but not yet confirmed. Check the explorer for the final status.',
+            }),
+            'warning',
+          )
+        } else {
+          logger.error('Deployment error:', err)
+          addToast(
+            err instanceof Error ? err.message : t('tokenForm.deployError'),
+            'error',
+          )
+        }
       }
-    } catch (error) {
-      logger.error('Deployment error:', error)
-      addToast(error instanceof Error ? error.message : t('tokenForm.deployError'), 'error')
-    } finally {
-      setIsDeploying(false)
-    }
-  }
+    },
+    [execute, addToast, t, refreshBalance, onSuccess],
+  )
 
   return (
     <div className="space-y-4 sm:space-y-6">
@@ -104,9 +185,24 @@ export const CreateToken: React.FC = () => {
         </div>
       )}
 
+      {/* Timeout / unconfirmed state — reconciliation policy step 3 */}
+      {showTimeoutBanner && (
+        <div
+          className="rounded-lg border border-amber-200 bg-amber-50 dark:bg-amber-900/20 dark:border-amber-800 p-4 text-sm text-amber-800 dark:text-amber-300"
+          role="alert"
+          data-testid="timeout-banner"
+        >
+          <p className="font-medium">Transaction submitted but not yet confirmed</p>
+          <p className="mt-1">
+            Your transaction has been broadcast to the network but has not reached a terminal state.
+            It may still succeed — check a Stellar explorer for the final status before retrying.
+          </p>
+        </div>
+      )}
+
       <div className="bg-white dark:bg-gray-800 rounded-lg p-4 sm:p-6 shadow-sm">
         <ErrorBoundary>
-          <TokenForm onSubmit={handleTokenFormSubmit} isLoading={isDeploying} />
+          <TokenForm onSubmit={handleTokenFormSubmit} isLoading={isSubmitting} />
         </ErrorBoundary>
       </div>
     </div>
