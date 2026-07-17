@@ -28,6 +28,7 @@ import {
 import type { Network } from '../config/stellar'
 import { withRetry, HttpError } from '../utils/retry'
 import { parseContractError } from '../utils/contractErrors'
+import { nextBackoffDelay } from '../utils/pollWithBackoff'
 
 export type { FactoryState } from '../types'
 
@@ -122,11 +123,8 @@ async function pollTransaction(
     if (result.status === rpc.Api.GetTransactionStatus.FAILED) {
       throw parseContractError(new Error(`Transaction failed: ${hash}`))
     }
-    // Exponential backoff capped at maxDelayMs, with ±10% jitter to avoid
-    // thundering-herd bursts when many transactions confirm around the same time.
-    const base = Math.min(initialDelayMs * Math.pow(2, i), maxDelayMs)
-    const jitter = Math.floor(Math.random() * 0.2 * base) - Math.floor(0.1 * base)
-    await new Promise((r) => setTimeout(r, base + jitter))
+    const delay = nextBackoffDelay(i, { initialDelayMs, maxDelayMs })
+    await new Promise((r) => setTimeout(r, delay))
   }
   throw new Error(`Transaction ${hash} timed out after ${maxAttempts} attempts`)
 } // ── Fee Bump Transactions ─────────────────────────────────────────────────────
