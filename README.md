@@ -19,11 +19,13 @@ StellarForge is a user-friendly decentralized application (dApp) that enables cr
 ## Tech Stack
 
 ### Backend (Smart Contracts)
+
 - **Rust**: Programming language for Soroban contracts
 - **Soroban SDK**: Stellar's smart contract development framework
 - **Soroban Token SDK**: For token operations
 
 ### Frontend
+
 - **React 19**: UI framework
 - **TypeScript**: Type-safe JavaScript
 - **Vite**: Build tool and dev server
@@ -31,6 +33,7 @@ StellarForge is a user-friendly decentralized application (dApp) that enables cr
 - **Vitest**: Testing framework
 
 ### Integrations
+
 - **Freighter Wallet**: Stellar wallet browser extension
 - **IPFS/Pinata**: Decentralized file storage for metadata
 - **Stellar Horizon**: Blockchain data API
@@ -70,37 +73,45 @@ See [DOCKER_SETUP.md](DOCKER_SETUP.md) for detailed Docker instructions.
 **Prerequisites**: Rust, Node.js (v18+), Stellar CLI, Freighter Wallet
 
 ### 1. Clone the Repository
+
 ```bash
 git clone <repository-url>
 cd stellar-forge
 ```
 
 ### 2. Setup Stellar CLI Environment
+
 Run the setup script to install Rust, Stellar CLI, and configure testnet:
+
 ```bash
 ./scripts/setup-soroban.sh
 ```
 
 > **Note:** The Soroban CLI was renamed to `stellar` in recent versions. All commands below use `stellar`. If you have the old `soroban` binary installed, uninstall it and run the setup script again:
+>
 > ```bash
 > cargo uninstall soroban-cli
 > cargo install stellar-cli --features opt
 > ```
 
 ### 3. Install Frontend Dependencies
+
 ```bash
 cd frontend
 npm install
 ```
 
 ### 4. Environment Variables
+
 Copy the example env file and fill in your values:
 Copy the example file and fill in your values:
+
 ```bash
 cp frontend/.env.example frontend/.env
 ```
 
 Then edit `frontend/.env`:
+
 ```env
 VITE_NETWORK=testnet
 VITE_FACTORY_CONTRACT_ID=<deployed-contract-id>
@@ -113,19 +124,23 @@ VITE_IPFS_API_SECRET=<pinata-api-secret>
 ## Building & Testing
 
 ### Smart Contracts
+
 ```bash
 cd contracts
 cargo build --target wasm32-unknown-unknown --release
 ```
 
 For an optimized binary (requires `binaryen` — install via `apt install binaryen` or `brew install binaryen`):
+
 ```bash
 cd contracts/token-factory
 bash build.sh
 ```
+
 This produces `target/wasm32-unknown-unknown/release/token_factory.optimized.wasm`, which is significantly smaller and lowers on-chain deployment costs.
 
 ### Run Contract Tests
+
 ```bash
 cd contracts/token-factory
 cargo test
@@ -145,6 +160,7 @@ cargo fuzz run fuzz_burn -- -timeout=60            # Test burn operations
 For more details on fuzz testing setup and interpretation, see [contracts/token-factory/fuzz/README.md](contracts/token-factory/fuzz/README.md).
 
 ### Frontend
+
 ```bash
 cd frontend
 npm run dev          # Start dev server
@@ -156,21 +172,26 @@ npm run lint         # Lint code
 ## Contract Functions
 
 ### Initialization
+
 - `initialize(admin, treasury, base_fee, metadata_fee)`: Set up the factory with admin controls and fees
 
 ### Token Operations
+
 - `create_token(creator, name, symbol, decimals, initial_supply, fee_payment)`: Deploy a new token
 - `mint_tokens(token_address, admin, to, amount, fee_payment)`: Mint additional tokens
 - `burn(token_address, from, amount)`: Burn tokens from supply
 
 ### Metadata
+
 - `set_metadata(token_address, admin, metadata_uri, fee_payment)`: Set token metadata URI
 
 ### Admin Functions
+
 - `update_fees(admin, base_fee?, metadata_fee?)`: Update factory fees
 - `pause(admin)` / `unpause(admin)`: Pause or resume the factory
 
 ### View Functions
+
 - `get_state()`: Get factory state
 - `get_base_fee()`: Get token creation fee
 - `get_metadata_fee()`: Get metadata setting fee
@@ -187,6 +208,17 @@ npm run lint         # Lint code
 
 ## Deployment
 
+## Deployment & Caching
+
+The application uses a service worker (via Workbox) to support offline capabilities. The cache is versioned using the `VITE_FACTORY_CONTRACT_ID` and `VITE_NETWORK` environment variables.
+
+- When either of these variables changes, the service worker will be updated and old caches will be cleared automatically.
+- The user interface displays the current contract ID and network in the footer, allowing manual verification before signing any transaction.
+
+To force a cache refresh, users can either reload the page (the SW will update in the background) or clear the site data from the browser.
+
+**Important**: After a contract redeployment, ensure the environment variables are updated and the build is deployed. The new SW will be served and clients will fetch the updated assets.
+
 ### Testnet Deployment Guide
 
 This guide walks you through deploying StellarForge to Stellar testnet from scratch.
@@ -202,16 +234,19 @@ This guide walks you through deploying StellarForge to Stellar testnet from scra
 You need testnet XLM to pay for contract deployment and transactions.
 
 1. **Create a testnet account** using Stellar CLI:
+
    ```bash
    stellar keys generate deployer --network testnet
    ```
+
    This creates a new keypair and saves it locally. The output shows your public key.
 
 2. **Fund your account** using Friendbot:
+
    ```bash
    stellar keys address deployer
    # Copy the address (starts with G...)
-   
+
    # Fund with 10,000 testnet XLM
    curl "https://friendbot.stellar.org?addr=YOUR_ADDRESS_HERE"
    ```
@@ -269,6 +304,7 @@ stellar contract install \
 ```
 
 If you don't have a token WASM, you can use the Stellar Asset Contract:
+
 ```bash
 # Download the official Stellar token contract
 wget https://github.com/stellar/soroban-examples/raw/main/token/target/wasm32-unknown-unknown/release/soroban_token_contract.wasm
@@ -301,6 +337,7 @@ stellar contract invoke \
 ```
 
 **Parameters explained:**
+
 - `admin`: Address that can update fees and pause the factory
 - `treasury`: Address that receives fees from token creation
 - `fee_token`: Contract address for the fee token (use native XLM contract: `CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC`)
@@ -320,6 +357,7 @@ nano .env
 ```
 
 Update these required variables:
+
 ```env
 VITE_NETWORK=testnet
 VITE_FACTORY_CONTRACT_ID=<your-factory-contract-id>
@@ -329,6 +367,7 @@ VITE_IPFS_API_SECRET=<your-pinata-api-secret>
 ```
 
 **Getting Pinata credentials:**
+
 1. Sign up at [https://app.pinata.cloud](https://app.pinata.cloud)
 2. Go to API Keys → New Key
 3. Enable "pinFileToIPFS" permission
@@ -357,6 +396,7 @@ npm run build
 ```
 
 **Deployment options:**
+
 - **Vercel**: See [docs/deployment-vercel.md](./docs/deployment-vercel.md)
 - **Netlify**: Drag and drop the `dist/` folder
 - **GitHub Pages**: Use `gh-pages` package
@@ -369,6 +409,7 @@ npm run build
 Before deploying to mainnet, complete the [Mainnet Deployment Checklist](./docs/mainnet-deployment-checklist.md).
 
 The process is identical to testnet, but:
+
 1. Use `--network mainnet` instead of `--network testnet`
 2. Fund your account with real XLM (buy from an exchange)
 3. Set `VITE_NETWORK=mainnet` in your `.env`
@@ -378,6 +419,7 @@ The process is identical to testnet, but:
 ### Troubleshooting Deployment
 
 #### Error: "account not found"
+
 Your account doesn't exist on the network yet. Fund it with Friendbot (testnet) or send XLM from an exchange (mainnet).
 
 ```bash
@@ -386,6 +428,7 @@ curl "https://friendbot.stellar.org?addr=$(stellar keys address deployer)"
 ```
 
 #### Error: "insufficient balance"
+
 You don't have enough XLM to pay for the transaction.
 
 ```bash
@@ -397,19 +440,25 @@ curl "https://friendbot.stellar.org?addr=$(stellar keys address deployer)"
 ```
 
 #### Error: "contract already initialized"
+
 The contract has already been initialized. You can't initialize it again. If you need to change parameters, deploy a new contract.
 
 #### Error: "wasm not found"
+
 The WASM hash you provided doesn't exist on the network. Make sure you ran `stellar contract install` first and used the correct hash.
 
 #### Build fails with "target not found"
+
 Add the wasm32 target to Rust:
+
 ```bash
 rustup target add wasm32-unknown-unknown
 ```
 
 #### Frontend shows "Misconfiguration Screen"
+
 One or more required environment variables are missing. Check that your `.env` file has:
+
 - `VITE_FACTORY_CONTRACT_ID`
 - `VITE_TOKEN_WASM_HASH`
 - `VITE_IPFS_API_KEY`
@@ -533,6 +582,7 @@ StellarForge consists of three main components that work together:
 **Symptoms**: "Wallet not installed" error or connection button doesn't work
 
 **Solutions**:
+
 - Install [Freighter wallet extension](https://www.freighter.app/)
 - Refresh the page after installing
 - Check that Freighter is enabled in your browser extensions
@@ -543,6 +593,7 @@ StellarForge consists of three main components that work together:
 **Symptoms**: Transactions fail with "account not found" or "contract not found"
 
 **Solutions**:
+
 - Check the network indicator in the top-right corner of the app
 - Click the network switcher to toggle between testnet and mainnet
 - In Freighter, ensure you're on the same network as the app
@@ -553,6 +604,7 @@ StellarForge consists of three main components that work together:
 **Symptoms**: "insufficient balance" or "insufficient fee" errors
 
 **Solutions**:
+
 - **Testnet**: Get free XLM from Friendbot:
   ```bash
   curl "https://friendbot.stellar.org?addr=YOUR_ADDRESS"
@@ -567,6 +619,7 @@ StellarForge consists of three main components that work together:
 **Symptoms**: Transaction pending for a long time, then fails
 
 **Solutions**:
+
 - Check Stellar network status at [status.stellar.org](https://status.stellar.org)
 - Increase timeout in the code (default is 30 seconds)
 - Try submitting the transaction again
@@ -580,6 +633,7 @@ StellarForge consists of three main components that work together:
 **Symptoms**: "Failed to upload metadata" or IPFS errors
 
 **Solutions**:
+
 - Verify your Pinata API credentials in `.env`
 - Check Pinata dashboard for API key status
 - Ensure image file is under 10MB
@@ -591,6 +645,7 @@ StellarForge consists of three main components that work together:
 **Symptoms**: "AlreadyInitialized" error or initialization transaction fails
 
 **Solutions**:
+
 - Contract can only be initialized once
 - If you need different parameters, deploy a new contract
 - Check if contract is already initialized:
@@ -606,6 +661,7 @@ StellarForge consists of three main components that work together:
 **Symptoms**: "InvalidTokenParams" or creation transaction fails
 
 **Solutions**:
+
 - Ensure token name is 1-32 characters
 - Ensure token symbol is 1-12 characters
 - Decimals must be 0-18
@@ -624,6 +680,7 @@ StellarForge consists of three main components that work together:
 **Symptoms**: Token created but image/description doesn't show
 
 **Solutions**:
+
 - Check that metadata was set (look for `metadata_set` event)
 - Verify IPFS URI is accessible:
   ```bash
@@ -645,6 +702,7 @@ StellarForge consists of three main components that work together:
 **Symptoms**: `cargo build` or `npm run build` fails
 
 **Solutions**:
+
 - **Rust build fails**:
   ```bash
   rustup update
@@ -665,6 +723,7 @@ StellarForge consists of three main components that work together:
 **Symptoms**: Transaction history or token events don't display
 
 **Solutions**:
+
 - Check that Soroban RPC endpoint supports `getEvents`
 - Verify contract ID is correct in `.env`
 - Check browser console for API errors
@@ -702,6 +761,7 @@ script-src 'self'
 For stronger enforcement, set the CSP as an HTTP response header on your hosting provider instead of (or in addition to) the meta tag — HTTP headers take precedence and support more directives like `frame-ancestors`.
 
 **Vercel** — add to `vercel.json`:
+
 ```json
 {
   "headers": [
@@ -719,6 +779,7 @@ For stronger enforcement, set the CSP as an HTTP response header on your hosting
 ```
 
 **Netlify** — add to `netlify.toml`:
+
 ```toml
 [[headers]]
   for = "/*"
@@ -727,18 +788,20 @@ For stronger enforcement, set the CSP as an HTTP response header on your hosting
 ```
 
 **Nginx** — add to your server block:
+
 ```nginx
 add_header Content-Security-Policy "default-src 'self'; connect-src 'self' https://*.stellar.org https://api.pinata.cloud; img-src 'self' data: https://gateway.pinata.cloud; script-src 'self'";
 ```
 
 For users deploying tokens, we strongly recommend:
+
 - Always test on testnet first before mainnet deployment
 - Review all parameters carefully using the [Mainnet Deployment Checklist](./docs/mainnet-deployment-checklist.md)
 - Verify contract addresses and transaction details before signing
 
 ## Fee Bump Transactions
 
-If a user's XLM balance is too low to cover the network base fee, their transaction will fail. Stellar's [fee bump](https://developers.stellar.org/docs/learn/encyclopedia/transactions-specialized/fee-bump-transactions) mechanism lets a third-party account (the *fee source*) pay the base fee on behalf of the original sender.
+If a user's XLM balance is too low to cover the network base fee, their transaction will fail. Stellar's [fee bump](https://developers.stellar.org/docs/learn/encyclopedia/transactions-specialized/fee-bump-transactions) mechanism lets a third-party account (the _fee source_) pay the base fee on behalf of the original sender.
 
 ### When to use fee bumps
 
@@ -753,10 +816,13 @@ Two utilities are exported from `frontend/src/services/stellar.ts`:
 ```ts
 // 1. Wrap a signed inner transaction in a fee bump envelope.
 //    The fee-source account (connected via Freighter) signs the bump.
-const signedFeeBumpXdr = await buildFeeBumpTransaction(innerTxXdr, feeSourceAddress)
+const signedFeeBumpXdr = await buildFeeBumpTransaction(
+  innerTxXdr,
+  feeSourceAddress,
+);
 
 // 2. Submit the fee bump and wait for confirmation.
-const txHash = await submitFeeBumpTransaction(signedFeeBumpXdr)
+const txHash = await submitFeeBumpTransaction(signedFeeBumpXdr);
 ```
 
 The fee source must have enough XLM to cover the base fee. The inner transaction is not re-signed — only the fee bump envelope requires the fee source's signature.
@@ -782,9 +848,9 @@ The factory contract supports in-place WASM upgrades without redeploying or migr
 
 `FactoryState` carries a `schema_version: u32` field. The constant `CURRENT_SCHEMA_VERSION` in `lib.rs` is the source of truth. `initialize` stamps the current version on every fresh deployment. `migrate` reads the on-chain version from a standalone `"sv"` storage key and applies each pending upgrade step in order, making it safe to call multiple times (idempotent).
 
-| Version | Change |
-|---------|--------|
-| 1 | Initial versioned schema — added `schema_version` field to `FactoryState` |
+| Version | Change                                                                    |
+| ------- | ------------------------------------------------------------------------- |
+| 1       | Initial versioned schema — added `schema_version` field to `FactoryState` |
 
 ### Adding a new migration (version N → N+1)
 

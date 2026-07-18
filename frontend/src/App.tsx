@@ -47,6 +47,7 @@ import { isFactoryConfigured } from './config/env'
 import ErrorBoundary from './components/ErrorBoundary'
 import { TosProvider } from './context/TosContext'
 import { ThemeProvider, useTheme } from './context/ThemeContext'
+import { STELLAR_CONFIG } from './config/stellar'
 
 const ProtectedRoute: React.FC<{ children: React.ReactElement }> = ({ children }) => {
   const { wallet } = useWallet()
@@ -421,7 +422,12 @@ function AppContent() {
           </div>
         </div>
 
-        <footer className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 mt-4 border-t border-gray-200 dark:border-slate-700 flex justify-center">
+        <footer className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 mt-4 border-t border-gray-200 dark:border-slate-700 flex flex-col items-center gap-2">
+          <div className="text-xs text-gray-500 dark:text-gray-400 text-center">
+            Network: {STELLAR_CONFIG.network} | Contract:{' '}
+            {STELLAR_CONFIG.factoryContractId?.slice(0, 8) || 'N/A'}…
+            {STELLAR_CONFIG.factoryContractId?.slice(-6) || ''}
+          </div>
           <AnalyticsOptOut />
         </footer>
 
