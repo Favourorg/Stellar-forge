@@ -13,7 +13,6 @@
     "dev:all": "concurrently -n contract,frontend -c cyan,green \"npm run contract:compile\" \"npm run frontend:dev\""
   },
   "devDependencies": {
-    "concurrently": "^9.1.2",
     "@commitlint/cli": "^20.5.0",
     "@commitlint/config-conventional": "^20.5.0",
     "@semantic-release/changelog": "^6.0.3",
@@ -21,6 +20,7 @@
     "@semantic-release/git": "^10.0.1",
     "@semantic-release/github": "^12.0.6",
     "@semantic-release/release-notes-generator": "^14.1.0",
+    "concurrently": "^9.1.2",
     "husky": "^9.1.7",
     "lint-staged": "^16.0.0",
     "prettier": "^3.3.3",
