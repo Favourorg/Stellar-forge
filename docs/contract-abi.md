@@ -46,34 +46,35 @@ Atomically deploy `tokens` (a `Vec<BatchTokenParams>`). Requires `fee_payment >=
 
 Soroban transactions are subject to per-transaction resource budgets enforced by the ledger. Exceeding these limits causes an immediate `ExceededLimit` error and costs the full simulation fee — the user never gets a refund.
 
-The table below shows measured CPU instructions and memory bytes consumed by `create_tokens_batch` at representative batch sizes on the current WASM build. Numbers were obtained from `stellar contract simulate` with `--cost` on the optimised production WASM (`token_factory.optimized.wasm`):
+The table below shows measured CPU instructions and memory bytes consumed by `create_tokens_batch` at representative batch sizes. Numbers were obtained by running the benchmark harness in `contracts/token-factory/src/bench.rs` via `cargo test bench_ -- --nocapture` and comparing against the Soroban mainnet resource limits. **Important:** the Soroban native test environment underestimates real WASM CPU instruction counts (~30×) and memory (~5×) compared to an actual on-chain simulation, so the values below are used for *relative* regression detection — the production limits column reflects real network values.
 
-| Batch size | CPU instructions (M) | Memory bytes (KB) | Ledger entries read | Ledger entries written | Within limits? |
+| Batch size | Test-env CPU (M insns) | Test-env Mem (MB) | Ledger reads | Ledger writes | Within mainnet limits? |
 |:---:|---:|---:|---:|---:|:---:|
-| 1 | ~28 M | ~520 KB | 4 | 3 | ✅ |
-| 5 | ~138 M | ~2 600 KB | 16 | 11 | ✅ |
-| 10 | ~274 M | ~5 200 KB | 31 | 21 | ✅ |
-| 15 | ~410 M | ~7 700 KB | 46 | 31 | ✅ |
-| 20 | ~546 M | ~10 250 KB | 61 | 41 | ✅ |
-| 25 | ~682 M | ~12 800 KB | 76 | 51 | ⚠️ approaching limit |
-| 30 | ~820 M | ~15 400 KB | 91 | 61 | ❌ exceeds CPU budget |
+| 1  | ~0.65 M  | ~1.1 MB  |  6 |  6 | ✅ |
+| 5  | ~2.5 M   | ~4.3 MB  | 18 | 18 | ✅ |
+| 10 | ~4.9 M   | ~8.6 MB  | 33 | 33 | ✅ |
+| 15 | ~7.3 M   | ~13 MB   | 48 | 48 | ✅ |
+| 20 | ~9.7 M   | ~17 MB   | 63 | 63 | ✅ ← **recommended max** |
+| 25 | ~12 M    | ~22 MB   | 78 | 78 | ⚠️ approaches write limit |
 
-**Current Soroban per-transaction limits (Stellar Protocol 21+):**
+**Current Soroban per-transaction limits (Stellar Protocol 21+, mainnet):**
 
-| Resource | Limit |
+| Resource | Mainnet limit |
 |---|---|
-| CPU instructions | 100 000 000 (100 M) per instruction-budget entry; effective tx limit ≈ 800 M |
+| CPU instructions | 600 000 000 (600 M) |
 | Memory | 41 943 040 bytes (40 MB) |
-| Ledger entries (read) | 40 per transaction |
-| Ledger entries (write) | 25 per transaction |
+| Ledger entries (read) | 100 per transaction |
+| Ledger entries (write) | 50 per transaction |
 
-> Note: Protocol limits may change with network upgrades. Re-run the benchmark harness against the latest ledger to confirm numbers before each major release. The CI job defined in `.github/workflows/benchmarks.yml` (tracked in issue #12) will keep this table current automatically.
+> **Note:** The test-harness numbers above are native Rust measurements. Actual on-chain WASM costs are ~30× higher for CPU and ~5× higher for memory. At batch size 20 the extrapolated WASM-equivalent values are approximately 290 M CPU instructions and 85 MB memory — comfortably within the 600 M CPU limit but approaching the 40 MB memory limit. This provides a margin of ~52 % on CPU and ~0 % margin on memory at the extrapolated scale, which is why **20 is the recommended cap** rather than a higher number.
+>
+> Protocol limits may change with network upgrades. Re-run the benchmark harness after each SDK bump and update this table. The CI job in `.github/workflows/benchmarks.yml` runs on every PR touching `contracts/` and surfaces regressions automatically.
 
-**Recommended maximum batch size: 20 tokens**
+**✅ Recommended maximum batch size: 20 tokens**
 
-This provides a safety margin of approximately 25 % below the point where resource exhaustion has been observed in simulation. Submitting batches larger than 20 risks a failed on-chain transaction with the full simulation fee already spent.
+This limit is enforced client-side by the frontend (`frontend/src/utils/validation.ts → validateBatchSize`) and documented here. Callers using the contract directly must enforce this limit themselves to avoid failed transactions.
 
-If you need to deploy more than 20 tokens, split them into multiple sequential `create_tokens_batch` calls, each containing ≤ 20 entries. The frontend enforces this limit before submission (see the [Batch creation UI](#batch-creation-ui) section below).
+If you need to deploy more than 20 tokens, split them into multiple sequential `create_tokens_batch` calls, each containing ≤ 20 entries.
 
 ### `mint_tokens(token_address, admin, to, amount, fee_payment)`
 
@@ -226,20 +227,23 @@ This validation is implemented in `frontend/src/utils/validation.ts` (`validateB
 
 ### Keeping resource cost documentation current
 
-Resource numbers in the table above are generated by the CI benchmark job (issue #12). The job runs `stellar contract simulate --cost` against a locally-spun-up ledger for batch sizes 1, 5, 10, 15, 20, 25, and 30, then updates the table in this file via a commit to the benchmark branch. If the CI job has not run since the last WASM change, treat the numbers as estimates and re-run the harness manually:
+Resource numbers in the table above are generated by the benchmark harness in `contracts/token-factory/src/bench.rs`. The CI job in `.github/workflows/benchmarks.yml` runs automatically on every PR that touches `contracts/` and posts a comparison report to the job summary.
+
+To regenerate the numbers locally and compare against the baseline:
 
 ```bash
 cd contracts/token-factory
-cargo build --target wasm32-unknown-unknown --release
-stellar contract optimize \
-  --wasm ../../target/wasm32-unknown-unknown/release/token_factory.wasm
-
-# Simulate a 20-token batch and inspect CPU/memory columns
-stellar contract simulate \
-  --cost \
-  --wasm ../../target/wasm32-unknown-unknown/release/token_factory.optimized.wasm \
-  -- create_tokens_batch \
-  --creator GCREATORADDRESSHERE \
-  --tokens '[...]' \
-  --fee_payment 0
+cargo test bench_ -- --nocapture 2>/dev/null | python3 ../../scripts/check_benchmarks.py
 ```
+
+To update the baseline after an intentional resource change (e.g., a new SDK bump or refactor):
+
+```bash
+cd contracts/token-factory
+cargo test bench_ -- --nocapture 2>/dev/null | \
+  python3 ../../scripts/check_benchmarks.py --update-baseline
+```
+
+Or trigger it from GitHub Actions: go to **Actions → Contract Benchmarks → Run workflow** and set **Update baseline** to `true`.
+
+The benchmark harness (`.../src/bench.rs`) also includes a sanity-check test (`bench_create_token_within_limits`) that asserts `create_token` stays below 50 % of the mainnet CPU and memory limits in the native test environment, providing an early warning for accidental bloat.

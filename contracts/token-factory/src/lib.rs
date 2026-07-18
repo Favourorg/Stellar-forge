@@ -992,3 +992,6 @@ impl TokenFactory {
 
 #[cfg(test)]
 mod test;
+
+#[cfg(test)]
+mod bench;
