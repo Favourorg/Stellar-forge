@@ -105,6 +105,55 @@ jobs:
       - name: Build
         run: npm run build
 
+  contract-benchmarks:
+    name: Contract Resource Benchmarks
+    runs-on: ubuntu-latest
+    # Non-blocking: informational only until baselines stabilize.
+    # Set BENCH_BLOCKING=1 in the step env below to promote to blocking.
+    continue-on-error: true
+    # Only run on PRs that touch contract sources, or on direct pushes to main.
+    if: >
+      github.event_name == 'push' ||
+      (github.event_name == 'pull_request' &&
+       contains(join(github.event.pull_request.labels.*.name, ','), 'contracts'))
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: contracts
+
+      - name: Run benchmark tests
+        id: bench
+        run: |
+          cargo test bench_ -- --nocapture 2>/dev/null | tee /tmp/bench_raw.txt
+        working-directory: contracts/token-factory
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Compare against baseline
+        run: |
+          python3 scripts/check_benchmarks.py \
+            --baseline contracts/token-factory/bench_snapshots/baseline.json \
+            < /tmp/bench_raw.txt
+        env:
+          # Set to "1" to make regressions fail the job (promotes to blocking).
+          BENCH_BLOCKING: "0"
+          BENCH_THRESHOLD_PCT: "10"
+
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results-${{ github.sha }}
+          path: /tmp/bench_raw.txt
+          retention-days: 30
+
   e2e:
     name: End-to-End Tests
     runs-on: ubuntu-latest
