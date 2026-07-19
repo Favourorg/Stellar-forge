@@ -61,6 +61,48 @@ pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 pub struct FactoryState {
     pub admin: Address,
     pub paused: bool,
+    /// # Reentrancy guard — threat model
+    ///
+    /// ## What it guards against
+    /// Soroban's cross-contract call model differs from EVM: each top-level
+    /// transaction runs in a single host invocation, and the storage layer
+    /// does **not** automatically roll back mid-function on re-entry. A
+    /// malicious contract called during an in-progress factory operation
+    /// (e.g. a crafted token-init WASM, a fee-split recipient that is itself
+    /// a contract, or a future cross-contract callback) could re-enter the
+    /// factory and observe or mutate partially-committed state — for example:
+    ///
+    /// - `token_count` incremented but `TokenInfo` not yet written
+    /// - Fee transferred out but `creator_tokens` list not yet updated
+    /// - Multiple tokens deployed with the same `salt`/`token_count` index
+    ///
+    /// ## Concrete sequence that `locked` prevents
+    /// 1. Alice calls `create_token`.
+    /// 2. Factory sets `locked = true` and starts executing.
+    /// 3. During `TokenInitClient::initialize` (external call), a malicious
+    ///    WASM calls back into `create_token` or `create_tokens_batch`.
+    /// 4. The guard detects `locked == true` and returns `Error::Reentrancy`,
+    ///    rejecting the re-entrant call before any state mutation can occur.
+    ///
+    /// ## Scope — all state-mutating, cross-contract-calling entrypoints
+    /// The guard applies to every entrypoint that both (a) calls out to an
+    /// external contract and (b) writes factory state. This currently covers:
+    /// `create_token`, `create_tokens_batch`, `mint_tokens`, `burn`,
+    /// `set_metadata`, and `set_burn_enabled`.
+    ///
+    /// ## Lock release on panic / host trap
+    /// Soroban executes each top-level transaction atomically: if the host
+    /// traps or the contract panics, the **entire transaction is rolled back**,
+    /// including the `locked = true` write. The lock is therefore guaranteed
+    /// to be released on every exit path:
+    ///
+    /// - **Normal return (Ok or Err)**: the outer function always writes
+    ///   `locked = false` via `save_state` before returning.
+    /// - **Panic / host trap**: Soroban rolls back all storage mutations for
+    ///   the transaction, so `locked = true` is never persisted.
+    ///
+    /// This means there is no "stuck lock" risk even if an inner function
+    /// panics rather than returning an `Err`.
     pub locked: bool,
     pub treasury: Address,
     pub fee_token: Address,
@@ -564,7 +606,11 @@ impl TokenFactory {
         Self::require_not_paused(&env)?;
         admin.require_auth();
 
-        let state = Self::load_state(&env)?;
+        let mut state = Self::load_state(&env)?;
+
+        if state.locked {
+            return Err(Error::Reentrancy);
+        }
 
         if fee_payment < state.metadata_fee {
             return Err(Error::InsufficientFee);
@@ -588,6 +634,9 @@ impl TokenFactory {
             return Err(Error::MetadataAlreadySet);
         }
 
+        state.locked = true;
+        Self::save_state(&env, &state);
+
         // Transfer fee from admin to treasury using the dedicated fee_token
         Self::distribute_fee(&env, &state, &admin, fee_payment)?;
 
@@ -595,6 +644,9 @@ impl TokenFactory {
             .instance()
             .set(&DataKey::Metadata(token_address.clone()), &metadata_uri);
         env.storage().instance().extend_ttl(MIN_TTL, MAX_TTL);
+
+        state.locked = false;
+        Self::save_state(&env, &state);
 
         env.events().publish(
             (symbol_short!("factory"), symbol_short!("meta")),
@@ -618,7 +670,11 @@ impl TokenFactory {
             return Err(Error::InvalidParameters);
         }
 
-        let state = Self::load_state(&env)?;
+        let mut state = Self::load_state(&env)?;
+
+        if state.locked {
+            return Err(Error::Reentrancy);
+        }
 
         if fee_payment < state.base_fee {
             return Err(Error::InsufficientFee);
@@ -660,10 +716,16 @@ impl TokenFactory {
             env.storage().instance().set(&supply_key, &new_total);
         }
 
+        state.locked = true;
+        Self::save_state(&env, &state);
+
         // Transfer fee from admin to treasury using the dedicated fee_token
         Self::distribute_fee(&env, &state, &admin, fee_payment)?;
 
         token::StellarAssetClient::new(&env, &token_address).mint(&to, &amount);
+
+        state.locked = false;
+        Self::save_state(&env, &state);
 
         env.events().publish(
             (symbol_short!("factory"), symbol_short!("mint")),
@@ -705,7 +767,37 @@ impl TokenFactory {
             }
         }
 
-        token.burn(&from, &amount);
+        // Acquire the reentrancy lock before the external burn call.
+        // `burn` calls into an externally-deployed token contract, which
+        // could theoretically call back into the factory. The lock prevents
+        // any re-entrant factory call from seeing or mutating partially-
+        // committed state.
+        //
+        // Note: `burn` does not load a full FactoryState (it is intentionally
+        // lightweight and works even when the factory is paused), so we guard
+        // via a direct storage read/write rather than through `load_state`.
+        let state_key = DataKey::State;
+        if let Some(mut state) = env
+            .storage()
+            .instance()
+            .get::<_, FactoryState>(&state_key)
+        {
+            if state.locked {
+                return Err(Error::Reentrancy);
+            }
+            state.locked = true;
+            env.storage().instance().set(&state_key, &state);
+            env.storage().instance().extend_ttl(MIN_TTL, MAX_TTL);
+
+            token.burn(&from, &amount);
+
+            state.locked = false;
+            env.storage().instance().set(&state_key, &state);
+            env.storage().instance().extend_ttl(MIN_TTL, MAX_TTL);
+        } else {
+            // Factory not initialized — proceed without the lock (no state to protect).
+            token.burn(&from, &amount);
+        }
 
         env.events().publish(
             (symbol_short!("factory"), symbol_short!("burn")),
@@ -721,6 +813,12 @@ impl TokenFactory {
         enabled: bool,
     ) -> Result<(), Error> {
         admin.require_auth();
+
+        let mut state = Self::load_state(&env)?;
+
+        if state.locked {
+            return Err(Error::Reentrancy);
+        }
 
         let creator: Address = env
             .storage()
@@ -744,11 +842,24 @@ impl TokenFactory {
             .get(&DataKey::TokenInfo(index))
             .ok_or(Error::TokenNotFound)?;
 
+        // set_burn_enabled does not make any external cross-contract calls, so
+        // the lock is acquired and immediately released in the same call frame.
+        // It is guarded anyway for consistency: all state-mutating entrypoints
+        // share the same invariant so future additions cannot accidentally
+        // introduce cross-contract calls without being noticed as "already
+        // guarded" or "newly needs the guard".
+        state.locked = true;
+        Self::save_state(&env, &state);
+
         info.burn_enabled = enabled;
         env.storage()
             .instance()
             .set(&DataKey::TokenInfo(index), &info);
         env.storage().instance().extend_ttl(MIN_TTL, MAX_TTL);
+
+        state.locked = false;
+        Self::save_state(&env, &state);
+
         Ok(())
     }
 

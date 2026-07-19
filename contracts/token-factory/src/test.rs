@@ -1294,6 +1294,273 @@ fn test_batch_reentrancy_guard() {
     );
 }
 
+// ── reentrancy guard — all guarded entrypoints ────────────────────────────────
+//
+// These tests verify that every state-mutating, cross-contract-calling
+// entrypoint rejects a call when `locked == true`. Because Soroban's test
+// environment does not support running a malicious re-entrant WASM in-process,
+// we simulate the mid-execution state by injecting `locked = true` directly
+// into storage (the same mechanism used for `create_token` above). This proves
+// that the guard is present and wired up correctly for each entrypoint.
+//
+// The cross-function reentrancy test additionally verifies that a lock set by
+// *one* entrypoint (mint_tokens) also blocks a concurrent call to a *different*
+// entrypoint (burn), matching the threat model of a single shared factory lock.
+
+#[test]
+fn test_mint_tokens_reentrancy_guard() {
+    let s = Setup::new();
+    let admin = Address::generate(&s.env);
+    s.fund(&admin, 1_000);
+    let token_addr = seed_token(&s, &admin, true, None);
+    let recipient = Address::generate(&s.env);
+
+    // Simulate re-entrant state: factory is mid-execution (locked = true)
+    s.env.as_contract(&s.client.address, || {
+        let mut state: FactoryState = s.env.storage().instance().get(&DataKey::State).unwrap();
+        state.locked = true;
+        s.env.storage().instance().set(&DataKey::State, &state);
+    });
+
+    let result = s
+        .client
+        .try_mint_tokens(&token_addr, &admin, &recipient, &100, &1_000);
+    assert_eq!(result, Err(Ok(Error::Reentrancy)));
+}
+
+#[test]
+fn test_mint_tokens_lock_released_after_success() {
+    let s = Setup::new();
+    let admin = Address::generate(&s.env);
+    s.fund(&admin, 1_000);
+    let token_addr = seed_token(&s, &admin, true, None);
+    let recipient = Address::generate(&s.env);
+
+    s.client
+        .mint_tokens(&token_addr, &admin, &recipient, &100, &1_000);
+
+    // Lock must be released after a successful call
+    s.env.as_contract(&s.client.address, || {
+        let state: FactoryState = s.env.storage().instance().get(&DataKey::State).unwrap();
+        assert!(!state.locked, "lock must be released after mint_tokens succeeds");
+    });
+}
+
+#[test]
+fn test_mint_tokens_lock_released_after_error() {
+    let s = Setup::new();
+    let admin = Address::generate(&s.env);
+    let token_addr = seed_token(&s, &admin, true, None);
+    let recipient = Address::generate(&s.env);
+
+    // InsufficientFee is caught before the lock is set, so lock stays false
+    let _ = s
+        .client
+        .try_mint_tokens(&token_addr, &admin, &recipient, &100, &1);
+
+    s.env.as_contract(&s.client.address, || {
+        let state: FactoryState = s.env.storage().instance().get(&DataKey::State).unwrap();
+        assert!(!state.locked, "lock must be released after mint_tokens error");
+    });
+}
+
+#[test]
+fn test_burn_reentrancy_guard() {
+    let s = Setup::new();
+    let creator = Address::generate(&s.env);
+    let token_addr = seed_token(&s, &creator, true, None);
+    let burner = Address::generate(&s.env);
+    StellarAssetClient::new(&s.env, &token_addr).mint(&burner, &1_000);
+
+    // Simulate re-entrant state
+    s.env.as_contract(&s.client.address, || {
+        let mut state: FactoryState = s.env.storage().instance().get(&DataKey::State).unwrap();
+        state.locked = true;
+        s.env.storage().instance().set(&DataKey::State, &state);
+    });
+
+    let result = s.client.try_burn(&token_addr, &burner, &100);
+    assert_eq!(result, Err(Ok(Error::Reentrancy)));
+}
+
+#[test]
+fn test_burn_lock_released_after_success() {
+    let s = Setup::new();
+    let creator = Address::generate(&s.env);
+    let token_addr = seed_token(&s, &creator, true, None);
+    let burner = Address::generate(&s.env);
+    StellarAssetClient::new(&s.env, &token_addr).mint(&burner, &1_000);
+
+    s.client.burn(&token_addr, &burner, &100);
+
+    s.env.as_contract(&s.client.address, || {
+        let state: FactoryState = s.env.storage().instance().get(&DataKey::State).unwrap();
+        assert!(!state.locked, "lock must be released after burn succeeds");
+    });
+}
+
+#[test]
+fn test_set_metadata_reentrancy_guard() {
+    let s = Setup::new();
+    let admin = Address::generate(&s.env);
+    s.fund(&admin, 500);
+    let token_addr = seed_token(&s, &admin, true, None);
+
+    // Simulate re-entrant state
+    s.env.as_contract(&s.client.address, || {
+        let mut state: FactoryState = s.env.storage().instance().get(&DataKey::State).unwrap();
+        state.locked = true;
+        s.env.storage().instance().set(&DataKey::State, &state);
+    });
+
+    let result = s.client.try_set_metadata(
+        &token_addr,
+        &admin,
+        &String::from_str(&s.env, "ipfs://QmTest"),
+        &500,
+    );
+    assert_eq!(result, Err(Ok(Error::Reentrancy)));
+}
+
+#[test]
+fn test_set_metadata_lock_released_after_success() {
+    let s = Setup::new();
+    let admin = Address::generate(&s.env);
+    s.fund(&admin, 500);
+    let token_addr = seed_token(&s, &admin, true, None);
+
+    s.client.set_metadata(
+        &token_addr,
+        &admin,
+        &String::from_str(&s.env, "ipfs://QmTest"),
+        &500,
+    );
+
+    s.env.as_contract(&s.client.address, || {
+        let state: FactoryState = s.env.storage().instance().get(&DataKey::State).unwrap();
+        assert!(!state.locked, "lock must be released after set_metadata succeeds");
+    });
+}
+
+#[test]
+fn test_set_burn_enabled_reentrancy_guard() {
+    let s = Setup::new();
+    let creator = Address::generate(&s.env);
+    let token_addr = seed_token(&s, &creator, true, None);
+
+    // Simulate re-entrant state
+    s.env.as_contract(&s.client.address, || {
+        let mut state: FactoryState = s.env.storage().instance().get(&DataKey::State).unwrap();
+        state.locked = true;
+        s.env.storage().instance().set(&DataKey::State, &state);
+    });
+
+    let result = s
+        .client
+        .try_set_burn_enabled(&token_addr, &creator, &false);
+    assert_eq!(result, Err(Ok(Error::Reentrancy)));
+}
+
+#[test]
+fn test_set_burn_enabled_lock_released_after_success() {
+    let s = Setup::new();
+    let creator = Address::generate(&s.env);
+    let token_addr = seed_token(&s, &creator, true, None);
+
+    s.client.set_burn_enabled(&token_addr, &creator, &false);
+
+    s.env.as_contract(&s.client.address, || {
+        let state: FactoryState = s.env.storage().instance().get(&DataKey::State).unwrap();
+        assert!(!state.locked, "lock must be released after set_burn_enabled succeeds");
+    });
+}
+
+/// Cross-function reentrancy: a lock held by one entrypoint must also block
+/// all other guarded entrypoints. This tests the factory-level shared lock
+/// invariant — the same `locked` flag is shared across all six entrypoints,
+/// so a re-entrant call from *any* external call site is blocked regardless
+/// of which entrypoint is currently executing.
+#[test]
+fn test_cross_function_reentrancy_lock_blocks_all_entrypoints() {
+    let s = Setup::new();
+    let creator = Address::generate(&s.env);
+    s.fund(&creator, 2_000);
+    let token_addr = seed_token(&s, &creator, true, None);
+    let recipient = Address::generate(&s.env);
+    let burner = Address::generate(&s.env);
+    StellarAssetClient::new(&s.env, &token_addr).mint(&burner, &1_000);
+
+    // Inject locked = true to simulate mid-execution state of any entrypoint
+    s.env.as_contract(&s.client.address, || {
+        let mut state: FactoryState = s.env.storage().instance().get(&DataKey::State).unwrap();
+        state.locked = true;
+        s.env.storage().instance().set(&DataKey::State, &state);
+    });
+
+    // Every guarded entrypoint must be blocked
+    assert_eq!(
+        s.client.try_create_token(
+            &creator,
+            &s.salt(0),
+            &String::from_str(&s.env, "T"),
+            &String::from_str(&s.env, "T"),
+            &7,
+            &0_u128,
+            &1_000,
+        ),
+        Err(Ok(Error::Reentrancy)),
+        "create_token must be blocked"
+    );
+
+    let params = {
+        let mut v = soroban_sdk::vec![&s.env];
+        v.push_back(BatchTokenParams {
+            salt: s.salt(1),
+            name: String::from_str(&s.env, "T"),
+            symbol: String::from_str(&s.env, "T"),
+            decimals: 7,
+            initial_supply: 0,
+            max_supply: None,
+        });
+        v
+    };
+    assert_eq!(
+        s.client.try_create_tokens_batch(&creator, &params, &1_000),
+        Err(Ok(Error::Reentrancy)),
+        "create_tokens_batch must be blocked"
+    );
+
+    assert_eq!(
+        s.client
+            .try_mint_tokens(&token_addr, &creator, &recipient, &100, &1_000),
+        Err(Ok(Error::Reentrancy)),
+        "mint_tokens must be blocked"
+    );
+
+    assert_eq!(
+        s.client.try_burn(&token_addr, &burner, &100),
+        Err(Ok(Error::Reentrancy)),
+        "burn must be blocked"
+    );
+
+    assert_eq!(
+        s.client.try_set_metadata(
+            &token_addr,
+            &creator,
+            &String::from_str(&s.env, "ipfs://Qm"),
+            &500,
+        ),
+        Err(Ok(Error::Reentrancy)),
+        "set_metadata must be blocked"
+    );
+
+    assert_eq!(
+        s.client.try_set_burn_enabled(&token_addr, &creator, &false),
+        Err(Ok(Error::Reentrancy)),
+        "set_burn_enabled must be blocked"
+    );
+}
+
 // ── upgrade ───────────────────────────────────────────────────────────────────
 
 #[test]
