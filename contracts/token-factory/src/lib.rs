@@ -409,6 +409,12 @@ impl TokenFactory {
         if p.symbol.is_empty() || p.symbol.len() > 12 {
             return Err(Error::InvalidParameters);
         }
+        if p.decimals > 18 {
+            return Err(Error::InvalidParameters);
+        }
+        if p.initial_supply < 0 {
+            return Err(Error::InvalidParameters);
+        }
         if let Some(cap) = p.max_supply {
             if cap <= 0 || p.initial_supply > cap {
                 return Err(Error::InvalidParameters);
@@ -439,11 +445,10 @@ impl TokenFactory {
             token::StellarAssetClient::new(env, &token_address).mint(creator, &p.initial_supply);
         }
 
-        let new_count = state
+        state.token_count = state
             .token_count
             .checked_add(1)
             .ok_or(Error::ArithmeticOverflow)?;
-        state.token_count = new_count;
         let index = state.token_count;
 
         let token_name = p.name.clone();
@@ -517,6 +522,12 @@ impl TokenFactory {
             Self::validate_batch_params(&p)?;
         }
 
+        // Front-load token count overflow check for the entire batch before any deployment happens.
+        state
+            .token_count
+            .checked_add(tokens.len())
+            .ok_or(Error::ArithmeticOverflow)?;
+
         let total_fee = state
             .base_fee
             .checked_mul(count)
@@ -529,27 +540,18 @@ impl TokenFactory {
         Self::save_state(&env, &state);
 
         let mut addresses: Vec<Address> = vec![&env];
-        let mut result: Result<(), Error> = Ok(());
 
+        // Soroban enforces per-invocation ledger atomicity: if any host error, panic,
+        // or Err occurs during deployment or fee transfer, the entire invocation transaction
+        // (including all deployed sub-tokens, storage updates, and mints) is automatically reverted.
         for p in tokens.into_iter() {
-            match Self::deploy_one(&env, &creator, p, &mut state) {
-                Ok(addr) => addresses.push_back(addr),
-                Err(e) => {
-                    result = Err(e);
-                    break;
-                }
-            }
-        }
-
-        state.locked = false;
-
-        if let Err(e) = result {
-            Self::save_state(&env, &state);
-            return Err(e);
+            let addr = Self::deploy_one(&env, &creator, p, &mut state)?;
+            addresses.push_back(addr);
         }
 
         // Transfer fee from creator to treasury using the dedicated fee_token
         Self::distribute_fee(&env, &state, &creator, fee_payment)?;
+        state.locked = false;
         Self::save_state(&env, &state);
         Ok(addresses)
     }

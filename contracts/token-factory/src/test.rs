@@ -483,6 +483,46 @@ fn test_reentrancy_lock_released_after_error() {
     });
 }
 
+#[test]
+fn test_create_tokens_batch_overflow_protection_upfront() {
+    let s = Setup::new();
+    let creator = Address::generate(&s.env);
+    s.fund(&creator, 10_000);
+
+    // Set token_count to u32::MAX - 1 so a batch of 2 tokens would overflow token_count.
+    s.env.as_contract(&s.client.address, || {
+        let mut state: FactoryState = s.env.storage().instance().get(&DataKey::State).unwrap();
+        state.token_count = u32::MAX - 1;
+        s.env.storage().instance().set(&DataKey::State, &state);
+    });
+
+    let mut tokens: Vec<BatchTokenParams> = vec![&s.env];
+    tokens.push_back(BatchTokenParams {
+        salt: s.salt(1),
+        name: String::from_str(&s.env, "TokenOne"),
+        symbol: String::from_str(&s.env, "TK1"),
+        decimals: 7,
+        initial_supply: 0,
+        max_supply: None,
+    });
+    tokens.push_back(BatchTokenParams {
+        salt: s.salt(2),
+        name: String::from_str(&s.env, "TokenTwo"),
+        symbol: String::from_str(&s.env, "TK2"),
+        decimals: 7,
+        initial_supply: 0,
+        max_supply: None,
+    });
+
+    // Front-loaded validation catches token_count overflow for the entire batch before any deploy calls or lock writes execute.
+    let result = s.client.try_create_tokens_batch(&creator, &tokens, &2_000);
+    assert_eq!(result, Err(Ok(Error::ArithmeticOverflow)));
+
+    // State is preserved and lock is released.
+    assert_eq!(s.client.get_state().token_count, u32::MAX - 1);
+    assert!(!s.client.get_state().locked);
+}
+
 // ── set_metadata ──────────────────────────────────────────────────────────────
 
 #[test]

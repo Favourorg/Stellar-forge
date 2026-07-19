@@ -25,7 +25,8 @@
 //! on every PR touching `contracts/` and compares the output against the
 //! committed baseline in `bench_snapshots/baseline.json`.
 
-#![cfg(test)]
+extern crate std;
+use std::{format, println};
 
 use super::*;
 use soroban_sdk::{
@@ -70,8 +71,8 @@ fn capture(env: &Env, label: impl Into<std::string::String>) -> BenchResult {
     let res = env.cost_estimate().resources();
     BenchResult {
         label: label.into(),
-        cpu_insns: res.instructions,
-        mem_bytes: res.mem_bytes,
+        cpu_insns: res.instructions as u64,
+        mem_bytes: res.mem_bytes as u64,
         ledger_reads: res.disk_read_entries,
         ledger_writes: res.write_entries,
     }
@@ -111,16 +112,14 @@ impl BenchSetup {
         // Fund creator with enough fee tokens.
         StellarAssetClient::new(&env, &fee_token).mint(&creator, &10_000_000);
 
-        client
-            .initialize(
-                &admin,
-                &treasury,
-                &fee_token,
-                &dummy_hash(&env),
-                &1_000,
-                &500,
-            )
-            .unwrap();
+        client.initialize(
+            &admin,
+            &treasury,
+            &fee_token,
+            &dummy_hash(&env),
+            &1_000,
+            &500,
+        );
 
         // Avoid 0-timestamp on ledger entries for more realistic conditions.
         env.ledger().with_mut(|li| {
@@ -137,7 +136,7 @@ impl BenchSetup {
         }
     }
 
-    fn client(&self) -> TokenFactoryClient {
+    fn client(&self) -> TokenFactoryClient<'_> {
         TokenFactoryClient::new(&self.env, &self.contract_id)
     }
 
@@ -151,17 +150,15 @@ impl BenchSetup {
 
     /// Create one token via `create_token` and return its address.
     fn create_one_token(&self, salt_byte: u8) -> Address {
-        self.client()
-            .create_token(
-                &self.creator,
-                &self.salt(salt_byte),
-                &self.str("TestToken"),
-                &self.str("TST"),
-                &7,
-                &1_000_000u128,
-                &1_000,
-            )
-            .unwrap()
+        self.client().create_token(
+            &self.creator,
+            &self.salt(salt_byte),
+            &self.str("TestToken"),
+            &self.str("TST"),
+            &7,
+            &1_000_000u128,
+            &1_000,
+        )
     }
 
     /// Build a `Vec<BatchTokenParams>` of `n` entries.
@@ -174,8 +171,8 @@ impl BenchSetup {
             salt_bytes[1] = 0xBE; // batch marker to avoid collisions with single-token tests
             let salt = BytesN::from_array(&self.env, &salt_bytes);
 
-            let name = std::format!("Batch{}", i);
-            let sym = std::format!("B{}", i);
+            let name = format!("Batch{}", i);
+            let sym = format!("B{}", i);
 
             tokens.push_back(BatchTokenParams {
                 salt,
@@ -196,7 +193,7 @@ impl BenchSetup {
 #[test]
 fn bench_create_token() {
     let s = BenchSetup::new();
-    let result = s.client().create_token(
+    let result = s.client().try_create_token(
         &s.creator,
         &s.salt(1),
         &s.str("BenchToken"),
@@ -222,7 +219,7 @@ fn bench_create_tokens_batch_1() {
     let params = s.batch_params(1);
     let result = s
         .client()
-        .create_tokens_batch(&s.creator, &params, &1_000);
+        .try_create_tokens_batch(&s.creator, &params, &1_000);
     assert!(
         result.is_ok(),
         "bench_create_tokens_batch_1 failed: {:?}",
@@ -241,7 +238,7 @@ fn bench_create_tokens_batch_5() {
     let params = s.batch_params(5);
     let result = s
         .client()
-        .create_tokens_batch(&s.creator, &params, &5_000);
+        .try_create_tokens_batch(&s.creator, &params, &5_000);
     assert!(
         result.is_ok(),
         "bench_create_tokens_batch_5 failed: {:?}",
@@ -260,7 +257,7 @@ fn bench_create_tokens_batch_10() {
     let params = s.batch_params(10);
     let result = s
         .client()
-        .create_tokens_batch(&s.creator, &params, &10_000);
+        .try_create_tokens_batch(&s.creator, &params, &10_000);
     assert!(
         result.is_ok(),
         "bench_create_tokens_batch_10 failed: {:?}",
@@ -279,7 +276,7 @@ fn bench_create_tokens_batch_15() {
     let params = s.batch_params(15);
     let result = s
         .client()
-        .create_tokens_batch(&s.creator, &params, &15_000);
+        .try_create_tokens_batch(&s.creator, &params, &15_000);
     assert!(
         result.is_ok(),
         "bench_create_tokens_batch_15 failed: {:?}",
@@ -298,7 +295,7 @@ fn bench_create_tokens_batch_20() {
     let params = s.batch_params(20);
     let result = s
         .client()
-        .create_tokens_batch(&s.creator, &params, &20_000);
+        .try_create_tokens_batch(&s.creator, &params, &20_000);
     assert!(
         result.is_ok(),
         "bench_create_tokens_batch_20 failed: {:?}",
@@ -321,7 +318,7 @@ fn bench_create_tokens_batch_25() {
     let params = s.batch_params(25);
     let result = s
         .client()
-        .create_tokens_batch(&s.creator, &params, &25_000);
+        .try_create_tokens_batch(&s.creator, &params, &25_000);
     assert!(
         result.is_ok(),
         "bench_create_tokens_batch_25 failed: {:?}",
@@ -341,7 +338,7 @@ fn bench_mint_tokens() {
     let token_addr = s.create_one_token(0xAA);
 
     // Now benchmark the mint call.
-    let result = s.client().mint_tokens(
+    let result = s.client().try_mint_tokens(
         &token_addr,
         &s.creator,
         &s.creator,
@@ -362,7 +359,7 @@ fn bench_burn() {
     let token_addr = s.create_one_token(0xBB);
 
     // Burn half the initial supply.
-    let result = s.client().burn(&token_addr, &s.creator, &500_000);
+    let result = s.client().try_burn(&token_addr, &s.creator, &500_000);
     assert!(result.is_ok(), "bench_burn failed: {:?}", result);
 
     let r = capture(&s.env, "burn");
@@ -379,7 +376,7 @@ fn bench_set_metadata() {
     let uri = s.str("ipfs://QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG");
     let result = s
         .client()
-        .set_metadata(&token_addr, &s.creator, &uri, &500);
+        .try_set_metadata(&token_addr, &s.creator, &uri, &500);
     assert!(result.is_ok(), "bench_set_metadata failed: {:?}", result);
 
     let r = capture(&s.env, "set_metadata");
@@ -411,8 +408,7 @@ fn bench_create_token_within_limits() {
             &7,
             &100_000u128,
             &1_000,
-        )
-        .expect("create_token should succeed");
+        );
 
     let res = s.env.cost_estimate().resources();
     // 50% of mainnet CPU limit

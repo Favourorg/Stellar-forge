@@ -40,7 +40,7 @@ Deploy a new token contract under the factory. Requires `fee_payment >= base_fee
 
 ### `create_tokens_batch(creator, tokens, fee_payment)`
 
-Atomically deploy `tokens` (a `Vec<BatchTokenParams>`). Requires `fee_payment >= base_fee * tokens.len()`. Partial-batch failure rolls state back to pre-call values.
+Atomically deploy `tokens` (a `Vec<BatchTokenParams>`). Requires `fee_payment >= base_fee * tokens.len()`. All parameter validation (name, symbol, decimals, initial supply, and total `token_count` arithmetic overflow checks) is front-loaded before any contract deployment or state locking begins. Furthermore, Soroban's per-invocation transaction atomicity guarantees that if any failure or host error occurs during execution, all state changes, sub-token deployments, and supply mints within the transaction are completely reverted at the ledger level.
 
 #### Batch size limits and resource costs
 
