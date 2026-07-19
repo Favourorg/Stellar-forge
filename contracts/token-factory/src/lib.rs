@@ -114,6 +114,14 @@ const MAX_TOKENS_BY_CREATOR_PAGE: u32 = 50;
 impl TokenFactory {
     /// Initialize the factory. `fee_token` is the SEP-41 token used for all
     /// fee payments; fees are transferred from the caller to `treasury`.
+    ///
+    /// `base_fee` and `metadata_fee` must be **≥ 0**. A value of `0` is
+    /// explicitly allowed (free token creation / free metadata). Negative
+    /// values are rejected with `Error::InvalidParameters` because a negative
+    /// fee satisfies every `fee_payment < required_fee` guard (making the
+    /// gate trivially by-passable) and would flow a negative amount into
+    /// `distribute_fee`, whose behavior with a negative SEP-41 transfer is
+    /// implementation-defined on the token contract side.
     pub fn initialize(
         env: Env,
         admin: Address,
@@ -125,6 +133,14 @@ impl TokenFactory {
     ) -> Result<(), Error> {
         if env.storage().instance().has(&DataKey::State) {
             return Err(Error::AlreadyInitialized);
+        }
+
+        // Fee sign constraint: fees must be non-negative.
+        // 0 is allowed (free token creation is a legitimate use-case).
+        // Negative fees corrupt the fee-gate logic and produce undefined
+        // behaviour in distribute_fee — reject them unconditionally.
+        if base_fee < 0 || metadata_fee < 0 {
+            return Err(Error::InvalidParameters);
         }
 
         let state = FactoryState {
@@ -825,10 +841,20 @@ impl TokenFactory {
         if admin != state.admin {
             return Err(Error::Unauthorized);
         }
+        // Fee sign constraint — same policy as initialize: 0 is allowed,
+        // negative values are rejected.  A negative fee would silently bypass
+        // every fee-gate check (`fee_payment < required_fee` is always false
+        // when required_fee < 0) and pass a negative amount to distribute_fee.
         if let Some(fee) = base_fee {
+            if fee < 0 {
+                return Err(Error::InvalidParameters);
+            }
             state.base_fee = fee;
         }
         if let Some(fee) = metadata_fee {
+            if fee < 0 {
+                return Err(Error::InvalidParameters);
+            }
             state.metadata_fee = fee;
         }
         Self::save_state(&env, &state);

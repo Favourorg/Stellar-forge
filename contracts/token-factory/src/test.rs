@@ -819,6 +819,188 @@ fn test_update_fees_unauthorized() {
     );
 }
 
+// ── fee sign constraint (negative fee validation) ─────────────────────────────
+//
+// Policy: fees must be >= 0. Zero is explicitly allowed (free token creation
+// is a legitimate use-case). Negative values are rejected because:
+//   1. A negative required_fee satisfies every `fee_payment < required_fee`
+//      guard trivially (making the fee gate a no-op).
+//   2. A negative amount passed to distribute_fee → token::transfer is
+//      implementation-defined on the SEP-41 token contract side and has
+//      not been tested or audited for this factory.
+
+#[test]
+fn test_initialize_negative_base_fee_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, TokenFactory);
+    let client = TokenFactoryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let fee_token = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
+    let result = client.try_initialize(
+        &admin,
+        &treasury,
+        &fee_token,
+        &BytesN::from_array(&env, &[0u8; 32]),
+        &-1_i128,
+        &500_i128,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidParameters)));
+}
+
+#[test]
+fn test_initialize_negative_metadata_fee_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, TokenFactory);
+    let client = TokenFactoryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let fee_token = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
+    let result = client.try_initialize(
+        &admin,
+        &treasury,
+        &fee_token,
+        &BytesN::from_array(&env, &[0u8; 32]),
+        &1_000_i128,
+        &-1_i128,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidParameters)));
+}
+
+#[test]
+fn test_initialize_both_fees_negative_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, TokenFactory);
+    let client = TokenFactoryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let fee_token = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
+    let result = client.try_initialize(
+        &admin,
+        &treasury,
+        &fee_token,
+        &BytesN::from_array(&env, &[0u8; 32]),
+        &-100_i128,
+        &-200_i128,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidParameters)));
+}
+
+#[test]
+fn test_initialize_i128_min_fee_rejected() {
+    // i128::MIN is the most dangerous negative: saturating_abs() of it is
+    // still i128::MAX, so any code that tries to normalise it before checking
+    // would still fail. Ensure the raw sign check fires first.
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, TokenFactory);
+    let client = TokenFactoryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let fee_token = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
+    let result = client.try_initialize(
+        &admin,
+        &treasury,
+        &fee_token,
+        &BytesN::from_array(&env, &[0u8; 32]),
+        &i128::MIN,
+        &0_i128,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidParameters)));
+}
+
+#[test]
+fn test_initialize_zero_fees_allowed() {
+    // Zero fee is valid — free token creation is a legitimate use-case.
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, TokenFactory);
+    let client = TokenFactoryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let fee_token = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
+    client.initialize(
+        &admin,
+        &treasury,
+        &fee_token,
+        &BytesN::from_array(&env, &[0u8; 32]),
+        &0_i128,
+        &0_i128,
+    );
+    let state = client.get_state();
+    assert_eq!(state.base_fee, 0);
+    assert_eq!(state.metadata_fee, 0);
+}
+
+#[test]
+fn test_update_fees_negative_base_fee_rejected() {
+    let s = Setup::new();
+    assert_eq!(
+        s.client.try_update_fees(&s.admin, &Some(-1_i128), &None),
+        Err(Ok(Error::InvalidParameters))
+    );
+    // State must be unchanged
+    assert_eq!(s.client.get_state().base_fee, 1_000);
+}
+
+#[test]
+fn test_update_fees_negative_metadata_fee_rejected() {
+    let s = Setup::new();
+    assert_eq!(
+        s.client
+            .try_update_fees(&s.admin, &None, &Some(-1_i128)),
+        Err(Ok(Error::InvalidParameters))
+    );
+    // State must be unchanged
+    assert_eq!(s.client.get_state().metadata_fee, 500);
+}
+
+#[test]
+fn test_update_fees_i128_min_rejected() {
+    let s = Setup::new();
+    assert_eq!(
+        s.client
+            .try_update_fees(&s.admin, &Some(i128::MIN), &None),
+        Err(Ok(Error::InvalidParameters))
+    );
+}
+
+#[test]
+fn test_update_fees_zero_allowed() {
+    // Reducing to zero fee is valid — admin may want to offer free operations.
+    let s = Setup::new();
+    s.client
+        .update_fees(&s.admin, &Some(0_i128), &Some(0_i128));
+    let state = s.client.get_state();
+    assert_eq!(state.base_fee, 0);
+    assert_eq!(state.metadata_fee, 0);
+}
+
+#[test]
+fn test_update_fees_negative_does_not_corrupt_state() {
+    // A rejected update must leave both fees at their original values.
+    let s = Setup::new();
+    let _ = s
+        .client
+        .try_update_fees(&s.admin, &Some(-999_i128), &Some(-1_i128));
+    let state = s.client.get_state();
+    assert_eq!(state.base_fee, 1_000, "base_fee must be unchanged after rejection");
+    assert_eq!(state.metadata_fee, 500, "metadata_fee must be unchanged after rejection");
+}
+
 // ── pause / unpause ───────────────────────────────────────────────────────────
 
 #[test]

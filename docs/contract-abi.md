@@ -27,8 +27,13 @@ One-time setup. Fails with `Error::AlreadyInitialized` on retry.
 | `treasury` | `Address` | Default recipient of factory fees. |
 | `fee_token` | `Address` | SEP-41 token used for fee payments. |
 | `token_wasm_hash` | `BytesN<32>` | Hash of the token-contract WASM deployed for each new token. |
-| `base_fee` | `i128` | Fee charged for `create_token`, `mint_tokens`, `create_tokens_batch`. |
-| `metadata_fee` | `i128` | Fee charged for `set_metadata`. |
+| `base_fee` | `i128` | Fee charged for `create_token`, `mint_tokens`, `create_tokens_batch`. **Must be ≥ 0.** |
+| `metadata_fee` | `i128` | Fee charged for `set_metadata`. **Must be ≥ 0.** |
+
+**Fee sign constraint:** Both `base_fee` and `metadata_fee` must be **≥ 0**. A value of `0` is explicitly permitted (free token creation is a valid use-case). Any negative value is rejected with `Error::InvalidParameters` before any state is written. This constraint exists because:
+
+- A negative required fee satisfies every `fee_payment < required_fee` guard trivially, making the fee gate a no-op regardless of what the caller sends.
+- A negative amount passed to `distribute_fee` produces a negative SEP-41 `transfer`, whose behavior is implementation-defined on the token contract and has not been audited for this factory.
 
 Stamps `FactoryState.schema_version = CURRENT_SCHEMA_VERSION` and stores the same value under the legacy `sv` instance key so `migrate` works on pre-versioned deployments.
 
@@ -145,6 +150,8 @@ The frontend helper `fetchAllTokensByCreator` in `frontend/src/hooks/useTokens.t
 ### `update_fees(admin, base_fee?, metadata_fee?)`
 
 Adjust either fee. `None` leaves the corresponding fee unchanged.
+
+**Fee sign constraint:** Any `Some(value)` provided for `base_fee` or `metadata_fee` must be **≥ 0**. Negative values are rejected with `Error::InvalidParameters` and the stored fees are left unchanged. The same constraint applies as for `initialize` — see that section for the rationale.
 
 ### `pause(admin)` / `unpause(admin)`
 
