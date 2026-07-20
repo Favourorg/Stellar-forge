@@ -1,0 +1,88 @@
+version: 2
+
+# Group minor and patch updates together to reduce PR noise
+groups:
+  minor-patch:
+    update-types:
+      - minor
+      - patch
+    patterns:
+      - "*"
+
+updates:
+  - package-ecosystem: "npm"
+    directory: "/frontend"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    assignees:
+      - bigvictoh
+    reviewers:
+      - bigvictoh
+
+  - package-ecosystem: "cargo"
+    directory: "/contracts"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    assignees:
+      - bigvictoh
+    reviewers:
+      - bigvictoh
+version: 2
+updates:
+  # Frontend npm dependencies
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+      day: monday
+      time: '08:00'
+    open-pull-requests-limit: 10
+    groups:
+      storybook:
+        patterns:
+          - '@storybook/*'
+          - 'storybook'
+          - '@chromatic-com/*'
+      testing:
+        patterns:
+          - '@testing-library/*'
+          - 'vitest'
+          - '@vitest/*'
+          - '@playwright/*'
+      typescript-eslint:
+        patterns:
+          - '@typescript-eslint/*'
+      vite:
+        patterns:
+          - 'vite'
+          - '@vitejs/*'
+          - 'vite-*'
+    labels:
+      - dependencies
+      - javascript
+
+  # Rust / Cargo dependencies
+  - package-ecosystem: cargo
+    directory: /contracts
+    schedule:
+      interval: weekly
+      day: monday
+      time: '08:00'
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - rust
+
+  # GitHub Actions
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '08:00'
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - github-actions

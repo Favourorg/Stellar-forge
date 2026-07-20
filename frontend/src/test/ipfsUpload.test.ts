@@ -52,7 +52,7 @@ describe('IPFSService.uploadMetadata', () => {
     expect(FakeXHR.lastUrl).not.toMatch(/pinata\.cloud/)
 
     expect(fetch).toHaveBeenCalledTimes(1)
-    const [url, options] = vi.mocked(fetch).mock.calls[0]
+    const [url, options] = vi.mocked(fetch).mock.calls[0]!
     expect(url).toBe('/api/ipfs/upload-json')
     expect(url).not.toMatch(/pinata\.cloud/)
 

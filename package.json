@@ -6,18 +6,38 @@
   "description": "StellarForge - Stellar Token Deployer",
   "scripts": {
     "prepare": "husky",
-    "test": "vitest run"
-  },
-  "dependencies": {
-    "busboy": "^1.6.0"
+    "test": "vitest run",
+    "release": "semantic-release",
+    "contract:compile": "cd contracts/token-factory && cargo build --target wasm32v1-none --release",
+    "frontend:dev": "cd frontend && npm run dev",
+    "start": "npm run contract:compile && npm run frontend:dev",
+    "dev:all": "concurrently -n contract,frontend -c cyan,green \"npm run contract:compile\" \"npm run frontend:dev\""
   },
   "devDependencies": {
+    "@actions/io": "^3.0.2",
+    "@commitlint/cli": "^20.5.0",
+    "@commitlint/config-conventional": "^20.5.0",
+    "@semantic-release/changelog": "^6.0.3",
+    "@semantic-release/commit-analyzer": "^13.0.1",
+    "@semantic-release/git": "^10.0.1",
+    "@semantic-release/github": "^12.0.6",
+    "@semantic-release/release-notes-generator": "^14.1.0",
     "@types/busboy": "^1.5.4",
     "@types/node": "^22.10.2",
     "@vercel/node": "^3.2.24",
+    "concurrently": "^9.1.2",
     "husky": "^9.1.7",
-    "lint-staged": "^15.2.0",
+    "lint-staged": "^16.0.0",
+    "prettier": "^3.3.3",
+    "semantic-release": "^25.0.3",
     "typescript": "^5.9.3",
-    "vitest": "^4.0.18"
+    "vite-plugin-pwa": "^1.3.0",
+    "vitest": "^4.0.18",
+    "workbox-core": "^7.4.1",
+    "workbox-window": "^7.4.1"
+  },
+  "dependencies": {
+    "@sentry/react": "^10.46.0",
+    "busboy": "^1.6.0"
   }
 }

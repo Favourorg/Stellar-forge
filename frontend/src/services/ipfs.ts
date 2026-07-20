@@ -1,80 +1,73 @@
-// IPFS service - uploads are proxied through our own serverless functions
-// (api/ipfs/*) so Pinata credentials never reach the browser bundle.
+// IPFS service for metadata upload via Pinata
 
 import { IPFS_CONFIG } from '../config/ipfs'
-import { isValidIPFSUri } from '../utils/validation'
+import { withRetry, isTransientError, HttpError } from '../utils/retry'
+import { isValidImageFile } from '../utils/validation'
+import { IPFSUploadError } from './ipfs-errors'
 
-// Kept just under Vercel's 4.5MB serverless function request-body ceiling.
-const MAX_FILE_SIZE = 4 * 1024 * 1024 // 4MB
-const ALLOWED_TYPES = ['image/jpeg', 'image/png', 'image/gif']
+export { IPFSConfigError, IPFSUploadError } from './ipfs-errors'
 
 export interface TokenMetadata {
   name: string
   description: string
-  image: string
+  image: string // ipfs:// URI
 }
 
-/**
- * Metadata JSON is pinned by whoever calls set_metadata for a token, so it's
- * attacker-controlled. image must be a well-formed ipfs://<cid> value, not just
- * any string, otherwise a malicious URL could flow straight into an <img src>.
- */
-export function isTokenMetadata(value: unknown): value is TokenMetadata {
-  if (!value || typeof value !== 'object') return false
-  const v = value as Record<string, unknown>
+export interface UploadMetadataOptions {
+  image: File
+  description: string
+  tokenName: string
+  onProgress?: (percent: number) => void
+  onRetry?: (attempt: number, delayMs: number) => void
+}
+
+function isTokenMetadata(value: unknown): value is TokenMetadata {
+  if (typeof value !== 'object' || value === null) return false
+  const obj = value as Record<string, unknown>
   return (
-    typeof v.name === 'string' &&
-    typeof v.description === 'string' &&
-    typeof v.image === 'string' &&
-    isValidIPFSUri(v.image)
+    typeof obj.name === 'string' &&
+    typeof obj.description === 'string' &&
+    typeof obj.image === 'string'
   )
-}
-
-export class IPFSUploadError extends Error {
-  constructor(message: string) {
-    super(message)
-    this.name = 'IPFSUploadError'
-  }
-}
-
-function validateImage(image: File): void {
-  if (!ALLOWED_TYPES.includes(image.type)) {
-    throw new IPFSUploadError(`Unsupported file type "${image.type}". Only JPEG, PNG, and GIF are allowed.`)
-  }
-  if (image.size > MAX_FILE_SIZE) {
-    throw new IPFSUploadError(`File size ${(image.size / 1024 / 1024).toFixed(2)}MB exceeds the 4MB limit.`)
-  }
 }
 
 export class IPFSService {
   /**
    * Upload an image file to Pinata and pin metadata JSON to IPFS.
-   * @param image - JPEG/PNG/GIF file, max 5MB
+   *
+   * @param image       - JPEG/PNG/GIF file, max 5MB
    * @param description - Token description
-   * @param tokenName - Token name
-   * @param onProgress - Optional progress callback (0–100)
-   * @returns Metadata URI in ipfs:// format
+   * @param tokenName   - Token name (used as metadata `name` field)
+   * @param onProgress  - Optional progress callback (0–100)
+   * @param onRetry     - Optional callback fired before each retry attempt
+   * @returns           Metadata URI in ipfs:// format
+   *
+   * @throws {IPFSUploadError}  On validation failures, auth errors, or exhausted retries
    */
   async uploadMetadata(
     image: File,
     description: string,
     tokenName: string,
-    onProgress?: (percent: number) => void
+    onProgress?: (percent: number) => void,
+    onRetry?: (attempt: number, delayMs: number) => void,
   ): Promise<string> {
-    validateImage(image)
+    const validation = isValidImageFile(image)
+    if (!validation.valid) {
+      throw new IPFSUploadError(validation.error ?? 'Invalid image file.')
+    }
 
-    // Step 1: Upload image file
+    // Step 1: Upload image file (progress 0 → 75)
     onProgress?.(0)
-    const imageCid = await this._uploadFile(image, onProgress)
-    onProgress?.(80)
+    const imageCid = await this._uploadFile(image, onProgress, onRetry)
 
-    // Step 2: Build and upload metadata JSON
-    const metadata = {
+    // Step 2: Build and upload metadata JSON (progress 75 → 100)
+    onProgress?.(75)
+    const metadata: TokenMetadata = {
       name: tokenName,
       description,
       image: `ipfs://${imageCid}`,
     }
-    const metadataCid = await this._uploadJSON(metadata, `${tokenName}-metadata.json`)
+    const metadataCid = await this._uploadJSON(metadata, `${tokenName}-metadata.json`, onRetry)
     onProgress?.(100)
 
     return `ipfs://${metadataCid}`
@@ -82,6 +75,8 @@ export class IPFSService {
 
   /**
    * Fetch and parse metadata JSON from an ipfs:// URI via the Pinata gateway.
+   *
+   * @throws {IPFSUploadError} On invalid URI, network errors, or non-JSON responses
    */
   async getMetadata(uri: string): Promise<TokenMetadata> {
     if (!uri.startsWith('ipfs://')) {
@@ -93,93 +88,168 @@ export class IPFSService {
 
     let response: Response
     try {
-      response = await fetch(url)
+      response = await withRetry(() => fetch(url), {
+        shouldRetry: (err) => isTransientError(err),
+      })
     } catch {
-      throw new IPFSUploadError('Network error while fetching metadata from IPFS gateway. Check your connection.')
+      throw new IPFSUploadError(
+        'Network error while fetching metadata from IPFS gateway. Check your connection.',
+      )
     }
 
     if (!response.ok) {
-      throw new IPFSUploadError(`Failed to fetch metadata (HTTP ${response.status}). The CID may not be pinned yet.`)
+      throw new IPFSUploadError(
+        `Failed to fetch metadata (HTTP ${response.status}). The CID may not be pinned yet.`,
+      )
     }
 
-    let data: unknown
+    let parsed: unknown
     try {
-      data = await response.json()
+      parsed = await response.json()
     } catch {
       throw new IPFSUploadError('Metadata response is not valid JSON.')
     }
 
-    if (!isTokenMetadata(data)) {
+    if (!isTokenMetadata(parsed)) {
       throw new IPFSUploadError(
-        'Metadata is missing required fields or its image is not a well-formed ipfs:// URI.'
+        'Metadata response is missing required fields (name, description, image).',
       )
     }
 
-    return data
+    return { name: parsed.name, description: parsed.description, image: parsed.image }
   }
 
   // ── Private helpers ──────────────────────────────────────────────────────────
 
-  private async _uploadFile(file: File, onProgress?: (percent: number) => void): Promise<string> {
+  private _uploadFile(
+    file: File,
+    onProgress?: (percent: number) => void,
+    onRetry?: (attempt: number, delayMs: number) => void,
+  ): Promise<string> {
+    const doUpload = (): Promise<string> =>
+      new Promise<string>((resolve, reject) => {
+        const xhr = new XMLHttpRequest()
+
+        xhr.upload.addEventListener('progress', (e) => {
+          if (e.lengthComputable && onProgress) {
+            onProgress(Math.round((e.loaded / e.total) * 75))
+          }
+        })
+
+        xhr.addEventListener('load', () => {
+          if (xhr.status === 429 || (xhr.status >= 500 && xhr.status < 600)) {
+            reject(
+              new HttpError(
+                xhr.status,
+                `Image upload failed (HTTP ${xhr.status})`,
+                xhr.status === 429
+                  ? parseInt(xhr.getResponseHeader('Retry-After') ?? '0') || undefined
+                  : undefined,
+              ),
+            )
+            return
+          }
+
+          if (xhr.status !== 200) {
+            reject(
+              new IPFSUploadError(`Image upload failed (HTTP ${xhr.status}). Please try again.`),
+            )
+            return
+          }
+          try {
+            const data = JSON.parse(xhr.responseText) as { cid: string }
+            if (!data.cid) {
+              reject(
+                new IPFSUploadError('Upload proxy returned an unexpected response: missing cid.'),
+              )
+              return
+            }
+            resolve(data.cid)
+          } catch {
+            reject(new IPFSUploadError('Unexpected response while uploading image.'))
+          }
+        })
+
+        xhr.addEventListener('error', () => {
+          reject(new HttpError(0, 'Network error during image upload'))
+        })
+
+        xhr.addEventListener('abort', () => {
+          reject(new IPFSUploadError('Image upload was aborted.'))
+        })
+
+        xhr.open('POST', `${IPFS_CONFIG.ipfsProxyUrl}/upload-file`)
+        xhr.send(formData)
+      })
+
     const formData = new FormData()
     formData.append('file', file)
+    formData.append('pinataMetadata', JSON.stringify({ name: file.name }))
+    formData.append('pinataOptions', JSON.stringify({ cidVersion: 1 }))
 
-    return new Promise<string>((resolve, reject) => {
-      const xhr = new XMLHttpRequest()
-
-      xhr.upload.addEventListener('progress', (e) => {
-        if (e.lengthComputable && onProgress) {
-          // Map upload progress to 0–75% of total
-          onProgress(Math.round((e.loaded / e.total) * 75))
-        }
-      })
-
-      xhr.addEventListener('load', () => {
-        if (xhr.status === 429) {
-          reject(new IPFSUploadError('Too many upload requests. Please try again later.'))
-          return
-        }
-        if (xhr.status !== 200) {
-          reject(new IPFSUploadError(`Image upload failed (HTTP ${xhr.status}). Please try again.`))
-          return
-        }
-        try {
-          const data = JSON.parse(xhr.responseText) as { cid: string }
-          resolve(data.cid)
-        } catch {
-          reject(new IPFSUploadError('Unexpected response while uploading image.'))
-        }
-      })
-
-      xhr.addEventListener('error', () => {
-        reject(new IPFSUploadError('Network error during image upload. Check your connection and try again.'))
-      })
-
-      xhr.open('POST', `${IPFS_CONFIG.ipfsProxyUrl}/upload-file`)
-      xhr.send(formData)
+    return withRetry(doUpload, {
+      maxAttempts: 3,
+      shouldRetry: (err) => isTransientError(err),
+      onRetry,
+    }).catch((err) => {
+      if (err instanceof IPFSUploadError) throw err
+      const httpErr = err instanceof HttpError ? err : null
+      if (httpErr) {
+        throw new IPFSUploadError(
+          httpErr.status === 0
+            ? 'Network error during image upload. Check your connection and try again.'
+            : `Image upload failed (HTTP ${httpErr.status}). Please try again.`,
+        )
+      }
+      throw err
     })
   }
 
-  private async _uploadJSON(json: object, name: string): Promise<string> {
+  private async _uploadJSON(
+    json: object,
+    name: string,
+    onRetry?: (attempt: number, delayMs: number) => void,
+  ): Promise<string> {
     let response: Response
     try {
-      response = await fetch(`${IPFS_CONFIG.ipfsProxyUrl}/upload-json`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ metadata: json, name }),
-      })
+      response = await withRetry(
+        () =>
+          fetch(`${IPFS_CONFIG.ipfsProxyUrl}/upload-json`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ metadata: json, name }),
+          }),
+        {
+          shouldRetry: (err) => isTransientError(err),
+          onRetry,
+        },
+      )
     } catch {
-      throw new IPFSUploadError('Network error during metadata upload. Check your connection and try again.')
+      throw new IPFSUploadError(
+        'Network error during metadata upload. Check your connection and try again.',
+      )
     }
 
     if (response.status === 429) {
       throw new IPFSUploadError('Too many upload requests. Please try again later.')
     }
     if (!response.ok) {
-      throw new IPFSUploadError(`Metadata upload failed (HTTP ${response.status}). Please try again.`)
+      throw new IPFSUploadError(
+        `Metadata upload failed (HTTP ${response.status}). Please try again.`,
+      )
     }
 
-    const data = (await response.json()) as { cid: string }
+    let data: { cid: string }
+    try {
+      data = (await response.json()) as { cid: string }
+    } catch {
+      throw new IPFSUploadError('Upload proxy returned a non-JSON response for metadata upload.')
+    }
+
+    if (!data.cid) {
+      throw new IPFSUploadError('Upload proxy returned an unexpected response: missing cid.')
+    }
+
     return data.cid
   }
 }

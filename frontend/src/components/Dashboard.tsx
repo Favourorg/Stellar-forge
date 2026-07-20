@@ -1,186 +1,149 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
-import { Button } from './UI/Button'
+import React, { useState, useMemo, useCallback, memo } from 'react'
+import type { SortOrder } from '../types'
+import { applyFilters } from '../utils/tokenFilters'
+import { useDebounce } from '../hooks/useDebounce'
+import { useTokenDashboard } from '../hooks/useTokenDashboard'
+import { Input } from './UI/Input'
 import { Card } from './UI/Card'
-import { TransactionHistory } from './TransactionHistory'
-import { useWallet } from '../hooks/useWallet'
-import { stellarService } from '../services/stellar'
-import type { FactoryTokenInfo } from '../services/stellar'
-import { STELLAR_CONFIG } from '../config/stellar'
+import { TokenCardSkeleton } from './UI/Skeleton'
 
-export const TokenDashboard: React.FC = () => {
-  const { wallet } = useWallet()
-  const [tokens, setTokens] = useState<FactoryTokenInfo[]>([])
-  const [isLoading, setIsLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [copiedAddress, setCopiedAddress] = useState<string | null>(null)
+interface DashboardProps {
+  tokens?: never // legacy prop — data is now fetched internally
+}
 
-  const loadTokens = useCallback(async () => {
-    if (!wallet.address) {
-      setTokens([])
-      setIsLoading(false)
-      return
-    }
+/**
+ * Memoized with React.memo — re-renders only when the tokens prop changes.
+ * Internal filter/sort state changes are isolated here and don't propagate upward.
+ *
+ * filteredTokens is wrapped in useMemo so the applyFilters computation only
+ * re-runs when tokens, search, creator, or sort actually change.
+ *
+ * Event handlers are wrapped in useCallback so their references stay stable
+ * across renders, which is important if they are ever passed to memoized children.
+ */
+const Dashboard: React.FC<DashboardProps> = memo(() => {
+  const { rows, isLoading, refresh } = useTokenDashboard()
 
-    setIsLoading(true)
-    setError(null)
-    try {
-      const tokenList = await stellarService.getTokensByCreator(wallet.address)
-      setTokens(tokenList)
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to fetch tokens'
-      setError(message)
-      setTokens([])
-    } finally {
-      setIsLoading(false)
-    }
-  }, [wallet.address])
+  const [searchQuery, setSearchQuery] = useState('')
+  const [creatorFilter, setCreatorFilter] = useState('')
+  const [sortOrder, setSortOrder] = useState<SortOrder>('newest')
 
-  useEffect(() => {
-    loadTokens()
-  }, [loadTokens])
+  const debouncedSearch = useDebounce(searchQuery, 300)
+  const debouncedCreator = useDebounce(creatorFilter, 300)
 
-  const handleCopyAddress = async (address: string) => {
-    try {
-      await navigator.clipboard.writeText(address)
-      setCopiedAddress(address)
-      setTimeout(() => setCopiedAddress(null), 1800)
-    } catch {
-      setError('Unable to copy token address. Check browser clipboard permissions and try again.')
-    }
-  }
-
-  const formatCreationDate = useMemo(
-    () => (createdAt: number) => new Date(createdAt * 1000).toLocaleString(),
-    []
+  // Expensive filter + sort — only recomputes when inputs change
+  const filteredTokens = useMemo(
+    () => applyFilters(rows, debouncedSearch, debouncedCreator, sortOrder),
+    [rows, debouncedSearch, debouncedCreator, sortOrder],
   )
 
-  const factoryContractId = STELLAR_CONFIG.factoryContractId
+  const isFilterActive = debouncedSearch !== '' || debouncedCreator !== ''
+
+  // Stable callback references so child inputs don't re-render unnecessarily
+  const handleSearchChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    setSearchQuery(e.target.value)
+  }, [])
+
+  const handleCreatorChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    setCreatorFilter(e.target.value)
+  }, [])
+
+  const handleSortChange = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
+    setSortOrder(e.target.value as SortOrder)
+  }, [])
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col gap-1">
-        <h2 className="text-xl font-semibold text-gray-900">Token Dashboard</h2>
-        <p className="text-sm text-gray-600">All tokens created by your connected wallet.</p>
+    <div className="space-y-4">
+      {/* FilterBar */}
+      <div className="flex flex-col sm:flex-row gap-3">
+        <div className="flex-1 min-w-0">
+          <Input
+            label="Search by name or symbol"
+            value={searchQuery}
+            onChange={handleSearchChange}
+          />
+        </div>
+        <div className="flex-1 min-w-0">
+          <Input
+            label="Filter by creator address"
+            value={creatorFilter}
+            onChange={handleCreatorChange}
+          />
+        </div>
+        <div className="space-y-1 w-full sm:w-auto sm:min-w-[180px]">
+          <label
+            htmlFor="sort-order"
+            className="block text-sm font-medium text-gray-700 dark:text-gray-300"
+          >
+            Sort order
+          </label>
+          <select
+            id="sort-order"
+            value={sortOrder}
+            onChange={handleSortChange}
+            className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm bg-white dark:bg-gray-800 dark:border-gray-600 dark:text-gray-100"
+          >
+            <option value="newest">Newest first</option>
+            <option value="oldest">Oldest first</option>
+            <option value="alphabetical">Alphabetical</option>
+          </select>
+        </div>
+        <button
+          onClick={refresh}
+          disabled={isLoading}
+          aria-label="Refresh token list"
+          className="self-end px-3 py-2 text-sm rounded-md border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50 min-h-[44px]"
+        >
+          ↺ Refresh
+        </button>
       </div>
 
-      {error && (
-        <Card>
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-            <p className="text-sm text-red-700">{error}</p>
-            <Button type="button" variant="outline" onClick={loadTokens}>
-              Retry
-            </Button>
-          </div>
-        </Card>
-      )}
-
-      {isLoading && (
-        <div className="grid gap-4 md:grid-cols-2">
-          {Array.from({ length: 3 }, (_, idx) => (
-            <Card key={idx}>
-              <div className="animate-pulse space-y-3">
-                <div className="h-5 bg-gray-200 rounded w-2/3" />
-                <div className="h-4 bg-gray-200 rounded w-1/3" />
-                <div className="h-4 bg-gray-200 rounded w-full" />
-                <div className="h-4 bg-gray-200 rounded w-5/6" />
-              </div>
-            </Card>
+      {isLoading ? (
+        <ul className="space-y-3" aria-busy="true" aria-label="Loading tokens...">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <TokenCardSkeleton key={i} />
           ))}
-        </div>
-      )}
-
-      {!isLoading && !error && tokens.length === 0 && (
-        <Card>
-          <div className="text-center py-6">
-            <p className="text-gray-700 font-medium">No tokens created yet</p>
-            <p className="text-sm text-gray-500 mt-1">
-              Create your first token to see it listed on this dashboard.
-            </p>
-          </div>
-        </Card>
-      )}
-
-      {!isLoading && !error && tokens.length > 0 && (
-        <div className="grid gap-4 md:grid-cols-2">
-          {tokens.map((token) => (
-            <Card key={`${token.index}-${token.tokenAddress || token.symbol}`}>
-              <div className="space-y-3">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    {token.tokenAddress ? (
-                      <Link to={`/tokens/${token.tokenAddress}`} className="hover:underline">
-                        <h3 className="text-lg font-semibold text-gray-900">{token.name}</h3>
-                      </Link>
-                    ) : (
-                      <h3 className="text-lg font-semibold text-gray-900">{token.name}</h3>
-                    )}
-                    <p className="text-sm text-gray-500">{token.symbol}</p>
+        </ul>
+      ) : filteredTokens.length === 0 ? (
+        <p className="text-center text-gray-500 dark:text-gray-400 py-8 text-sm sm:text-base">
+          {isFilterActive ? 'No tokens match your search.' : 'No tokens have been deployed yet.'}
+        </p>
+      ) : (
+        <ul className="space-y-3">
+          {filteredTokens.map((token, i) => (
+            <li key={i}>
+              <Card>
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                  <div className="min-w-0">
+                    <span className="text-base sm:text-lg font-semibold text-gray-900 dark:text-white break-words">
+                      {token.name}
+                    </span>
+                    <span className="ml-2 text-sm text-gray-500 dark:text-gray-400">
+                      ({token.symbol})
+                    </span>
                   </div>
-                  <span className="text-xs px-2 py-1 rounded-full bg-gray-100 text-gray-700">
-                    {token.decimals} decimals
+                  <span className="text-xs text-gray-400 dark:text-gray-500 shrink-0">
+                    Decimals: {token.decimals}
                   </span>
                 </div>
-
-                <div className="text-sm text-gray-700 space-y-1 break-all">
-                  <p>
-                    <span className="font-medium">Created:</span> {formatCreationDate(token.createdAt)}
-                  </p>
-                  <p>
-                    <span className="font-medium">Address:</span>{' '}
-                    {token.tokenAddress || 'Unavailable from contract response'}
-                  </p>
+                <div className="mt-2 text-sm text-gray-600 dark:text-gray-300 space-y-1">
+                  <div>
+                    <span className="font-medium">Total Supply:</span> {token.totalSupply}
+                  </div>
+                  <div className="break-all sm:truncate">
+                    <span className="font-medium">Creator:</span>{' '}
+                    <span className="font-mono text-xs">{token.creator}</span>
+                  </div>
                 </div>
-
-                <div className="flex flex-wrap gap-2 pt-2">
-                  {token.tokenAddress ? (
-                    <Link
-                      to={`/tokens/${token.tokenAddress}`}
-                      className="inline-flex items-center justify-center px-3 py-2 text-sm font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700"
-                    >
-                      View Details
-                    </Link>
-                  ) : (
-                    <Button type="button" size="sm" disabled>
-                      View Details
-                    </Button>
-                  )}
-
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    disabled={!token.tokenAddress}
-                    onClick={() => handleCopyAddress(token.tokenAddress)}
-                  >
-                    {copiedAddress === token.tokenAddress ? 'Copied!' : 'Copy Address'}
-                  </Button>
-
-                  {token.tokenAddress && (
-                    <a
-                      href={stellarService.getExplorerContractUrl(token.tokenAddress)}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center justify-center px-3 py-2 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50"
-                    >
-                      View on Stellar Expert
-                    </a>
-                  )}
-                </div>
-              </div>
-            </Card>
+              </Card>
+            </li>
           ))}
-        </div>
-      )}
-
-      {factoryContractId && (
-        <div className="space-y-2">
-          <h2 className="text-base font-semibold text-gray-800">Recent Activity</h2>
-          <TransactionHistory contractId={factoryContractId} />
-        </div>
+        </ul>
       )}
     </div>
   )
-}
+})
 
-export const Dashboard = TokenDashboard
+Dashboard.displayName = 'Dashboard'
+
+export { Dashboard }

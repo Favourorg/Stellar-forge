@@ -1,0 +1,45 @@
+name: Mainnet Deployment
+description: Track a mainnet deployment using the documented release checklist.
+title: "Mainnet deployment: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Complete the mainnet deployment checklist before opening this issue for release approval:
+        https://github.com/Favourorg/Stellar-forge/blob/main/docs/mainnet-deployment-checklist.md
+  - type: input
+    id: deployment-owner
+    attributes:
+      label: Deployment owner
+      description: Who is responsible for running the deployment and coordinating rollback if needed?
+      placeholder: "@username"
+    validations:
+      required: true
+  - type: input
+    id: target-version
+    attributes:
+      label: Target version or commit
+      description: Provide the release tag, commit SHA, or branch planned for mainnet.
+      placeholder: "v1.2.3 or abc1234"
+    validations:
+      required: true
+  - type: checkboxes
+    id: checklist-confirmation
+    attributes:
+      label: Checklist confirmation
+      options:
+        - label: I completed the mainnet deployment checklist.
+          required: true
+        - label: I ran a testnet smoke test using the planned deployment steps.
+          required: true
+        - label: I prepared a rollback plan and identified the rollback owner.
+          required: true
+  - type: textarea
+    id: deployment-notes
+    attributes:
+      label: Deployment notes
+      description: Include relevant contract IDs, WASM hashes, transaction hashes, fee settings, and release-window notes.
+      placeholder: "Contract ID, WASM hash, fee configuration, CSP verification, rollback command..."
+    validations:
+      required: true
+

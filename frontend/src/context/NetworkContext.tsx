@@ -1,17 +1,11 @@
-import { createContext, useContext, useState, useCallback, ReactNode } from 'react'
+import { createContext, useContext, useCallback, ReactNode } from 'react'
 import { STELLAR_CONFIG } from '../config/stellar'
+import { useLocalStorage } from '../hooks/useLocalStorage'
+import { useNetworkMismatch, type NetworkMismatchState } from '../hooks/useNetworkMismatch'
 
-export type Network = 'testnet' | 'mainnet'
+export type Network = 'testnet' | 'mainnet' | 'standalone'
 
 const STORAGE_KEY = 'stellarforge_network'
-
-function getInitialNetwork(): Network {
-  try {
-    const stored = localStorage.getItem(STORAGE_KEY)
-    if (stored === 'mainnet' || stored === 'testnet') return stored
-  } catch { /* ignore */ }
-  return (STELLAR_CONFIG.network as Network) ?? 'testnet'
-}
 
 interface NetworkContextValue {
   network: Network
@@ -19,33 +13,60 @@ interface NetworkContextValue {
   rpcUrl: string
   horizonUrl: string
   networkPassphrase: string
+  mismatch: NetworkMismatchState
 }
 
 const NetworkContext = createContext<NetworkContextValue | null>(null)
 
-export function NetworkProvider({ children }: { children: ReactNode }) {
-  const [network, setNetwork] = useState<Network>(getInitialNetwork)
-
-  const switchNetwork = useCallback((n: Network) => {
-    setNetwork(n)
-    try { localStorage.setItem(STORAGE_KEY, n) } catch { /* ignore */ }
-  }, [])
-
+function NetworkProviderInner({
+  children,
+  network,
+  switchNetwork,
+}: {
+  children: ReactNode
+  network: Network
+  switchNetwork: (n: Network) => void
+}) {
+  const mismatch = useNetworkMismatch(network)
   const cfg = STELLAR_CONFIG[network]
 
   return (
-    <NetworkContext.Provider value={{
-      network,
-      switchNetwork,
-      rpcUrl: cfg.sorobanRpcUrl,
-      horizonUrl: cfg.horizonUrl,
-      networkPassphrase: cfg.networkPassphrase,
-    }}>
+    <NetworkContext.Provider
+      value={{
+        network,
+        switchNetwork,
+        rpcUrl: cfg.sorobanRpcUrl,
+        horizonUrl: cfg.horizonUrl,
+        networkPassphrase: cfg.networkPassphrase,
+        mismatch,
+      }}
+    >
       {children}
     </NetworkContext.Provider>
   )
 }
 
+export function NetworkProvider({ children }: { children: ReactNode }) {
+  const [network, setNetwork] = useLocalStorage<Network>(
+    STORAGE_KEY,
+    (STELLAR_CONFIG.network as Network) ?? 'testnet',
+  )
+
+  const switchNetwork = useCallback(
+    (n: Network) => {
+      setNetwork(n)
+    },
+    [setNetwork],
+  )
+
+  return (
+    <NetworkProviderInner network={network} switchNetwork={switchNetwork}>
+      {children}
+    </NetworkProviderInner>
+  )
+}
+
+// eslint-disable-next-line react-refresh/only-export-components
 export function useNetwork(): NetworkContextValue {
   const ctx = useContext(NetworkContext)
   if (!ctx) throw new Error('useNetwork must be used within a NetworkProvider')
