@@ -1,4 +1,5 @@
-// IPFS service for metadata upload via Pinata
+// IPFS service - uploads are proxied through our own serverless functions
+// (api/ipfs/*) so Pinata credentials never reach the browser bundle.
 
 import { IPFS_CONFIG } from '../config/ipfs'
 import { withRetry, isTransientError, HttpError } from '../utils/retry'
@@ -261,8 +262,8 @@ export class IPFSService {
       )
     }
 
-    if (response.status === 401) {
-      throw new IPFSUploadError('Pinata authentication failed. Check your API key and secret.')
+    if (response.status === 429) {
+      throw new IPFSUploadError('Too many upload requests. Please try again later.')
     }
     if (!response.ok) {
       throw new IPFSUploadError(

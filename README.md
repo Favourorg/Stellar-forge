@@ -170,8 +170,16 @@ Then edit `frontend/.env`:
 ```env
 VITE_NETWORK=testnet
 VITE_FACTORY_CONTRACT_ID=<deployed-contract-id>
-VITE_IPFS_API_KEY=<pinata-api-key>
-VITE_IPFS_API_SECRET=<pinata-api-secret>
+```
+
+Metadata uploads go through a serverless proxy (`api/ipfs/*`) so Pinata
+credentials never reach the browser. Set these as **server-side** environment
+variables in your Vercel project settings (or a local `.env` at the repo
+root when running `vercel dev`) - never prefix them with `VITE_`, or they'll
+be inlined into the client bundle and shipped to every visitor:
+```env
+PINATA_API_KEY=<pinata-api-key>
+PINATA_API_SECRET=<pinata-api-secret>
 ```
 
 > **Note:** `VITE_FACTORY_CONTRACT_ID`, `VITE_IPFS_API_KEY`, and `VITE_IPFS_API_SECRET` are required. The app will display a misconfiguration screen if any of these are missing, rather than failing silently at runtime.
