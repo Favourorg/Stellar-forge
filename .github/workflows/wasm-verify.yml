@@ -182,7 +182,7 @@ jobs:
 
       - name: Upload built WASM artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: built-wasm-${{ steps.meta.outputs.commit_short }}
           path: target/wasm32-unknown-unknown/release/token_factory.optimized.wasm
@@ -190,7 +190,7 @@ jobs:
 
       - name: Upload deployed WASM artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: deployed-wasm-${{ steps.meta.outputs.commit_short }}
           path: /tmp/deployed.wasm
