@@ -1,9 +1,11 @@
-// IPFS service for metadata upload via Pinata
+// IPFS service - uploads are proxied through our own serverless functions
+// (api/ipfs/*) so Pinata credentials never reach the browser bundle.
 
 import { IPFS_CONFIG } from '../config/ipfs'
 import { isValidIPFSUri } from '../utils/validation'
 
-const MAX_FILE_SIZE = 5 * 1024 * 1024 // 5MB
+// Kept just under Vercel's 4.5MB serverless function request-body ceiling.
+const MAX_FILE_SIZE = 4 * 1024 * 1024 // 4MB
 const ALLOWED_TYPES = ['image/jpeg', 'image/png', 'image/gif']
 
 export interface TokenMetadata {
@@ -28,25 +30,10 @@ export function isTokenMetadata(value: unknown): value is TokenMetadata {
   )
 }
 
-export class IPFSConfigError extends Error {
-  constructor(message: string) {
-    super(message)
-    this.name = 'IPFSConfigError'
-  }
-}
-
 export class IPFSUploadError extends Error {
   constructor(message: string) {
     super(message)
     this.name = 'IPFSUploadError'
-  }
-}
-
-function validateConfig(): void {
-  if (!IPFS_CONFIG.apiKey || !IPFS_CONFIG.apiSecret) {
-    throw new IPFSConfigError(
-      'Pinata API credentials are not configured. Please set VITE_IPFS_API_KEY and VITE_IPFS_API_SECRET in your .env file.'
-    )
   }
 }
 
@@ -55,7 +42,7 @@ function validateImage(image: File): void {
     throw new IPFSUploadError(`Unsupported file type "${image.type}". Only JPEG, PNG, and GIF are allowed.`)
   }
   if (image.size > MAX_FILE_SIZE) {
-    throw new IPFSUploadError(`File size ${(image.size / 1024 / 1024).toFixed(2)}MB exceeds the 5MB limit.`)
+    throw new IPFSUploadError(`File size ${(image.size / 1024 / 1024).toFixed(2)}MB exceeds the 4MB limit.`)
   }
 }
 
@@ -74,7 +61,6 @@ export class IPFSService {
     tokenName: string,
     onProgress?: (percent: number) => void
   ): Promise<string> {
-    validateConfig()
     validateImage(image)
 
     // Step 1: Upload image file
@@ -137,8 +123,6 @@ export class IPFSService {
   private async _uploadFile(file: File, onProgress?: (percent: number) => void): Promise<string> {
     const formData = new FormData()
     formData.append('file', file)
-    formData.append('pinataMetadata', JSON.stringify({ name: file.name }))
-    formData.append('pinataOptions', JSON.stringify({ cidVersion: 1 }))
 
     return new Promise<string>((resolve, reject) => {
       const xhr = new XMLHttpRequest()
@@ -151,8 +135,8 @@ export class IPFSService {
       })
 
       xhr.addEventListener('load', () => {
-        if (xhr.status === 401) {
-          reject(new IPFSUploadError('Pinata authentication failed. Check your API key and secret.'))
+        if (xhr.status === 429) {
+          reject(new IPFSUploadError('Too many upload requests. Please try again later.'))
           return
         }
         if (xhr.status !== 200) {
@@ -160,10 +144,10 @@ export class IPFSService {
           return
         }
         try {
-          const data = JSON.parse(xhr.responseText) as { IpfsHash: string }
-          resolve(data.IpfsHash)
+          const data = JSON.parse(xhr.responseText) as { cid: string }
+          resolve(data.cid)
         } catch {
-          reject(new IPFSUploadError('Unexpected response from Pinata while uploading image.'))
+          reject(new IPFSUploadError('Unexpected response while uploading image.'))
         }
       })
 
@@ -171,44 +155,32 @@ export class IPFSService {
         reject(new IPFSUploadError('Network error during image upload. Check your connection and try again.'))
       })
 
-      xhr.open('POST', `${IPFS_CONFIG.pinataApiUrl}/pinning/pinFileToIPFS`)
-      xhr.setRequestHeader('pinata_api_key', IPFS_CONFIG.apiKey)
-      xhr.setRequestHeader('pinata_secret_api_key', IPFS_CONFIG.apiSecret)
+      xhr.open('POST', `${IPFS_CONFIG.ipfsProxyUrl}/upload-file`)
       xhr.send(formData)
     })
   }
 
   private async _uploadJSON(json: object, name: string): Promise<string> {
-    const body = {
-      pinataContent: json,
-      pinataMetadata: { name },
-      pinataOptions: { cidVersion: 1 },
-    }
-
     let response: Response
     try {
-      response = await fetch(`${IPFS_CONFIG.pinataApiUrl}/pinning/pinJSONToIPFS`, {
+      response = await fetch(`${IPFS_CONFIG.ipfsProxyUrl}/upload-json`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          pinata_api_key: IPFS_CONFIG.apiKey,
-          pinata_secret_api_key: IPFS_CONFIG.apiSecret,
-        },
-        body: JSON.stringify(body),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ metadata: json, name }),
       })
     } catch {
       throw new IPFSUploadError('Network error during metadata upload. Check your connection and try again.')
     }
 
-    if (response.status === 401) {
-      throw new IPFSUploadError('Pinata authentication failed. Check your API key and secret.')
+    if (response.status === 429) {
+      throw new IPFSUploadError('Too many upload requests. Please try again later.')
     }
     if (!response.ok) {
       throw new IPFSUploadError(`Metadata upload failed (HTTP ${response.status}). Please try again.`)
     }
 
-    const data = (await response.json()) as { IpfsHash: string }
-    return data.IpfsHash
+    const data = (await response.json()) as { cid: string }
+    return data.cid
   }
 }
 

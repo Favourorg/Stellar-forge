@@ -72,8 +72,16 @@ Create a `.env` file in the `frontend` directory:
 ```env
 VITE_NETWORK=testnet
 VITE_FACTORY_CONTRACT_ID=<deployed-contract-id>
-VITE_IPFS_API_KEY=<pinata-api-key>
-VITE_IPFS_API_SECRET=<pinata-api-secret>
+```
+
+Metadata uploads go through a serverless proxy (`api/ipfs/*`) so Pinata
+credentials never reach the browser. Set these as **server-side** environment
+variables in your Vercel project settings (or a local `.env` at the repo
+root when running `vercel dev`) - never prefix them with `VITE_`, or they'll
+be inlined into the client bundle and shipped to every visitor:
+```env
+PINATA_API_KEY=<pinata-api-key>
+PINATA_API_SECRET=<pinata-api-secret>
 ```
 
 ## Building & Testing
@@ -159,11 +167,23 @@ stellar contract invoke \
 ```
 
 ### Frontend Deployment
+The frontend depends on the serverless IPFS proxy under `api/` for metadata
+uploads, so the repo root (not just `frontend/`) is the deploy unit.
+
 ```bash
-cd frontend
-npm run build
-# Deploy the dist/ folder to your hosting service (Vercel, Netlify, etc.)
+# Deploy the whole repo to Vercel - vercel.json builds frontend/ to
+# frontend/dist and deploys api/ as serverless functions alongside it.
+vercel deploy
 ```
+
+Set `PINATA_API_KEY` and `PINATA_API_SECRET` as server-side environment
+variables in the Vercel project settings before deploying (see
+[Environment Variables](#4-environment-variables) above).
+
+If you deploy `frontend/dist` to a static host that doesn't run the `api/`
+functions (e.g. plain Netlify static hosting), metadata uploads won't work
+until you stand up the proxy endpoints (`POST /api/ipfs/upload-file` and
+`POST /api/ipfs/upload-json`) on that platform yourself.
 
 ## Project Structure
 

@@ -43,7 +43,8 @@ export const isValidIPFSUri = (uri: string): boolean => {
 }
 
 export const isValidImageFile = (file: File): { valid: boolean; error?: string } => {
-  const maxSize = 5 * 1024 * 1024 // 5MB
+  // Kept just under Vercel's 4.5MB serverless function request-body ceiling.
+  const maxSize = 4 * 1024 * 1024 // 4MB
   const allowedTypes = ['image/jpeg', 'image/png', 'image/gif']
 
   if (!allowedTypes.includes(file.type)) {
@@ -51,7 +52,7 @@ export const isValidImageFile = (file: File): { valid: boolean; error?: string }
   }
 
   if (file.size > maxSize) {
-    return { valid: false, error: 'Image size must be less than 5MB' }
+    return { valid: false, error: 'Image size must be less than 4MB' }
   }
 
   return { valid: true }
