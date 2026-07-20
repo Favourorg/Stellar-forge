@@ -198,7 +198,7 @@ jobs:
 
       - name: Create issue on mismatch
         if: failure() && steps.deployed-hash.outcome == 'success'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const built = '${{ steps.built-hash.outputs.hash }}';
