@@ -1,6 +1,17 @@
 // Stellar SDK integration service
+import {
+  Account,
+  BASE_FEE,
+  Contract,
+  Networks,
+  TransactionBuilder,
+  rpc,
+  nativeToScVal,
+  scValToNative,
+  xdr,
+} from 'stellar-sdk'
 import { STELLAR_CONFIG } from '../config/stellar'
-import type { ContractEvent, ContractEventType, GetEventsResult } from '../types'
+import type { ContractEvent, ContractEventType, DeploymentResult, GetEventsResult } from '../types'
 
 const EVENT_TOPICS: ContractEventType[] = [
   'token_created',
@@ -14,6 +25,45 @@ function getRpcUrl(): string {
   const network = STELLAR_CONFIG.network as 'testnet' | 'mainnet'
   return STELLAR_CONFIG[network].sorobanRpcUrl
 }
+
+// ── Factory contract read calls ──────────────────────────────────────────────
+
+interface FactoryState {
+  token_count: number
+}
+
+export interface FactoryTokenInfo {
+  index: number
+  name: string
+  symbol: string
+  decimals: number
+  creator: string
+  createdAt: number
+  tokenAddress: string
+}
+
+const toNumber = (value: unknown): number => {
+  if (typeof value === 'number') return value
+  if (typeof value === 'bigint') return Number(value)
+  if (typeof value === 'string') return Number(value)
+  return 0
+}
+
+const toStringValue = (value: unknown): string => {
+  if (typeof value === 'string') return value
+  if (value && typeof value === 'object' && 'toString' in value) {
+    return String(value)
+  }
+  return ''
+}
+
+const getNetworkPassphrase = (): string =>
+  STELLAR_CONFIG.network === 'mainnet' ? Networks.PUBLIC : Networks.TESTNET
+
+const getExplorerBaseUrl = (): string =>
+  STELLAR_CONFIG.network === 'mainnet'
+    ? 'https://stellar.expert/explorer/public'
+    : 'https://stellar.expert/explorer/testnet'
 
 // ── Raw RPC types ────────────────────────────────────────────────────────────
 
@@ -54,27 +104,28 @@ async function scValB64ToString(b64: string): Promise<string> {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function scValToString(val: any, xdr: any): string {
+function scValToString(val: any, xdrNs: any): string {
   try {
     const type = val.switch()
-    if (type === xdr.ScValType.scvAddress()) {
+    if (type === xdrNs.ScValType.scvAddress()) {
       const addr = val.address()
-      if (addr.switch() === xdr.ScAddressType.scAddressTypeAccount()) {
+      if (addr.switch() === xdrNs.ScAddressType.scAddressTypeAccount()) {
         return addr.accountId().publicKey().toString()
       }
       return Buffer.from(addr.contractId()).toString('hex')
     }
-    if (type === xdr.ScValType.scvI128()) {
+    if (type === xdrNs.ScValType.scvI128()) {
       const hi = BigInt(val.i128().hi().toString())
       const lo = BigInt(val.i128().lo().toString())
       return ((hi << 64n) | lo).toString()
     }
-    if (type === xdr.ScValType.scvU64()) return val.u64().toString()
-    if (type === xdr.ScValType.scvString()) return val.str().toString()
-    if (type === xdr.ScValType.scvSymbol()) return val.sym().toString()
-    if (type === xdr.ScValType.scvVoid()) return 'none'
-    if (type === xdr.ScValType.scvVec()) {
-      const items: string[] = (val.vec() ?? []).map((v: any) => scValToString(v, xdr))
+    if (type === xdrNs.ScValType.scvU64()) return val.u64().toString()
+    if (type === xdrNs.ScValType.scvString()) return val.str().toString()
+    if (type === xdrNs.ScValType.scvSymbol()) return val.sym().toString()
+    if (type === xdrNs.ScValType.scvVoid()) return 'none'
+    if (type === xdrNs.ScValType.scvVec()) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const items: string[] = (val.vec() ?? []).map((v: any) => scValToString(v, xdrNs))
       return items.join(', ')
     }
     return b64ToString(val.toXDR('base64'))
@@ -103,6 +154,7 @@ async function parseRpcEvent(raw: RpcEventResponse): Promise<ContractEvent | nul
 
     const { xdr } = await import('stellar-sdk')
     const valueVal = xdr.ScVal.fromXDR(raw.value, 'base64')
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const items: any[] = valueVal.vec() ?? []
 
     const data: Record<string, string> = {}
@@ -164,9 +216,99 @@ async function rpcCall<T>(method: string, params: unknown): Promise<T> {
 // ── StellarService ────────────────────────────────────────────────────────────
 
 export class StellarService {
-  async deployToken(params: unknown): Promise<unknown> {
+  private rpcServer = new rpc.Server(
+    STELLAR_CONFIG[STELLAR_CONFIG.network as 'testnet' | 'mainnet'].sorobanRpcUrl
+  )
+
+  private async invokeFactoryView(
+    method: string,
+    args: xdr.ScVal[],
+    sourceAddress: string
+  ): Promise<unknown> {
+    const factoryContractId = STELLAR_CONFIG.factoryContractId
+
+    if (!factoryContractId) {
+      throw new Error('Factory contract ID is missing. Configure VITE_FACTORY_CONTRACT_ID.')
+    }
+
+    const source = new Account(sourceAddress, '0')
+    const contract = new Contract(factoryContractId)
+    const tx = new TransactionBuilder(source, {
+      fee: BASE_FEE,
+      networkPassphrase: getNetworkPassphrase(),
+    })
+      .addOperation(contract.call(method, ...args))
+      .setTimeout(30)
+      .build()
+
+    const simulation = await this.rpcServer.simulateTransaction(tx)
+
+    if (rpc.Api.isSimulationError(simulation)) {
+      throw new Error(simulation.error)
+    }
+
+    const result = simulation.result?.retval
+    if (!result) {
+      throw new Error(`No return value from ${method}`)
+    }
+
+    return scValToNative(result)
+  }
+
+  async getFactoryState(sourceAddress: string): Promise<FactoryState> {
+    const state = (await this.invokeFactoryView('get_state', [], sourceAddress)) as Record<
+      string,
+      unknown
+    >
+
+    return {
+      token_count: toNumber(state.token_count),
+    }
+  }
+
+  async getTokenInfoByIndex(index: number, sourceAddress: string): Promise<FactoryTokenInfo> {
+    const rawInfo = (await this.invokeFactoryView(
+      'get_token_info',
+      [nativeToScVal(index, { type: 'u32' })],
+      sourceAddress
+    )) as Record<string, unknown>
+
+    return {
+      index,
+      name: toStringValue(rawInfo.name),
+      symbol: toStringValue(rawInfo.symbol),
+      decimals: toNumber(rawInfo.decimals),
+      creator: toStringValue(rawInfo.creator),
+      createdAt: toNumber(rawInfo.created_at),
+      tokenAddress: toStringValue(rawInfo.token_address ?? rawInfo.address ?? rawInfo.token),
+    }
+  }
+
+  async getTokensByCreator(sourceAddress: string): Promise<FactoryTokenInfo[]> {
+    const state = await this.getFactoryState(sourceAddress)
+    if (!state.token_count) {
+      return []
+    }
+
+    const tokenRequests = Array.from({ length: state.token_count }, (_, idx) =>
+      this.getTokenInfoByIndex(idx + 1, sourceAddress).catch(() => null)
+    )
+
+    const tokens = (await Promise.all(tokenRequests)).filter(
+      (token): token is FactoryTokenInfo =>
+        token !== null && token.creator.toLowerCase() === sourceAddress.toLowerCase()
+    )
+
+    return tokens.sort((a, b) => b.createdAt - a.createdAt)
+  }
+
+  getExplorerContractUrl(contractAddress: string): string {
+    return `${getExplorerBaseUrl()}/contract/${contractAddress}`
+  }
+
+  async deployToken(params: unknown): Promise<DeploymentResult> {
     console.log('Deploying token:', params)
-    return { success: true }
+    return { tokenAddress: '', transactionHash: '', success: true }
   }
 
   async getTokenInfo(tokenAddress: string): Promise<unknown> {
