@@ -1064,6 +1064,14 @@ Please read and follow our [Code of Conduct](CODE_OF_CONDUCT.md). By participati
 - **Use secure random generation**: For any cryptographic operations
 - **Handle errors gracefully**: Don't expose sensitive information in error messages
 
+### Dependency Advisories
+
+The Security Audit workflow runs `cargo audit` and `npm audit` on every push and pull request, and weekly. Any high-or-above advisory fails the build.
+
+If an advisory does not affect StellarForge (for example, a dev-only dependency or an attack vector we never exercise), it can be waived — but only with a written justification, a tracking issue, and a review-by date, recorded in `contracts/.cargo/audit.toml` or `frontend/audit-ci.jsonc`. Waivers expire, and the weekly job fails once they do.
+
+Never waive an advisory that does affect us, and never extend a review-by date without re-verifying the justification. See [docs/security-triage.md](docs/security-triage.md) for the full process.
+
 ### Reporting Security Vulnerabilities
 
 If you discover a security vulnerability:
