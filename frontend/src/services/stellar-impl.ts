@@ -27,6 +27,7 @@ import {
 } from 'stellar-sdk'
 import type { Network } from '../config/stellar'
 import { withRetry, HttpError } from '../utils/retry'
+import { fetchAllContractEvents } from '../utils/fetchAllContractEvents'
 import { parseContractError } from '../utils/contractErrors'
 import { nextBackoffDelay } from '../utils/pollWithBackoff'
 
@@ -877,28 +878,45 @@ export class StellarService {
   // ── getTokenInfoByAddress ────────────────────────────────────────────────────
 
   /**
-   * Get token info by contract address (derived from factory events).
-   * Returns a TokenInfo with the address embedded in the creator field if not found.
+   * Get token info by contract address, derived from factory events.
+   *
+   * Pages through the full event history rather than requesting a single
+   * fixed-size page. `getEvents` returns events in ascending ledger order, so
+   * a capped single call drops the *newest* events — meaning a token created
+   * after the cap was reached resolved to a placeholder record (name set to
+   * its own address, empty symbol and creator) that callers could not
+   * distinguish from a real token. See `fetchAllContractEvents` for the
+   * pagination contract, and `.kiro/specs/contract-event-indexing` for why
+   * re-walking history per lookup is a stopgap rather than the end state.
+   *
+   * Throws when no `created` event exists for `tokenAddress`. Callers treat a
+   * rejection as "not found" — `TokenDetail` renders its not-found state,
+   * `TokenExplorer` and `useTokens` filter the entry out — which is why a
+   * placeholder is not returned instead.
    */
   async getTokenInfoByAddress(tokenAddress: string): Promise<TokenInfo> {
     const contractId = STELLAR_CONFIG.factoryContractId
     if (!contractId) throw new Error('Factory contract ID is not configured')
 
-    const { events } = await this.getContractEvents(contractId, 100)
+    const events = await fetchAllContractEvents(this, contractId)
     const createdEvent = events.find(
       (e) => e.type === 'created' && e.data.tokenAddress === tokenAddress,
     )
+    if (!createdEvent) {
+      throw new Error(`No token found at address ${tokenAddress}`)
+    }
+
     // Most-recent metadata event for this token
     const metaEvent = events
       .filter((e) => e.type === 'meta' && e.data.tokenAddress === tokenAddress)
       .sort((a, b) => b.ledger - a.ledger)[0]
 
     return {
-      name: createdEvent?.data.name ?? tokenAddress,
-      symbol: createdEvent?.data.symbol ?? '',
+      name: createdEvent.data.name ?? tokenAddress,
+      symbol: createdEvent.data.symbol ?? '',
       decimals: 7,
-      creator: createdEvent?.data.creator ?? '',
-      createdAt: createdEvent?.timestamp ?? 0,
+      creator: createdEvent.data.creator ?? '',
+      createdAt: createdEvent.timestamp ?? 0,
       metadataUri: metaEvent?.data.metadataUri ?? '',
     }
   }
