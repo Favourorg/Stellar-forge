@@ -1,129 +1,413 @@
-import { useCallback, useEffect, useState } from 'react'
+import React, { useState, useEffect, useCallback } from 'react'
+import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router-dom'
-import { stellarService } from '../services/stellar'
-import { ipfsService, type TokenMetadata } from '../services/ipfs'
-import { ipfsToGatewayUrl, PLACEHOLDER_TOKEN_IMAGE, truncateAddress } from '../utils/formatting'
+import { useStellarContext } from '../context/StellarContext'
+import { useToast } from '../context/ToastContext'
+import { ipfsService } from '../services/ipfs'
 import { STELLAR_CONFIG } from '../config/stellar'
-import { Card } from './UI/Card'
-import { Spinner } from './UI/Spinner'
+import { isValidContractAddress } from '../utils/validation'
+import { formatAddress, ipfsToGatewayUrl, formatTimestamp } from '../utils/formatting'
+import type { TokenInfo, IPFSMetadata } from '../types'
+import { Card, Button, Input, Spinner } from './UI'
+import { CopyButton } from './CopyButton'
+import { PaginationControls } from './UI/PaginationControls'
+import { useDebounce } from '../hooks/useDebounce'
+import { fetchAllContractEvents } from '../utils/fetchAllContractEvents'
 
-interface ExplorerToken {
+interface TokenWithMetadata extends TokenInfo {
   address: string
-  creator: string
-  metadataUri?: string
-  metadata?: TokenMetadata
+  metadata?: IPFSMetadata | null
 }
 
 export const TokenExplorer: React.FC = () => {
-  const [tokens, setTokens] = useState<ExplorerToken[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const { t } = useTranslation()
+  const { stellarService } = useStellarContext()
+  const { addToast } = useToast()
 
-  const loadTokens = useCallback(async () => {
-    const factoryContractId = STELLAR_CONFIG.factoryContractId
-    if (!factoryContractId) {
-      setTokens([])
-      setLoading(false)
+  const [searchInput, setSearchInput] = useState('')
+  const [creatorFilter, setCreatorFilter] = useState('')
+  const debouncedCreatorFilter = useDebounce(creatorFilter, 300)
+
+  const [searchResult, setSearchResult] = useState<TokenWithMetadata | null>(null)
+  const [searching, setSearching] = useState(false)
+  const [searchError, setSearchError] = useState<string | null>(null)
+
+  const [currentPage, setCurrentPage] = useState(1)
+  const [totalTokens, setTotalTokens] = useState(0)
+  const [tokens, setTokens] = useState<TokenWithMetadata[]>([])
+  const [loadingTokens, setLoadingTokens] = useState(false)
+
+  const tokensPerPage = 10
+
+  // Load factory state to get total token count
+  useEffect(() => {
+    stellarService
+      .getFactoryState()
+      .then((state) => setTotalTokens(state.tokenCount))
+      .catch(() => setTotalTokens(0))
+  }, [stellarService])
+
+  const loadTokenByAddress = useCallback(
+    async (address: string): Promise<TokenWithMetadata | null> => {
+      try {
+        const info = await stellarService.getTokenInfoByAddress(address)
+
+        let metadata: IPFSMetadata | null = null
+        if (info.metadataUri) {
+          try {
+            metadata = (await ipfsService.getMetadata(info.metadataUri)) as IPFSMetadata
+          } catch {
+            // Metadata fetch failure is non-fatal
+          }
+        }
+
+        return {
+          ...info,
+          address,
+          metadata,
+        }
+      } catch {
+        return null
+      }
+    },
+    [stellarService],
+  )
+
+  // Load tokens for current page
+  useEffect(() => {
+    if (totalTokens === 0) return
+
+    setLoadingTokens(true)
+    const startIndex = (currentPage - 1) * tokensPerPage
+    const endIndex = Math.min(startIndex + tokensPerPage, totalTokens)
+
+    // Get all token_created events to map indices to addresses. Paginated
+    // via fetchAllContractEvents rather than a single capped
+    // getContractEvents() call — see that helper for why a fixed limit
+    // would silently drop the newest tokens once history exceeds one page.
+    fetchAllContractEvents(stellarService, STELLAR_CONFIG.factoryContractId || '')
+      .then((events) => {
+        const tokenCreatedEvents = events
+          .filter((e) => e.type === 'created')
+          .sort((a, b) => a.ledger - b.ledger) // Sort by creation order
+
+        const promises: Promise<TokenWithMetadata | null>[] = []
+        for (let i = startIndex; i < endIndex; i++) {
+          const event = tokenCreatedEvents[i]
+          if (event?.data.tokenAddress) {
+            promises.push(loadTokenByAddress(event.data.tokenAddress))
+          }
+        }
+
+        return Promise.all(promises)
+      })
+      .then((results) => {
+        const validTokens = results.filter((t): t is TokenWithMetadata => t !== null)
+        setTokens(validTokens)
+      })
+      .catch(() => setTokens([]))
+      .finally(() => setLoadingTokens(false))
+  }, [currentPage, totalTokens, stellarService, loadTokenByAddress])
+
+  const getFilteredTokens = (): TokenWithMetadata[] => {
+    if (!debouncedCreatorFilter) return tokens
+
+    const filterLower = debouncedCreatorFilter.toLowerCase()
+    return tokens.filter((t) => t.creator && t.creator.toLowerCase().includes(filterLower))
+  }
+
+  const handleSearch = async (e: React.FormEvent) => {
+    e.preventDefault()
+    const query = searchInput.trim()
+
+    if (!query) {
+      setSearchError('Please enter a token address or index')
       return
     }
 
-    setLoading(true)
-    setError(null)
-    try {
-      const { events } = await stellarService.getContractEvents(factoryContractId, 50)
+    setSearching(true)
+    setSearchError(null)
+    setSearchResult(null)
 
-      const byAddress = new Map<string, ExplorerToken>()
-      for (const event of events) {
-        if (event.type === 'token_created' && event.data.tokenAddress) {
-          if (!byAddress.has(event.data.tokenAddress)) {
-            byAddress.set(event.data.tokenAddress, {
-              address: event.data.tokenAddress,
-              creator: event.data.creator,
-            })
-          }
+    try {
+      // Check if input is a number (index)
+      const indexMatch = /^\d+$/.exec(query)
+      if (indexMatch) {
+        const index = parseInt(query, 10)
+        if (index >= totalTokens) {
+          setSearchError(`Token index ${index} does not exist. Total tokens: ${totalTokens}`)
+          return
         }
-        if (event.type === 'metadata_set' && event.data.tokenAddress) {
-          const existing = byAddress.get(event.data.tokenAddress)
-          if (existing) existing.metadataUri = event.data.metadataUri
+
+        // Get token address from events
+        const events = await fetchAllContractEvents(
+          stellarService,
+          STELLAR_CONFIG.factoryContractId || '',
+        )
+        const tokenCreatedEvents = events
+          .filter((e) => e.type === 'created')
+          .sort((a, b) => a.ledger - b.ledger)
+
+        const event = tokenCreatedEvents[index]
+        if (!event?.data.tokenAddress) {
+          setSearchError('Token not found at this index')
+          return
         }
+
+        const result = await loadTokenByAddress(event.data.tokenAddress)
+        if (result) {
+          setSearchResult(result)
+        } else {
+          setSearchError('Token not found at this index')
+        }
+        return
       }
 
-      const list = Array.from(byAddress.values())
+      // Otherwise treat as address
+      if (!isValidContractAddress(query)) {
+        setSearchError('Invalid token address format')
+        return
+      }
 
-      await Promise.all(
-        list.map(async (t) => {
-          if (!t.metadataUri) return
-          try {
-            // Metadata is attacker-controlled (any token creator can pin
-            // arbitrary JSON), so a validation failure here just means the
-            // token renders with no metadata rather than crashing the page.
-            t.metadata = await ipfsService.getMetadata(t.metadataUri)
-          } catch {
-            // ignore - falls back to placeholder image / address-only display
-          }
-        })
-      )
-
-      setTokens(list)
+      const result = await loadTokenByAddress(query)
+      if (result) {
+        setSearchResult(result)
+      } else {
+        setSearchError('Token not found')
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load tokens')
+      setSearchError(err instanceof Error ? err.message : 'Token not found')
+      addToast('Token not found', 'error')
     } finally {
-      setLoading(false)
+      setSearching(false)
     }
-  }, [])
-
-  useEffect(() => {
-    loadTokens()
-  }, [loadTokens])
-
-  if (loading) {
-    return (
-      <div className="flex justify-center py-8">
-        <Spinner />
-      </div>
-    )
   }
 
-  if (error) {
-    return (
-      <div className="rounded-md bg-red-50 dark:bg-red-950 p-4 text-sm text-red-700 dark:text-red-300">
-        {error}
-      </div>
-    )
-  }
-
-  if (tokens.length === 0) {
-    return <p className="py-6 text-center text-sm text-gray-500 dark:text-gray-400">No tokens found.</p>
-  }
+  const totalPages = Math.ceil(totalTokens / tokensPerPage)
 
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-      {tokens.map((token) => {
-        const imageUrl = token.metadata ? ipfsToGatewayUrl(token.metadata.image) : null
-        return (
-          <Link key={token.address} to={`/tokens/${token.address}`}>
-            <Card>
-              <div className="flex items-center gap-3">
-                <img
-                  src={imageUrl ?? PLACEHOLDER_TOKEN_IMAGE}
-                  alt={token.metadata?.name ?? 'Token'}
-                  className="h-12 w-12 rounded-lg object-cover bg-gray-100 dark:bg-gray-700 shrink-0"
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-2xl font-bold text-gray-900 dark:text-white">
+          {t('tokenExplorer.title', 'Token Explorer')}
+        </h2>
+        <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
+          {t(
+            'tokenExplorer.description',
+            'Search for any token by address or index, or browse all tokens',
+          )}
+        </p>
+      </div>
+
+      {/* Search Form */}
+      <Card>
+        <form onSubmit={handleSearch} className="space-y-4">
+          <Input
+            label={t('tokenExplorer.searchLabel', 'Token Address or Index')}
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            placeholder={t(
+              'tokenExplorer.searchPlaceholder',
+              'Enter token address (C...) or index (0, 1, 2...)',
+            )}
+            disabled={searching}
+          />
+          <Input
+            label={t('tokenExplorer.filterByCreator', 'Filter by Creator Address')}
+            value={creatorFilter}
+            onChange={(e) => setCreatorFilter(e.target.value)}
+            placeholder={t(
+              'tokenExplorer.creatorPlaceholder',
+              'Enter creator address to filter tokens (optional)',
+            )}
+            disabled={searching}
+          />
+          {searchError && (
+            <p className="text-sm text-red-600 dark:text-red-400" role="alert">
+              {searchError}
+            </p>
+          )}
+          <Button type="submit" disabled={searching} loading={searching}>
+            {searching
+              ? t('tokenExplorer.searching', 'Searching...')
+              : t('tokenExplorer.search', 'Search')}
+          </Button>
+        </form>
+      </Card>
+
+      {/* Search Result */}
+      {searchResult && (
+        <Card title={t('tokenExplorer.searchResult', 'Search Result')}>
+          <TokenDisplay token={searchResult} />
+        </Card>
+      )}
+
+      {/* All Tokens List */}
+      <div>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
+            {t('tokenExplorer.allTokens', 'All Tokens')} ({totalTokens})
+          </h3>
+        </div>
+
+        {loadingTokens ? (
+          <div className="flex justify-center py-12">
+            <Spinner size="lg" label={t('tokenExplorer.loadingTokens', 'Loading tokens...')} />
+          </div>
+        ) : getFilteredTokens().length === 0 ? (
+          <Card>
+            <p className="text-center text-gray-500 dark:text-gray-400 py-8">
+              {debouncedCreatorFilter
+                ? t('tokenExplorer.noTokensForCreator', 'No tokens found for this creator address')
+                : t('tokenExplorer.noTokens', 'No tokens have been deployed yet')}
+            </p>
+          </Card>
+        ) : (
+          <div className="space-y-4">
+            {getFilteredTokens().map((token, index) => (
+              <Card key={`${token.address}-${index}`}>
+                <TokenDisplay
+                  token={token}
+                  showIndex
+                  index={(currentPage - 1) * tokensPerPage + index}
                 />
-                <div className="min-w-0">
-                  <p className="font-medium text-gray-900 dark:text-white truncate">
-                    {token.metadata?.name ?? truncateAddress(token.address)}
-                  </p>
-                  {token.metadata?.description && (
-                    <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
-                      {token.metadata.description}
-                    </p>
-                  )}
-                </div>
-              </div>
-            </Card>
-          </Link>
-        )
-      })}
+              </Card>
+            ))}
+          </div>
+        )}
+
+        {totalPages > 1 && !loadingTokens && !debouncedCreatorFilter && (
+          <PaginationControls
+            page={currentPage}
+            totalPages={totalPages}
+            totalCount={totalTokens}
+            pageSize={tokensPerPage}
+            onPrev={() => setCurrentPage((p) => Math.max(1, p - 1))}
+            onNext={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+          />
+        )}
+      </div>
+    </div>
+  )
+}
+
+interface TokenDisplayProps {
+  token: TokenWithMetadata
+  showIndex?: boolean
+  index?: number
+}
+
+const TokenDisplay: React.FC<TokenDisplayProps> = ({ token, showIndex, index }) => {
+  const { t } = useTranslation()
+  const imageUrl = token.metadata?.image ? ipfsToGatewayUrl(token.metadata.image) : null
+
+  return (
+    <div className="space-y-4">
+      {/* Token Header with Image */}
+      <div className="flex gap-4 items-start">
+        {imageUrl && (
+          <img
+            src={imageUrl}
+            alt={`${token.name} logo`}
+            className="w-16 h-16 rounded-lg object-cover flex-shrink-0 border border-gray-200 dark:border-gray-700"
+            onError={(e) => {
+              ;(e.target as HTMLImageElement).style.display = 'none'
+            }}
+          />
+        )}
+        <div className="flex-1 min-w-0">
+          <div className="flex items-baseline gap-2 flex-wrap">
+            {showIndex !== undefined && index !== undefined && (
+              <span className="text-sm font-mono text-gray-500 dark:text-gray-400">#{index}</span>
+            )}
+            <h4 className="text-lg font-semibold text-gray-900 dark:text-white">{token.name}</h4>
+            <span className="text-sm font-mono text-gray-500 dark:text-gray-400">
+              ({token.symbol})
+            </span>
+          </div>
+          {token.metadata?.description && (
+            <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">
+              {token.metadata.description}
+            </p>
+          )}
+        </div>
+      </div>
+
+      {/* Token Details */}
+      <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3 text-sm">
+        <div>
+          <dt className="text-gray-500 dark:text-gray-400">
+            {t('tokenExplorer.address', 'Address')}
+          </dt>
+          <dd className="flex items-center gap-1 font-mono text-xs break-all text-gray-900 dark:text-gray-100 mt-1">
+            <span title={token.address}>{formatAddress(token.address)}</span>
+            <CopyButton value={token.address} ariaLabel="Copy token address" />
+          </dd>
+        </div>
+
+        <div>
+          <dt className="text-gray-500 dark:text-gray-400">
+            {t('tokenExplorer.totalSupply', 'Total Supply')}
+          </dt>
+          <dd className="text-gray-900 dark:text-gray-100 mt-1 font-mono">
+            {token.totalSupply ?? '—'}
+          </dd>
+        </div>
+
+        <div>
+          <dt className="text-gray-500 dark:text-gray-400">
+            {t('tokenExplorer.decimals', 'Decimals')}
+          </dt>
+          <dd className="text-gray-900 dark:text-gray-100 mt-1">{token.decimals}</dd>
+        </div>
+
+        {token.creator && (
+          <div>
+            <dt className="text-gray-500 dark:text-gray-400">
+              {t('tokenExplorer.creator', 'Creator')}
+            </dt>
+            <dd className="flex items-center gap-1 font-mono text-xs break-all text-gray-900 dark:text-gray-100 mt-1">
+              <span title={token.creator}>{formatAddress(token.creator)}</span>
+              <CopyButton value={token.creator} ariaLabel="Copy creator address" />
+            </dd>
+          </div>
+        )}
+
+        {token.createdAt && token.createdAt > 0 && (
+          <div>
+            <dt className="text-gray-500 dark:text-gray-400">
+              {t('tokenExplorer.created', 'Created')}
+            </dt>
+            <dd className="text-gray-900 dark:text-gray-100 mt-1">
+              {formatTimestamp(token.createdAt)}
+            </dd>
+          </div>
+        )}
+
+        {token.metadataUri && (
+          <div className="sm:col-span-2">
+            <dt className="text-gray-500 dark:text-gray-400">
+              {t('tokenExplorer.metadataUri', 'Metadata URI')}
+            </dt>
+            <dd className="flex items-center gap-1 font-mono text-xs break-all text-gray-900 dark:text-gray-100 mt-1">
+              <span className="truncate" title={token.metadataUri}>
+                {token.metadataUri}
+              </span>
+              <CopyButton value={token.metadataUri} ariaLabel="Copy metadata URI" />
+            </dd>
+          </div>
+        )}
+      </dl>
+
+      {/* View Details Link */}
+      <div className="pt-2 border-t border-gray-200 dark:border-gray-700">
+        <Link
+          to={`/tokens/${token.address}`}
+          className="text-sm text-blue-600 dark:text-blue-400 hover:underline font-medium"
+        >
+          {t('tokenExplorer.viewDetails', 'View full details')} →
+        </Link>
+      </div>
     </div>
   )
 }

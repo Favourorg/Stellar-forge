@@ -2,9 +2,9 @@
 User-agent: *
 Allow: /
 
-Disallow: /tokens/
 Disallow: /create
 Disallow: /mint
 Disallow: /burn
+Disallow: /admin
 
 Sitemap: /sitemap.xml

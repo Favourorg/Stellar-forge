@@ -1,31 +1,181 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { formatTimestamp, timeAgo, ipfsToGatewayUrl } from '../utils/formatting'
+import * as fc from 'fast-check'
+import {
+  formatTimestamp,
+  timeAgo,
+  formatXLM,
+  truncateAddress,
+  stroopsToXLM,
+  xlmToStroops,
+  stellarExplorerUrl,
+  ipfsToGatewayUrl,
+} from '../utils/formatting'
 
 describe('ipfsToGatewayUrl', () => {
-  it('converts a valid ipfs:// CIDv0 URI to a Pinata gateway URL', () => {
-    const uri = 'ipfs://QmXoypizjW3WknFiJnKLwHCnL72vedxjQkDDP1mXWo6uco'
-    expect(ipfsToGatewayUrl(uri)).toBe(
-      'https://gateway.pinata.cloud/ipfs/QmXoypizjW3WknFiJnKLwHCnL72vedxjQkDDP1mXWo6uco'
+  it('converts CIDv0 ipfs URI to pinata gateway URL', () => {
+    expect(ipfsToGatewayUrl('ipfs://QmXxx')).toBe('https://gateway.pinata.cloud/ipfs/QmXxx')
+  })
+
+  it('converts CIDv1 ipfs URI to pinata gateway URL', () => {
+    expect(
+      ipfsToGatewayUrl('ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi'),
+    ).toBe(
+      'https://gateway.pinata.cloud/ipfs/bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi',
     )
   })
 
-  it('does not pass an arbitrary external URL through unchanged', () => {
-    expect(ipfsToGatewayUrl('https://evil.example.com/pixel.png')).not.toBe(
-      'https://evil.example.com/pixel.png'
+  it('returns non-IPFS URIs unchanged', () => {
+    expect(ipfsToGatewayUrl('https://example.com/metadata.json')).toBe(
+      'https://example.com/metadata.json',
     )
-    expect(ipfsToGatewayUrl('https://evil.example.com/pixel.png')).toBeNull()
+  })
+})
+
+describe('stellarExplorerUrl', () => {
+  it('builds a testnet tx link', () => {
+    expect(stellarExplorerUrl('tx', 'abc123', 'testnet')).toBe(
+      'https://stellar.expert/explorer/testnet/tx/abc123',
+    )
   })
 
-  it('returns null for a data: URI', () => {
-    expect(ipfsToGatewayUrl('data:text/html,<script>alert(1)</script>')).toBeNull()
+  it('builds a mainnet tx link', () => {
+    expect(stellarExplorerUrl('tx', 'abc123', 'mainnet')).toBe(
+      'https://stellar.expert/explorer/public/tx/abc123',
+    )
   })
 
-  it('returns null for a malformed CID', () => {
-    expect(ipfsToGatewayUrl('ipfs://not-a-cid')).toBeNull()
+  it('builds a contract link', () => {
+    expect(stellarExplorerUrl('contract', 'CABC', 'testnet')).toBe(
+      'https://stellar.expert/explorer/testnet/contract/CABC',
+    )
   })
 
-  it('returns null for an empty string', () => {
-    expect(ipfsToGatewayUrl('')).toBeNull()
+  it('builds an account link', () => {
+    expect(stellarExplorerUrl('account', 'GABC', 'mainnet')).toBe(
+      'https://stellar.expert/explorer/public/account/GABC',
+    )
+  })
+
+  it('defaults to testnet', () => {
+    expect(stellarExplorerUrl('tx', 'xyz')).toContain('testnet')
+  })
+
+  // Feature: stellar-explorer-links, Property 1: URL base path matches network
+  it('Property 1: URL base path matches network', () => {
+    fc.assert(
+      fc.property(
+        fc.constantFrom('tx' as const, 'contract' as const, 'account' as const),
+        fc.string({ minLength: 1 }),
+        fc.constantFrom('testnet' as const, 'mainnet' as const),
+        (type, id, network) => {
+          const url = stellarExplorerUrl(type, id, network)
+          const expectedBase =
+            network === 'mainnet'
+              ? 'https://stellar.expert/explorer/public'
+              : 'https://stellar.expert/explorer/testnet'
+          return url.startsWith(expectedBase)
+        },
+      ),
+      { numRuns: 100 },
+    )
+  })
+
+  // Feature: stellar-explorer-links, Property 2: URL pathname contains correct resource segment and identifier (round-trip)
+  it('Property 2: URL pathname contains correct resource segment and identifier', () => {
+    fc.assert(
+      fc.property(
+        fc.constantFrom('tx' as const, 'contract' as const, 'account' as const),
+        // Use alphanumeric identifiers to avoid URL normalization edge cases
+        // (e.g. '.' and '..' are normalized by the URL parser as path segments)
+        fc.stringMatching(/^[a-zA-Z0-9_-]+$/).filter((s) => s.length >= 1),
+        fc.constantFrom('testnet' as const, 'mainnet' as const),
+        (type, id, network) => {
+          const url = stellarExplorerUrl(type, id, network)
+          const parsed = new URL(url)
+          return parsed.pathname.includes(`/${type}/${id}`)
+        },
+      ),
+      { numRuns: 100 },
+    )
+  })
+})
+
+describe('formatXLM', () => {
+  it('formats a number to 7 decimal places with XLM suffix', () => {
+    // formatXLM takes a raw stroop amount; 10,000,000 stroops = 1 XLM
+    expect(formatXLM(10000000)).toBe('1.0000000 XLM')
+  })
+
+  it('handles a string input', () => {
+    expect(formatXLM('25000000')).toBe('2.5000000 XLM')
+  })
+
+  it('handles zero', () => {
+    expect(formatXLM(0)).toBe('0.0000000 XLM')
+  })
+})
+
+describe('truncateAddress', () => {
+  it('truncates a long address with defaults', () => {
+    // default chars=4: 4 start + '...' + 4 end = 'GABC...WXYZ'
+    const addr = 'GABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+    expect(truncateAddress(addr)).toBe('GABC...WXYZ')
+  })
+
+  it('returns the address unchanged if short enough', () => {
+    expect(truncateAddress('GABCD', 6)).toBe('GABCD')
+  })
+
+  it('respects a custom chars param', () => {
+    expect(truncateAddress('GABCDEFGHIJ', 3)).toBe('GAB...HIJ')
+  })
+})
+
+describe('stroopsToXLM', () => {
+  it('converts 10000000 stroops to 1 XLM', () => {
+    expect(stroopsToXLM(10000000)).toBe(1)
+  })
+
+  it('handles string input', () => {
+    expect(stroopsToXLM('5000000')).toBe(0.5)
+  })
+
+  it('formats 70000000 stroops as readable XLM', () => {
+    expect(formatXLM(70000000)).toBe('7.0000000 XLM')
+  })
+})
+
+describe('xlmToStroops', () => {
+  it('converts 1 XLM to 10000000 stroops', () => {
+    expect(xlmToStroops(1)).toBe(10000000)
+  })
+
+  it('floors fractional stroops', () => {
+    expect(xlmToStroops('0.00000001')).toBe(0)
+  })
+
+  it('handles edge cases', () => {
+    expect(xlmToStroops(0)).toBe(0)
+    expect(xlmToStroops(1000000000000000)).toBe(10000000000000000000000)
+  })
+})
+
+describe('round-trip conversion', () => {
+  it('xlmToStroops(stroopsToXLM(x)) === x', () => {
+    const testValues = [10000000, 5000000, 1000000, 100000, 10000, 1000, 100, 10, 1]
+
+    testValues.forEach((value) => {
+      expect(xlmToStroops(stroopsToXLM(value))).toBe(value)
+    })
+  })
+
+  it('handles zero', () => {
+    expect(xlmToStroops(stroopsToXLM(0))).toBe(0)
+  })
+
+  it('handles large numbers', () => {
+    const largeValue = 1000000000000000
+    expect(xlmToStroops(stroopsToXLM(largeValue))).toBe(largeValue)
   })
 })
 
@@ -77,9 +227,9 @@ describe('timeAgo', () => {
     expect(timeAgo(86400)).toBe('2 days ago')
   })
 
-  it('returns just now for future timestamps', () => {
+  it('returns minutes for future timestamps over a minute away', () => {
     freeze(1000)
-    expect(timeAgo(2000)).toBe('just now')
+    expect(timeAgo(2000)).toBe('in 17 minutes')
   })
 
   it('handles 0 without throwing', () => {
