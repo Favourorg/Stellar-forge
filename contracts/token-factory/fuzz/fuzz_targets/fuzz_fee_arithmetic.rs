@@ -153,7 +153,22 @@ fuzz_target!(|input: FuzzFeeArithmeticInput| {
     //
     // `create_tokens_batch` computes `base_fee * token_count` via checked_mul.
     // Verify this never overflows silently for non-negative fees.
-    let ops = input.num_operations.min(100) as i128;
+    //
+    // The batch count is clamped to 1..=100 because `create_tokens_batch`
+    // rejects an empty batch with `Error::InvalidParameters` before it ever
+    // reaches this multiplication:
+    //
+    // ```rust
+    // let count = tokens.len() as i128;
+    // if count == 0 {
+    //     return Err(Error::InvalidParameters);
+    // }
+    // ```
+    //
+    // Without the `.max(1)`, `num_operations == 0` makes `total_fee` zero for
+    // an arbitrarily large `effective_base`, tripping the monotonicity
+    // assertion below on a state the contract cannot reach.
+    let ops = (input.num_operations.min(100) as i128).max(1);
     let total_fee = effective_base.checked_mul(ops);
     let saturating_total = effective_base.saturating_mul(ops);
 
