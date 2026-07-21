@@ -4,6 +4,35 @@
 
 StellarForge is a user-friendly decentralized application (dApp) that enables creators, entrepreneurs, and businesses in emerging markets to deploy custom tokens on the Stellar blockchain without writing a single line of code.
 
+At its core, StellarForge is three things working together:
+
+1. **A Soroban "token factory" smart contract** (Rust) deployed once per network that deploys, initializes, and administers many independent SEP-41 token contracts on behalf of users, collecting configurable fees per operation.
+2. **A React single-page frontend** (TypeScript + Vite) that is entirely stateless — it reads and writes the Stellar ledger through Soroban RPC/Horizon and signs everything through the user's own Freighter wallet. There is no StellarForge database and no custodial key handling.
+3. **A minimal serverless IPFS proxy** (`api/`, deployed as Vercel functions) whose only job is to pin token images and metadata JSON to IPFS via Pinata while keeping the Pinata API credentials server-side, out of the browser bundle.
+
+Everything durable — token contracts, balances, fee configuration, metadata pointers — lives on the Stellar ledger or on IPFS. The web app can be redeployed or replaced at any time without any data migration.
+
+## Table of Contents
+
+- [Features](#features)
+- [How StellarForge Works](#how-stellarforge-works)
+- [Tech Stack](#tech-stack)
+- [Prerequisites](#prerequisites)
+- [Installation & Setup](#installation--setup)
+- [Building & Testing](#building--testing)
+- [Contract Functions](#contract-functions)
+- [Usage](#usage)
+- [Deployment](#deployment)
+- [Project Structure](#project-structure)
+- [Architecture](#architecture)
+- [Troubleshooting](#troubleshooting)
+- [Security](#security)
+- [Fee Bump Transactions](#fee-bump-transactions)
+- [Known Issues & Roadmap](#known-issues--roadmap)
+- [Contract Upgrade Process](#contract-upgrade-process)
+- [Contributing](#contributing)
+- [License](#license)
+
 ## Features
 
 - **Token Factory Contract**: Deploy custom SEP-41 tokens on Stellar using a single Soroban smart contract, without writing or auditing your own contract code
@@ -48,7 +77,7 @@ Every mutating factory call that has a monetary cost (`create_token`, `create_to
 
 Token images and descriptions are too large and mutable to store cheaply on a Soroban ledger, so StellarForge splits metadata into two layers:
 
-1. **Off-chain payload** — the frontend uploads the image and a JSON document (`{ name, description, image }`) to IPFS through Pinata's pinning API, getting back a content identifier (CID) for each.
+1. **Off-chain payload** — the frontend uploads the image and a JSON document (`{ name, description, image }`) to IPFS through the serverless proxy (`api/ipfs/upload-file`, `api/ipfs/upload-json`), which forwards them to Pinata's pinning API with server-side credentials and returns a content identifier (CID) for each. The proxy enforces a 4 MB file-size limit, an image-type allow-list (JPEG/PNG/GIF), and best-effort per-IP rate limiting.
 2. **On-chain pointer** — `set_metadata(token_address, admin, metadata_uri, fee_payment)` stores a single `ipfs://<cid>` string against the token, one time only (`Error::MetadataAlreadySet` on a second attempt). Any client — StellarForge's UI, a block explorer, another dApp — can resolve that URI through any IPFS gateway to fetch the same image/description.
 
 ### 4. Administration, safety, and lifecycle controls
@@ -64,7 +93,7 @@ Token images and descriptions are too large and mutable to store cheaply on a So
 
 The React app (`frontend/src`) is organized in layers so that UI code never talks to the network directly:
 
-- **`services/`** — the only layer that touches the outside world: `stellar.ts` / `stellar-impl.ts` build, sign-request, submit, and poll Soroban transactions and parse contract events; `ipfs.ts` uploads to and reads from Pinata; `wallet.ts` wraps the Freighter browser extension API.
+- **`services/`** — the only layer that touches the outside world: `stellar.ts` / `stellar-impl.ts` build, sign-request, submit, and poll Soroban transactions and parse contract events; `ipfs.ts` uploads through the `api/ipfs/*` serverless proxy and reads metadata back through the Pinata public gateway; `wallet.ts` wraps the Freighter browser extension API.
 - **`context/`** — app-wide React state: `WalletContext` (connected account, signing), `NetworkContext` (testnet/mainnet selection, persisted to `localStorage`, cross-checked against Freighter's actual network via `useNetworkMismatch`), `ToastContext`, `DarkModeContext`, `TosContext`.
 - **`hooks/`** — data-fetching and derived state built on the services layer: `useTokens` (cached, paginated token listings), `useTransaction`/`useTransactionPolling` (submit-and-poll a signed transaction), `useFactoryState`, `useTokenBalance`, `useTransactionHistory`, and more.
 - **`components/`** — presentation and forms (`CreateToken`, `MintForm`, `BurnForm`, `SetMetadataForm`, `AdminPanel`, `TokenExplorer`, `TokenDashboard`, `TransactionHistory`, …) that compose hooks and services but hold no blockchain logic of their own.
@@ -159,7 +188,6 @@ npm install
 ### 4. Environment Variables
 
 Copy the example env file and fill in your values:
-Copy the example file and fill in your values:
 
 ```bash
 cp frontend/.env.example frontend/.env
@@ -177,6 +205,7 @@ credentials never reach the browser. Set these as **server-side** environment
 variables in your Vercel project settings (or a local `.env` at the repo
 root when running `vercel dev`) - never prefix them with `VITE_`, or they'll
 be inlined into the client bundle and shipped to every visitor:
+
 ```env
 PINATA_API_KEY=<pinata-api-key>
 PINATA_API_SECRET=<pinata-api-secret>
@@ -237,19 +266,23 @@ npm run lint         # Lint code
 The authoritative, field-by-field reference — including parameter tables, every error code, and every emitted event — lives in [`docs/contract-abi.md`](./docs/contract-abi.md). This section is a quick-scan summary of the same `#[contractimpl]` surface in `contracts/token-factory/src/lib.rs`.
 
 ### Initialization
+
 - `initialize(admin, treasury, fee_token, token_wasm_hash, base_fee, metadata_fee)`: One-time factory setup. Fails with `AlreadyInitialized` on retry.
 
 ### Token Lifecycle
+
 - `create_token(creator, salt, name, symbol, decimals, initial_supply, fee_payment)`: Deploy a single new token contract at a deterministic `(creator, salt)` address; optionally mint `initial_supply` to `creator`.
 - `create_tokens_batch(creator, tokens, fee_payment)`: Atomically deploy a `Vec<BatchTokenParams>` (each with its own name/symbol/decimals/initial_supply and optional `max_supply` cap) in one transaction. `fee_payment` must cover `base_fee * tokens.len()`; a failure partway through the batch aborts the whole call.
 - `mint_tokens(token_address, admin, to, amount, fee_payment)`: Mint additional supply. Only the token's original creator may call this. Rejected with `MaxSupplyExceeded` if the token was created with a `max_supply` cap that minting would exceed.
 - `burn(token_address, from, amount)`: Burn `amount` from the caller's own balance. Honors the token's `burn_enabled` flag; ignores the factory-wide pause.
 
 ### Metadata
+
 - `set_metadata(token_address, admin, metadata_uri, fee_payment)`: Attach an `ipfs://` (or `https://`) metadata URI to a token. One-shot — a second call returns `MetadataAlreadySet`.
 - `set_burn_enabled(token_address, admin, enabled)`: Toggle whether a specific token can be burned. Caller must be the token's creator.
 
 ### Admin & Governance
+
 - `update_fees(admin, base_fee?, metadata_fee?)`: Adjust either fee; `None` leaves it unchanged.
 - `set_fee_split(admin, splits)` / `get_fee_split()`: Configure or read a `Map<Address, u32>` of basis-point fee recipients (must sum to `10_000`, or be empty to clear the split and fall back to `treasury`).
 - `pause(admin)` / `unpause(admin)`: Halt or resume `create_token`, `create_tokens_batch`, `mint_tokens`, and `set_metadata` factory-wide.
@@ -259,6 +292,7 @@ The authoritative, field-by-field reference — including parameter tables, ever
 - `migrate(admin)`: Idempotently bring on-chain state up to `CURRENT_SCHEMA_VERSION` after an upgrade.
 
 ### View Functions
+
 - `get_state()`: Full `FactoryState` (admin, treasury, fee_token, fees, pause flag, token count, schema version).
 - `get_base_fee()` / `get_metadata_fee()`: Current fee values.
 - `get_token_info(index)`: Look up a token by its 1-based factory index.
@@ -284,7 +318,7 @@ The contract publishes Soroban events on `(factory, action)` topics — `init`, 
 
 ## Deployment
 
-## Deployment & Caching
+### Caching & Service Worker
 
 The application uses a service worker (via Workbox) to support offline capabilities. The cache is versioned using the `VITE_FACTORY_CONTRACT_ID` and `VITE_NETWORK` environment variables.
 
@@ -414,6 +448,7 @@ stellar contract invoke \
 ```
 
 **Parameters explained:**
+
 - `admin`: Address that can update fees, pause the factory, manage the whitelist and fee split, rotate the admin, and upgrade the contract
 - `treasury`: Default address that receives fees from token creation (overridden per-recipient if a fee split is configured)
 - `fee_token`: Contract address for the SEP-41 token used to pay all fees (use native XLM contract: `CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC`)
@@ -559,32 +594,56 @@ when using `vercel dev`).
 
 ```
 stellar-forge/
-├── contracts/                 # Soroban smart contracts
+├── api/                       # Serverless functions (Vercel) — IPFS upload proxy
+│   ├── _lib/
+│   │   ├── pinata.ts         # Server-side Pinata credential handling
+│   │   └── rateLimit.ts      # Best-effort per-IP rate limiter
+│   └── ipfs/
+│       ├── upload-file.ts    # POST multipart image → pinFileToIPFS → { cid }
+│       └── upload-json.ts    # POST metadata JSON → pinJSONToIPFS → { cid }
+├── contracts/                 # Soroban smart contracts (Rust workspace)
 │   ├── Cargo.toml            # Workspace configuration
 │   └── token-factory/        # Token factory contract
-│       ├── Cargo.toml
-│       └── src/
-│           ├── lib.rs        # Contract implementation
-│           └── test.rs       # Contract tests
-├── frontend/                  # React application
+│       ├── src/
+│       │   ├── lib.rs        # Contract implementation (all entrypoints)
+│       │   ├── test.rs       # Contract unit tests
+│       │   └── bench.rs      # Cost benchmarks (opt-in via `--features bench`)
+│       ├── fuzz/             # cargo-fuzz targets + seed corpus
+│       ├── bench_snapshots/  # Benchmark baselines checked by CI
+│       └── build.sh          # Optimized WASM build (requires binaryen)
+├── frontend/                  # React application (Vite + TypeScript)
 │   ├── src/
-│   │   ├── components/       # UI components (NetworkSwitcher, TransactionHistory, ...)
-│   │   ├── context/          # React contexts (Wallet, Toast, Network)
-│   │   ├── services/         # API integrations (stellar, wallet, ipfs)
-│   │   ├── hooks/            # React hooks
-│   │   ├── config/           # Configuration files
+│   │   ├── components/       # UI components (CreateToken, AdminPanel, TokenExplorer, ...)
+│   │   ├── context/          # React contexts (Wallet, Network, Toast, DarkMode, Tos)
+│   │   ├── services/         # Outside-world integrations (stellar, wallet, ipfs)
+│   │   ├── hooks/            # Data-fetching & derived-state hooks (useTokens, useTransaction, ...)
+│   │   ├── config/           # Environment & network configuration
 │   │   ├── types/            # TypeScript type definitions
-│   │   └── utils/            # Utility functions
-│   ├── package.json
-│   └── vite.config.ts
-├── scripts/                   # Setup scripts
-│   └── setup-soroban.sh      # Installs Rust + Stellar CLI + configures testnet
+│   │   └── utils/            # Pure helpers (validation, retry, CSV, formatting)
+│   ├── tests/                # Playwright e2e tests
+│   └── .storybook/           # Component stories
+├── docs/                      # ADRs, contract ABI reference, ops runbooks
+│   ├── contract-abi.md       # Authoritative entrypoint/error/event reference
+│   ├── adr/                  # Architecture Decision Records
+│   ├── incident-response.md
+│   ├── mainnet-deployment-checklist.md
+│   └── rpc-rate-limits.md
+├── scripts/                   # Setup, deploy, and CI guard scripts
+│   ├── setup-soroban.sh      # Installs Rust + Stellar CLI + configures testnet
+│   ├── deploy-contract.sh    # Contract deployment helper
+│   ├── check-wasm-size.mjs   # CI guard: WASM binary size budget
+│   ├── check-abi-doc-drift.sh# CI guard: contract ↔ ABI-doc consistency
+│   └── check_benchmarks.py   # CI guard: contract cost regressions
+├── ISSUES.md                  # Audited critical-issue backlog (see below)
+├── docker-compose.yml         # Dev environment (frontend + contract builder)
+├── docker-compose.e2e.yml     # E2E test environment
+├── vercel.json                # Hosting + serverless function config
 └── README.md
 ```
 
 ## Architecture
 
-StellarForge consists of three main components that work together:
+StellarForge consists of four main components that work together:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -598,32 +657,30 @@ StellarForge consists of three main components that work together:
 │  │  │  Forms      │  │ ipfs.ts      │  │   Integration   │ │ │
 │  │  └─────────────┘  └──────────────┘  └─────────────────┘ │ │
 │  └───────────────────────────────────────────────────────────┘ │
-│                              ↓                                  │
-└──────────────────────────────┼──────────────────────────────────┘
-                               ↓
-              ┌────────────────┴────────────────┐
-              │                                 │
-              ↓                                 ↓
-┌─────────────────────────┐      ┌─────────────────────────┐
-│   Stellar Network       │      │    IPFS (Pinata)        │
-│                         │      │                         │
-│  ┌──────────────────┐   │      │  ┌──────────────────┐   │
-│  │ Factory Contract │   │      │  │ Token Metadata   │   │
-│  │  - create_token  │   │      │  │  - Images        │   │
-│  │  - mint_tokens   │   │      │  │  - Descriptions  │   │
-│  │  - burn          │   │      │  │  - JSON files    │   │
-│  │  - set_metadata  │   │      │  └──────────────────┘   │
-│  └────────┬─────────┘   │      └─────────────────────────┘
-│           │             │
-│           ↓             │
-│  ┌──────────────────┐   │
-│  │ Token Contracts  │   │
-│  │ (deployed by     │   │
-│  │  factory)        │   │
-│  │  - transfer      │   │
-│  │  - balance       │   │
-│  │  - approve       │   │
-│  └──────────────────┘   │
+│               │                              │                  │
+└───────────────┼──────────────────────────────┼──────────────────┘
+                │ signed Soroban txs           │ image + metadata JSON
+                ↓ (RPC / Horizon)              ↓ (multipart / JSON POST)
+┌─────────────────────────┐      ┌──────────────────────────────┐
+│   Stellar Network       │      │  Serverless IPFS Proxy       │
+│                         │      │  (api/ipfs/* on Vercel)      │
+│  ┌──────────────────┐   │      │  - holds Pinata credentials  │
+│  │ Factory Contract │   │      │  - validates type/size       │
+│  │  - create_token  │   │      │  - rate limits per IP        │
+│  │  - mint_tokens   │   │      └──────────────┬───────────────┘
+│  │  - burn          │   │                     │ pinFileToIPFS /
+│  │  - set_metadata  │   │                     ↓ pinJSONToIPFS
+│  └────────┬─────────┘   │      ┌──────────────────────────────┐
+│           │             │      │       IPFS (Pinata)          │
+│           ↓             │      │  ┌────────────────────────┐  │
+│  ┌──────────────────┐   │      │  │ Token Metadata         │  │
+│  │ Token Contracts  │   │      │  │  - Images              │  │
+│  │ (deployed by     │   │      │  │  - Descriptions        │  │
+│  │  factory)        │   │      │  │  - JSON documents      │  │
+│  │  - transfer      │   │      │  └────────────────────────┘  │
+│  │  - balance       │   │      │  (read back by the browser   │
+│  │  - approve       │   │      │   via the public gateway)    │
+│  └──────────────────┘   │      └──────────────────────────────┘
 └─────────────────────────┘
 ```
 
@@ -637,7 +694,7 @@ StellarForge consists of three main components that work together:
 
 4. **Factory Contract → Token Contracts**: Factory deploys new token contracts using the token WASM hash
 
-5. **Frontend → IPFS**: Token metadata (images, descriptions) are uploaded to IPFS via Pinata
+5. **Frontend → IPFS Proxy → Pinata**: Token metadata (images, descriptions) are uploaded through the `api/ipfs/*` serverless functions, which authenticate to Pinata server-side and return the pinned CID
 
 6. **Frontend → Stellar Network**: Metadata URIs (ipfs://...) are stored on-chain via `set_metadata`
 
@@ -915,6 +972,18 @@ const txHash = await submitFeeBumpTransaction(signedFeeBumpXdr);
 ```
 
 The fee source must have enough XLM to cover the base fee. The inner transaction is not re-signed — only the fee bump envelope requires the fee source's signature.
+
+## Known Issues & Roadmap
+
+A full audit of the contract, frontend, and serverless proxy produced a backlog of 20 critical and
+high-severity issues, each with a detailed description, task breakdown, and acceptance criteria. See
+[`ISSUES.md`](./ISSUES.md). Highlights that matter before any mainnet deployment:
+
+- The `initialize` deployment race, max-supply cap accounting, and fee-charging semantics in the
+  contract (`ISSUES.md` #1, #2, #4).
+- The instance-storage growth and TTL/archival strategy (`ISSUES.md` #3, #7).
+- Frontend/contract ABI drift in `create_token` and event parsing (`ISSUES.md` #5, #10, #11).
+- Hardening of the open IPFS proxy (`ISSUES.md` #6, #15).
 
 ## Contributing
 
