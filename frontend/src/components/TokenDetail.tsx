@@ -140,20 +140,10 @@ export const TokenDetail: React.FC = () => {
     return <NotFound />
   }
 
-  const imageUrl = metadata?.image ? ipfsToGatewayUrl(metadata.image) : null
-
-  useEffect(() => {
-    const metadataUri = typeof token?.metadataUri === 'string' ? token.metadataUri : undefined
-    if (!metadataUri) return
-    ipfsService
-      .getMetadata(metadataUri)
-      // Untrusted metadata that fails validation (e.g. a non-ipfs:// image) is
-      // treated as absent rather than surfaced as a page error.
-      .then(setMetadata)
-      .catch(() => setMetadata(null))
-  }, [token])
-
-  const imageUrl = metadata ? ipfsToGatewayUrl(metadata.image) : null
+  // ipfsToGatewayUrl resolves anything that is not a well-formed ipfs:// URI to
+  // an inline placeholder, so attacker-supplied metadata can never turn this
+  // into an outbound request to a host of the token creator's choosing.
+  const imageUrl = metadata ? ipfsToGatewayUrl(metadata.image ?? '') : null
 
   return (
     <div className="space-y-6 max-w-2xl mx-auto">
@@ -270,7 +260,7 @@ export const TokenDetail: React.FC = () => {
             {imageUrl && (
               <img
                 src={imageUrl}
-                alt={`${token.name} token art`}
+                alt={metadata.name || `${token.name} token art`}
                 className="w-24 h-24 rounded-lg object-cover flex-shrink-0 border border-gray-200 dark:border-gray-700"
                 onError={(e) => {
                   ;(e.target as HTMLImageElement).style.display = 'none'
