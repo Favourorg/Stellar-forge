@@ -15,6 +15,7 @@ Thank you for your interest in contributing to StellarForge! This document provi
 - [Adding a New Language](#adding-a-new-language)
 - [SDK Upgrade Process](#sdk-upgrade-process)
 - [Security](#security)
+- [Dependabot Auto-merge Policy](#dependabot-auto-merge-policy)
 - [Getting Help](#getting-help)
 
 ## Code Quality Hooks
@@ -1082,6 +1083,41 @@ If you discover a security vulnerability:
 4. **Allow time** for the team to respond and prepare a fix
 
 See [SECURITY.md](SECURITY.md) for detailed vulnerability reporting procedures.
+
+## Dependabot Auto-merge Policy
+
+StellarForge uses [Dependabot](https://docs.github.com/en/code-security/dependabot) to keep npm, Cargo, and GitHub Actions dependencies up to date. To prevent known-vulnerable dependencies from accumulating unreviewed, we apply an automated merge policy based on the semver impact of each update.
+
+### Coverage
+
+Dependabot is configured to watch three separate dependency trees:
+
+| Directory                       | Ecosystem      | Lockfile                                  |
+| ------------------------------- | -------------- | ----------------------------------------- |
+| `/frontend`                     | npm            | `frontend/package-lock.json`              |
+| `/contracts`                    | Cargo          | `contracts/Cargo.lock`                    |
+| `/contracts/token-factory/fuzz` | Cargo          | `contracts/token-factory/fuzz/Cargo.lock` |
+| `/`                             | GitHub Actions | n/a                                       |
+
+The fuzz workspace is listed as a **separate** Cargo entry because it has its own `[workspace]` and lockfile. Without its own entry, its transitive dependencies (`libfuzzer-sys`, `arbitrary`, etc.) would never receive Dependabot PRs and would fall silently behind the main workspace's audit coverage.
+
+### Merge rules
+
+| Update type         | Action                                                                                   |
+| ------------------- | ---------------------------------------------------------------------------------------- |
+| **Patch** (`x.y.Z`) | Auto-merged once all required CI checks pass. No human review needed.                    |
+| **Minor** (`x.Y.z`) | Auto-merged once all required CI checks pass. No human review needed.                    |
+| **Major** (`X.y.z`) | Requires **manual review and approval**. A bot comment on the PR explains what to check. |
+
+Auto-merge is implemented in `.github/workflows/dependabot-auto-merge.yml` using GitHub's native `gh pr merge --auto --squash`. The merge only executes after branch-protection required checks (CI, security audit, lint) all pass — auto-merge never bypasses CI.
+
+### Rationale
+
+Leaving every Dependabot PR unreviewed indefinitely is a common cause of the exact "known vulnerability sits unpatched for months" problem that security scanning is meant to prevent. Patch and minor bumps in well-maintained ecosystems (npm, Cargo) have a very low rate of user-facing breakage and a high rate of security fixes; automating them moves the risk needle in the right direction. Major bumps carry real API-breakage risk and always require a human to read the upstream changelog.
+
+### Waivers
+
+If a patch or minor update breaks something despite passing CI (e.g., a subtle runtime regression), revert the merge commit and open an issue. Do **not** disable the auto-merge workflow globally — instead, add the specific advisory or package to the waiver list (`contracts/.cargo/audit.toml` or `frontend/audit-ci.jsonc`) with a justification and a review-by date, as documented in [Security](#security) above.
 
 ## Getting Help
 

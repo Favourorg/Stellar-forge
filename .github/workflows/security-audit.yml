@@ -73,8 +73,43 @@ jobs:
 
       # cargo-audit reads contracts/.cargo/audit.toml automatically, which
       # holds the `[advisories] ignore` waiver list.
-      - name: Run cargo audit
+      - name: Run cargo audit (main contracts workspace)
         working-directory: contracts
+        run: cargo audit
+
+  cargo-audit-fuzz:
+    name: cargo audit (fuzz workspace)
+    runs-on: ubuntu-latest
+    needs: waiver-lint
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies (fuzz)
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: contracts/token-factory/fuzz
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      # The fuzz directory is its own Cargo workspace with a separate
+      # Cargo.lock, so it must be audited independently. Its transitive
+      # dependencies (libfuzzer-sys, arbitrary, …) are not covered by the
+      # main workspace audit above.
+      #
+      # If a fuzz-only advisory needs to be waived, add it to
+      # contracts/token-factory/fuzz/.cargo/audit.toml with the standard
+      # justification / review-by fields (see docs/security-triage.md).
+      - name: Generate Cargo.lock for fuzz workspace
+        working-directory: contracts/token-factory/fuzz
+        run: cargo generate-lockfile
+
+      - name: Run cargo audit (fuzz workspace)
+        working-directory: contracts/token-factory/fuzz
         run: cargo audit
 
   waiver-review:
