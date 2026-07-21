@@ -90,29 +90,62 @@ describe('IPFSService', () => {
 
   // ── Config validation ──────────────────────────────────────────────────────
 
-  describe('uploadMetadata — config validation', () => {
-    it('throws IPFSConfigError when API key is missing', async () => {
+  // Uploads are proxied through api/ipfs/*, which holds the Pinata credentials
+  // in server env. The browser therefore needs no keys of its own — these tests
+  // pin that, replacing two older ones that required VITE_IPFS_API_KEY client
+  // side and so entrenched shipping the secret in the bundle.
+  describe('uploadMetadata — requires no client-side credentials', () => {
+    it('succeeds with no VITE_IPFS_* credentials configured', async () => {
       vi.stubEnv('VITE_IPFS_API_KEY', '')
       vi.stubEnv('VITE_IPFS_API_SECRET', '')
       vi.resetModules()
       const { IPFSService: Fresh } = await import('../services/ipfs')
       const fresh = new Fresh()
-
-      await expect(fresh.uploadMetadata(makeFile(), 'desc', 'Token')).rejects.toBeInstanceOf(
-        IPFSConfigError,
+      mockXHR(200, JSON.stringify({ cid: 'QmImg' }))
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          status: 200,
+          json: async () => ({ cid: 'QmMeta' }),
+        }),
       )
+
+      await expect(fresh.uploadMetadata(makeFile(), 'desc', 'Token')).resolves.toBe('ipfs://QmMeta')
     })
 
-    it('throws IPFSConfigError with a descriptive message', async () => {
-      vi.stubEnv('VITE_IPFS_API_KEY', '')
-      vi.stubEnv('VITE_IPFS_API_SECRET', '')
+    it('posts to the same-origin proxy and sends no Pinata credentials', async () => {
+      vi.stubEnv('VITE_IPFS_API_KEY', 'leaked-key')
+      vi.stubEnv('VITE_IPFS_API_SECRET', 'leaked-secret')
       vi.resetModules()
       const { IPFSService: Fresh } = await import('../services/ipfs')
       const fresh = new Fresh()
+      const xhr = mockXHR(200, JSON.stringify({ cid: 'QmImg' }))
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ cid: 'QmMeta' }),
+      })
+      vi.stubGlobal('fetch', fetchMock)
 
-      await expect(fresh.uploadMetadata(makeFile(), 'desc', 'Token')).rejects.toThrow(
-        'VITE_IPFS_API_KEY',
+      await fresh.uploadMetadata(makeFile(), 'desc', 'Token')
+
+      // Image upload: same-origin proxy, no credential headers.
+      expect(xhr.open).toHaveBeenCalledWith('POST', '/api/ipfs/upload-file')
+      const headerNames = xhr.setRequestHeader.mock.calls.map(([name]) =>
+        String(name).toLowerCase(),
       )
+      expect(headerNames).not.toContain('pinata_api_key')
+      expect(headerNames).not.toContain('pinata_secret_api_key')
+
+      // Metadata upload: same-origin proxy, and the secret appears nowhere in
+      // the outgoing request — not in the URL, headers, or body.
+      const [url, options] = fetchMock.mock.calls[0]!
+      expect(url).toBe('/api/ipfs/upload-json')
+      const serialised = JSON.stringify({ url, options })
+      expect(serialised).not.toContain('leaked-key')
+      expect(serialised).not.toContain('leaked-secret')
+      expect(serialised).not.toMatch(/pinata\.cloud/)
     })
   })
 
@@ -135,7 +168,7 @@ describe('IPFSService', () => {
       )
     })
 
-    it('throws IPFSUploadError for file exceeding 5MB', async () => {
+    it('throws IPFSUploadError for file exceeding the 4MB limit', async () => {
       vi.resetModules()
       const { IPFSService: Fresh } = await import('../services/ipfs')
       const fresh = new Fresh()
@@ -152,20 +185,22 @@ describe('IPFSService', () => {
       const fresh = new Fresh()
       const big = makeFile('big.png', 'image/png', 6 * 1024 * 1024)
 
-      await expect(fresh.uploadMetadata(big, 'desc', 'Token')).rejects.toThrow('5MB')
+      // 4MB, not 5MB: the cap sits just under Vercel's 4.5MB serverless
+      // request-body ceiling now that uploads are proxied through api/ipfs/*.
+      await expect(fresh.uploadMetadata(big, 'desc', 'Token')).rejects.toThrow('4MB')
     })
 
     it('accepts JPEG files', async () => {
       vi.resetModules()
       const { IPFSService: Fresh } = await import('../services/ipfs')
       const fresh = new Fresh()
-      mockXHR(200, JSON.stringify({ IpfsHash: 'QmImageCID' }))
+      mockXHR(200, JSON.stringify({ cid: 'QmImageCID' }))
       vi.stubGlobal(
         'fetch',
         vi.fn().mockResolvedValue({
           ok: true,
           status: 200,
-          json: async () => ({ IpfsHash: 'QmMetaCID' }),
+          json: async () => ({ cid: 'QmMetaCID' }),
         }),
       )
 
@@ -177,13 +212,13 @@ describe('IPFSService', () => {
       vi.resetModules()
       const { IPFSService: Fresh } = await import('../services/ipfs')
       const fresh = new Fresh()
-      mockXHR(200, JSON.stringify({ IpfsHash: 'QmImageCID' }))
+      mockXHR(200, JSON.stringify({ cid: 'QmImageCID' }))
       vi.stubGlobal(
         'fetch',
         vi.fn().mockResolvedValue({
           ok: true,
           status: 200,
-          json: async () => ({ IpfsHash: 'QmMetaCID' }),
+          json: async () => ({ cid: 'QmMetaCID' }),
         }),
       )
 
@@ -204,13 +239,13 @@ describe('IPFSService', () => {
       vi.resetModules()
       const { IPFSService: Fresh } = await import('../services/ipfs')
       const fresh = new Fresh()
-      mockXHR(200, JSON.stringify({ IpfsHash: 'QmImageCID123' }))
+      mockXHR(200, JSON.stringify({ cid: 'QmImageCID123' }))
       vi.stubGlobal(
         'fetch',
         vi.fn().mockResolvedValue({
           ok: true,
           status: 200,
-          json: async () => ({ IpfsHash: 'QmMetaCID456' }),
+          json: async () => ({ cid: 'QmMetaCID456' }),
         }),
       )
 
@@ -222,13 +257,13 @@ describe('IPFSService', () => {
       vi.resetModules()
       const { IPFSService: Fresh } = await import('../services/ipfs')
       const fresh = new Fresh()
-      mockXHR(200, JSON.stringify({ IpfsHash: 'QmImg' }))
+      mockXHR(200, JSON.stringify({ cid: 'QmImg' }))
       vi.stubGlobal(
         'fetch',
         vi.fn().mockResolvedValue({
           ok: true,
           status: 200,
-          json: async () => ({ IpfsHash: 'QmMeta' }),
+          json: async () => ({ cid: 'QmMeta' }),
         }),
       )
 
@@ -243,20 +278,23 @@ describe('IPFSService', () => {
       vi.resetModules()
       const { IPFSService: Fresh } = await import('../services/ipfs')
       const fresh = new Fresh()
-      mockXHR(200, JSON.stringify({ IpfsHash: 'QmImg' }))
+      mockXHR(200, JSON.stringify({ cid: 'QmImg' }))
 
       let capturedBody: Record<string, unknown> = {}
       vi.stubGlobal(
         'fetch',
         vi.fn().mockImplementation(async (_url: string, opts: RequestInit) => {
           capturedBody = JSON.parse(opts.body as string) as Record<string, unknown>
-          return { ok: true, status: 200, json: async () => ({ IpfsHash: 'QmMeta' }) }
+          return { ok: true, status: 200, json: async () => ({ cid: 'QmMeta' }) }
         }),
       )
 
       await fresh.uploadMetadata(makeFile(), 'My description', 'CoolToken')
 
-      const content = capturedBody.pinataContent as Record<string, unknown>
+      // The client sends { metadata, name }; wrapping it in Pinata's
+      // pinataContent envelope is now the serverless function's job.
+      const content = capturedBody.metadata as Record<string, unknown>
+      expect(capturedBody.name).toBe('CoolToken-metadata.json')
       expect(content.name).toBe('CoolToken')
       expect(content.description).toBe('My description')
       expect(content.image).toBe('ipfs://QmImg')
@@ -315,7 +353,7 @@ describe('IPFSService', () => {
       )
     })
 
-    it('throws IPFSUploadError when image response is missing IpfsHash', async () => {
+    it('throws IPFSUploadError when image response is missing cid', async () => {
       vi.resetModules()
       const { IPFSService: Fresh } = await import('../services/ipfs')
       const fresh = new Fresh()
@@ -330,7 +368,7 @@ describe('IPFSService', () => {
       vi.resetModules()
       const { IPFSService: Fresh } = await import('../services/ipfs')
       const fresh = new Fresh()
-      mockXHR(200, JSON.stringify({ IpfsHash: 'QmImg' }))
+      mockXHR(200, JSON.stringify({ cid: 'QmImg' }))
       vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')))
 
       await expect(fresh.uploadMetadata(makeFile(), 'desc', 'Token')).rejects.toBeInstanceOf(
@@ -342,7 +380,7 @@ describe('IPFSService', () => {
       vi.resetModules()
       const { IPFSService: Fresh } = await import('../services/ipfs')
       const fresh = new Fresh()
-      mockXHR(200, JSON.stringify({ IpfsHash: 'QmImg' }))
+      mockXHR(200, JSON.stringify({ cid: 'QmImg' }))
       vi.stubGlobal(
         'fetch',
         vi.fn().mockResolvedValue({
@@ -352,16 +390,17 @@ describe('IPFSService', () => {
         }),
       )
 
-      await expect(fresh.uploadMetadata(makeFile(), 'desc', 'Token')).rejects.toThrow(
-        'authentication failed',
-      )
+      // Credentials now live server-side, so a 401 from our own proxy is not a
+      // user-actionable "check your API key" case — it surfaces as a generic
+      // upload failure carrying the status.
+      await expect(fresh.uploadMetadata(makeFile(), 'desc', 'Token')).rejects.toThrow('HTTP 401')
     })
 
     it('throws IPFSUploadError on non-ok fetch response for JSON upload', async () => {
       vi.resetModules()
       const { IPFSService: Fresh } = await import('../services/ipfs')
       const fresh = new Fresh()
-      mockXHR(200, JSON.stringify({ IpfsHash: 'QmImg' }))
+      mockXHR(200, JSON.stringify({ cid: 'QmImg' }))
       vi.stubGlobal(
         'fetch',
         vi.fn().mockResolvedValue({
@@ -404,7 +443,7 @@ describe('IPFSService', () => {
               } else {
                 ;(this as unknown as Record<string, unknown>).status = 200
                 ;(this as unknown as Record<string, unknown>).responseText = JSON.stringify({
-                  IpfsHash: 'QmRetryCID',
+                  cid: 'QmRetryCID',
                 })
                 listeners['load']?.({} as Event)
               }
@@ -426,7 +465,7 @@ describe('IPFSService', () => {
         vi.fn().mockResolvedValue({
           ok: true,
           status: 200,
-          json: async () => ({ IpfsHash: 'QmMetaRetry' }),
+          json: async () => ({ cid: 'QmMetaRetry' }),
         }),
       )
 
@@ -445,11 +484,11 @@ describe('IPFSService', () => {
       vi.useRealTimers()
     })
 
-    it('throws IPFSUploadError when JSON upload response is missing IpfsHash', async () => {
+    it('throws IPFSUploadError when JSON upload response is missing cid', async () => {
       vi.resetModules()
       const { IPFSService: Fresh } = await import('../services/ipfs')
       const fresh = new Fresh()
-      mockXHR(200, JSON.stringify({ IpfsHash: 'QmImg' }))
+      mockXHR(200, JSON.stringify({ cid: 'QmImg' }))
       vi.stubGlobal(
         'fetch',
         vi.fn().mockResolvedValue({
