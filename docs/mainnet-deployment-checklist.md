@@ -34,6 +34,7 @@ Every mainnet deployment **must** be accompanied by a signed, annotated git tag 
 
 - [ ] Set `VITE_NETWORK=mainnet` and confirm no testnet network passphrase, RPC URL, or Friendbot reference remains.
 - [ ] Verify `VITE_FACTORY_CONTRACT_ID`, `VITE_TOKEN_WASM_HASH`, and Pinata/IPFS configuration point to production values.
+- [ ] Confirm `VITE_TOKEN_WASM_HASH` equals the factory's on-chain `token_wasm_hash` (`stellar contract invoke --id <factory> -- get_state`). If the factory is being upgraded in this release, the frontend must be redeployed with the new hash in the same release window.
 - [ ] Confirm Content Security Policy headers allow only the required Stellar, Pinata, and application origins.
 - [ ] Review deployment hosting settings, environment variables, redirects, and security headers before publishing.
 
@@ -44,6 +45,7 @@ Every mainnet deployment **must** be accompanied by a signed, annotated git tag 
 - [ ] Prepare a rollback plan that names the last known-good frontend deployment, contract IDs, owner, and rollback command.
 - [ ] Save deployment transaction hashes, contract IDs, WASM hashes, and release notes in the deployment log.
 - [ ] After mainnet deployment, verify contract state, transaction history, and frontend reads against Stellar Explorer.
+- [ ] Load the deployed frontend against mainnet and confirm **no token-contract mismatch banner** appears. The app compares the factory's on-chain `token_wasm_hash` against `VITE_TOKEN_WASM_HASH` at startup; a red banner means the frontend build and the factory disagree about which token contract is being deployed. The check stays silent when it cannot complete (RPC read failure, or the variable unset), so pair this with the config verification above rather than relying on the absent banner alone.
 - [ ] Run the [WASM Hash Verification workflow](https://github.com/Favourorg/Stellar-forge/actions/workflows/wasm-verify.yml) as the final post-deployment check, using the deployment tag as `git_ref` and the new factory contract ID. The job must pass before the deployment is considered complete.
 - [ ] Monitor application errors, failed transactions, fee spikes, and user-reported issues during the release window.
 
@@ -59,4 +61,3 @@ These items must be verified before the factory is accessible to end users on ma
 - [ ] Tabletop exercise (runbook section 10) has been completed and dated in the deployment log.
 
 > See [SECURITY.md](../SECURITY.md) for the responsible disclosure policy and further security context.
-

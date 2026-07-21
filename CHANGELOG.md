@@ -1,3 +1,15 @@
+# [1.2.0](https://github.com/Favourorg/Stellar-forge/compare/v1.1.0...v1.2.0) (2026-07-21)
+
+
+### Bug Fixes
+
+* **deps:** add Dependabot fuzz coverage and auto-merge policy ([#985](https://github.com/Favourorg/Stellar-forge/issues/985)) ([2247b9f](https://github.com/Favourorg/Stellar-forge/commit/2247b9f0cb3343708d5eebb461280d7e558a5b38)), closes [#941](https://github.com/Favourorg/Stellar-forge/issues/941)
+
+
+### Features
+
+* **frontend:** verify deployed token WASM hash against factory state ([#986](https://github.com/Favourorg/Stellar-forge/issues/986)) ([6d1566a](https://github.com/Favourorg/Stellar-forge/commit/6d1566a8416e1ac44860fbb6a1395e062548141a)), closes [#925](https://github.com/Favourorg/Stellar-forge/issues/925) [hi#severity](https://github.com/hi/issues/severity) [#982](https://github.com/Favourorg/Stellar-forge/issues/982) [#984](https://github.com/Favourorg/Stellar-forge/issues/984) [#984](https://github.com/Favourorg/Stellar-forge/issues/984) [#984](https://github.com/Favourorg/Stellar-forge/issues/984) [#982](https://github.com/Favourorg/Stellar-forge/issues/982)
+
 # [1.1.0](https://github.com/Favourorg/Stellar-forge/compare/v1.0.0...v1.1.0) (2026-07-20)
 
 

@@ -1,0 +1,72 @@
+name: Dependabot Auto-merge
+
+# Auto-merge policy (mirrors what is documented in CONTRIBUTING.md):
+#
+#   patch bumps   → merged automatically once all required CI checks pass.
+#   minor bumps   → merged automatically once all required CI checks pass.
+#   major bumps   → flagged for manual review; auto-merge is NOT enabled.
+#
+# The workflow runs on every Dependabot PR (opened or synchronised) and, for
+# eligible update types, enables GitHub's native auto-merge so the PR closes
+# itself as soon as branch-protection requirements are satisfied.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    name: Enable auto-merge for patch/minor Dependabot PRs
+    runs-on: ubuntu-latest
+
+    # Only run for PRs opened by Dependabot.
+    if: github.actor == 'dependabot[bot]'
+
+    steps:
+      - name: Fetch Dependabot metadata
+        id: dependabot-metadata
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── Patch updates ────────────────────────────────────────────────────
+      # Enable auto-merge unconditionally for patch-level bumps across all
+      # ecosystems (npm, cargo, github-actions).
+      - name: Enable auto-merge for patch updates
+        if: steps.dependabot-metadata.outputs.update-type == 'version-update:semver-patch'
+        run: gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── Minor updates ─────────────────────────────────────────────────────
+      # Enable auto-merge for minor-level bumps. These should still pass the
+      # full CI suite before merging, which branch protection enforces.
+      - name: Enable auto-merge for minor updates
+        if: steps.dependabot-metadata.outputs.update-type == 'version-update:semver-minor'
+        run: gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── Major updates ─────────────────────────────────────────────────────
+      # Leave a comment explaining why the PR is NOT auto-merged, so it is
+      # clearly visible to reviewers rather than silently sitting unmerged.
+      - name: Comment on major updates requiring manual review
+        if: steps.dependabot-metadata.outputs.update-type == 'version-update:semver-major'
+        run: |
+          gh pr comment "$PR_URL" --body \
+            "👋 This PR is a **major** version bump and requires **manual review** before merging.
+
+            Please check the upstream changelog for breaking changes, update any
+            affected call-sites, and verify that CI passes end-to-end before
+            approving.
+
+            See the [Dependabot auto-merge policy](../blob/main/CONTRIBUTING.md#dependabot-auto-merge-policy) in \`CONTRIBUTING.md\` for details."
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

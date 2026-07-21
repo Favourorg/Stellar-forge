@@ -177,6 +177,7 @@ credentials never reach the browser. Set these as **server-side** environment
 variables in your Vercel project settings (or a local `.env` at the repo
 root when running `vercel dev`) - never prefix them with `VITE_`, or they'll
 be inlined into the client bundle and shipped to every visitor:
+
 ```env
 PINATA_API_KEY=<pinata-api-key>
 PINATA_API_SECRET=<pinata-api-secret>
@@ -237,19 +238,23 @@ npm run lint         # Lint code
 The authoritative, field-by-field reference — including parameter tables, every error code, and every emitted event — lives in [`docs/contract-abi.md`](./docs/contract-abi.md). This section is a quick-scan summary of the same `#[contractimpl]` surface in `contracts/token-factory/src/lib.rs`.
 
 ### Initialization
+
 - `initialize(admin, treasury, fee_token, token_wasm_hash, base_fee, metadata_fee)`: One-time factory setup. Fails with `AlreadyInitialized` on retry.
 
 ### Token Lifecycle
+
 - `create_token(creator, salt, name, symbol, decimals, initial_supply, fee_payment)`: Deploy a single new token contract at a deterministic `(creator, salt)` address; optionally mint `initial_supply` to `creator`.
 - `create_tokens_batch(creator, tokens, fee_payment)`: Atomically deploy a `Vec<BatchTokenParams>` (each with its own name/symbol/decimals/initial_supply and optional `max_supply` cap) in one transaction. `fee_payment` must cover `base_fee * tokens.len()`; a failure partway through the batch aborts the whole call.
 - `mint_tokens(token_address, admin, to, amount, fee_payment)`: Mint additional supply. Only the token's original creator may call this. Rejected with `MaxSupplyExceeded` if the token was created with a `max_supply` cap that minting would exceed.
 - `burn(token_address, from, amount)`: Burn `amount` from the caller's own balance. Honors the token's `burn_enabled` flag; ignores the factory-wide pause.
 
 ### Metadata
+
 - `set_metadata(token_address, admin, metadata_uri, fee_payment)`: Attach an `ipfs://` (or `https://`) metadata URI to a token. One-shot — a second call returns `MetadataAlreadySet`.
 - `set_burn_enabled(token_address, admin, enabled)`: Toggle whether a specific token can be burned. Caller must be the token's creator.
 
 ### Admin & Governance
+
 - `update_fees(admin, base_fee?, metadata_fee?)`: Adjust either fee; `None` leaves it unchanged.
 - `set_fee_split(admin, splits)` / `get_fee_split()`: Configure or read a `Map<Address, u32>` of basis-point fee recipients (must sum to `10_000`, or be empty to clear the split and fall back to `treasury`).
 - `pause(admin)` / `unpause(admin)`: Halt or resume `create_token`, `create_tokens_batch`, `mint_tokens`, and `set_metadata` factory-wide.
@@ -259,6 +264,7 @@ The authoritative, field-by-field reference — including parameter tables, ever
 - `migrate(admin)`: Idempotently bring on-chain state up to `CURRENT_SCHEMA_VERSION` after an upgrade.
 
 ### View Functions
+
 - `get_state()`: Full `FactoryState` (admin, treasury, fee_token, fees, pause flag, token count, schema version).
 - `get_base_fee()` / `get_metadata_fee()`: Current fee values.
 - `get_token_info(index)`: Look up a token by its 1-based factory index.
@@ -414,6 +420,7 @@ stellar contract invoke \
 ```
 
 **Parameters explained:**
+
 - `admin`: Address that can update fees, pause the factory, manage the whitelist and fee split, rotate the admin, and upgrade the contract
 - `treasury`: Default address that receives fees from token creation (overridden per-recipient if a fee split is configured)
 - `fee_token`: Contract address for the SEP-41 token used to pay all fees (use native XLM contract: `CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC`)
@@ -442,6 +449,19 @@ VITE_TOKEN_WASM_HASH=<your-token-wasm-hash>
 VITE_IPFS_API_KEY=<your-pinata-api-key>
 VITE_IPFS_API_SECRET=<your-pinata-api-secret>
 ```
+
+> **Keep `VITE_TOKEN_WASM_HASH` in sync with the factory.** This value must equal the
+> factory's on-chain `token_wasm_hash` — the WASM the factory actually deploys tokens
+> from. That field is set at `initialize` time and can only change through a contract
+> upgrade + migrate, so the realistic way they drift apart is a factory upgrade that
+> ships without a matching frontend redeploy.
+>
+> On startup (and every 5 minutes thereafter) the app reads `get_state()` and compares
+> the on-chain hash against this variable, showing a red warning banner if they differ.
+> Treat that banner as a deployment bug: it is a **safety net for detecting drift, not a
+> substitute for updating both in lockstep**. If the check cannot be completed — the RPC
+> read fails, or the variable is unset — the app stays silent rather than warning, so a
+> missing banner is not by itself proof that the hashes match.
 
 **Getting Pinata credentials:**
 

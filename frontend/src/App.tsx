@@ -32,6 +32,7 @@ import { NotFound } from './components/NotFound'
 import { TransactionHistory } from './components/TransactionHistory'
 import { AnalyticsOptOut } from './components/AnalyticsOptOut'
 import { NetworkMismatchBanner } from './components/NetworkBadge'
+import { WasmHashMismatchBanner } from './components/WasmHashMismatchBanner'
 import { FAQ } from './components/FAQ'
 
 const TokenDashboard = React.lazy(() =>
@@ -252,6 +253,8 @@ function AppContent() {
         {showOnboarding && <OnboardingModal forceOpen onClose={() => setShowOnboarding(false)} />}
 
         <NetworkMismatchBanner />
+
+        <WasmHashMismatchBanner />
 
         {!isFactoryConfigured() && (
           <div

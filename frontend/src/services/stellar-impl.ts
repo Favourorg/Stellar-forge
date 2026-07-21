@@ -712,6 +712,13 @@ export class StellarService {
         baseFee: native.base_fee?.toString() ?? '0',
         metadataFee: native.metadata_fee?.toString() ?? '0',
         tokenCount: Number(native.token_count ?? 0),
+        // scValToNative turns BytesN<32> into a Buffer/Uint8Array — normalise
+        // to lowercase hex so it is directly comparable to VITE_TOKEN_WASM_HASH.
+        tokenWasmHash: native.token_wasm_hash
+          ? [...new Uint8Array(native.token_wasm_hash)]
+              .map((b: number) => b.toString(16).padStart(2, '0'))
+              .join('')
+          : undefined,
       }
     } catch (err) {
       const appErr = toAppError(err)

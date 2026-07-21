@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { TokenDetail } from '../components/TokenDetail'
 import { StellarContext } from '../context/StellarContext'
 import { TOKEN_IMAGE_PLACEHOLDER } from '../utils/formatting'
-import { IPFSService, MAX_METADATA_DESCRIPTION_LENGTH } from '../services/ipfs'
+import { IPFSService } from '../services/ipfs'
 import type { StellarService } from '../services/stellar'
 import type { TokenInfo } from '../types'
 
@@ -71,9 +71,8 @@ const mockPinnedMetadata = (metadata: Record<string, unknown>) => {
     vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
-      // getMetadata reads text() so it can size-check before parsing.
-      text: async () => JSON.stringify(metadata),
-    } as unknown as Response),
+      json: async () => metadata,
+    } as Response),
   )
 }
 

@@ -45,6 +45,13 @@ export interface FactoryState {
   baseFee: string // i128 from contract, represented as string for precision
   metadataFee: string // i128 from contract, represented as string for precision
   tokenCount: number // u32 from contract
+  /**
+   * Lowercase hex encoding of the contract's `token_wasm_hash` (BytesN<32>) —
+   * the WASM the factory actually deploys tokens from. Compared against
+   * VITE_TOKEN_WASM_HASH to detect frontend/on-chain configuration drift.
+   * Optional because older decode paths may not surface it.
+   */
+  tokenWasmHash?: string | undefined
 }
 
 /**
