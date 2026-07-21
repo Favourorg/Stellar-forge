@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { TokenDetail } from '../components/TokenDetail'
 import { StellarContext } from '../context/StellarContext'
 import { TOKEN_IMAGE_PLACEHOLDER } from '../utils/formatting'
-import { IPFSService } from '../services/ipfs'
+import { IPFSService, MAX_METADATA_DESCRIPTION_LENGTH } from '../services/ipfs'
 import type { StellarService } from '../services/stellar'
 import type { TokenInfo } from '../types'
 
@@ -71,8 +71,9 @@ const mockPinnedMetadata = (metadata: Record<string, unknown>) => {
     vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
-      json: async () => metadata,
-    } as Response),
+      // getMetadata reads text() so it can size-check before parsing.
+      text: async () => JSON.stringify(metadata),
+    } as unknown as Response),
   )
 }
 
@@ -116,6 +117,31 @@ describe('TokenDetail — untrusted metadata rendering', () => {
     await waitFor(() => {
       expect(img.getAttribute('src')).toBe(`https://gateway.pinata.cloud/ipfs/${VALID_CID}`)
     })
+  })
+
+  it('bounds a huge description instead of rendering it in full', async () => {
+    // Layout-DoS shape from #926: a wall of text engineered to freeze the tab
+    // or push content below the fold. Two independent bounds should apply —
+    // the data-layer clamp in getMetadata, and the CSS line-clamp on render.
+    // Sized under the 100KB whole-document cap so this exercises the
+    // truncation path, not the outright-rejection path.
+    const pinnedLength = 40_000
+    mockPinnedMetadata({
+      name: 'SpamToken',
+      description: 'A'.repeat(pinnedLength),
+      image: `ipfs://${VALID_CID}`,
+    })
+
+    renderTokenDetail()
+
+    const para = await screen.findByText(/^A+…$/)
+
+    // Data layer: clamped well below what was pinned.
+    expect(para.textContent!.length).toBeLessThanOrEqual(MAX_METADATA_DESCRIPTION_LENGTH + 1)
+    expect(para.textContent!.length).toBeLessThan(pinnedLength)
+
+    // Render layer: bounded box regardless of character count.
+    expect(para.className).toMatch(/line-clamp-\d/)
   })
 
   it('renders a <script>-containing description as inert text, not executed markup', async () => {

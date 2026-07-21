@@ -326,7 +326,10 @@ const TokenDisplay: React.FC<TokenDisplayProps> = ({ token, showIndex, index }) 
             </span>
           </div>
           {token.metadata?.description && (
-            <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">
+            // Clamped hard with no expand affordance: this is a list row, and a
+            // single token must not be able to grow its card and push the rest
+            // of the results off-screen.
+            <p className="mt-1 text-sm text-gray-600 dark:text-gray-400 line-clamp-2 break-words">
               {token.metadata.description}
             </p>
           )}

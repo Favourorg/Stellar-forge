@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { IPFSService } from '../services/ipfs'
+import {
+  IPFSService,
+  MAX_METADATA_DESCRIPTION_LENGTH,
+  MAX_METADATA_NAME_LENGTH,
+} from '../services/ipfs'
 import type { TokenMetadata } from '../services/ipfs'
 import { IPFSConfigError, IPFSUploadError } from '../services/ipfs-errors'
 
@@ -514,7 +518,7 @@ describe('IPFSService', () => {
         vi.fn().mockResolvedValue({
           ok: true,
           status: 200,
-          json: async () => meta,
+          text: async () => JSON.stringify(meta),
         }),
       )
 
@@ -531,7 +535,8 @@ describe('IPFSService', () => {
           return {
             ok: true,
             status: 200,
-            json: async () => ({ name: 'T', description: 'D', image: 'ipfs://QmImg' }),
+            text: async () =>
+              JSON.stringify({ name: 'T', description: 'D', image: 'ipfs://QmImg' }),
           }
         }),
       )
@@ -559,7 +564,7 @@ describe('IPFSService', () => {
         vi.fn().mockResolvedValue({
           ok: false,
           status: 404,
-          json: async () => ({}),
+          text: async () => JSON.stringify({}),
         }),
       )
 
@@ -572,9 +577,7 @@ describe('IPFSService', () => {
         vi.fn().mockResolvedValue({
           ok: true,
           status: 200,
-          json: async () => {
-            throw new SyntaxError('Unexpected token')
-          },
+          text: async () => 'this is not JSON {',
         }),
       )
 
@@ -587,7 +590,7 @@ describe('IPFSService', () => {
         vi.fn().mockResolvedValue({
           ok: true,
           status: 200,
-          json: async () => ({ description: 'A token', image: 'ipfs://QmImg' }),
+          text: async () => JSON.stringify({ description: 'A token', image: 'ipfs://QmImg' }),
         }),
       )
 
@@ -600,7 +603,7 @@ describe('IPFSService', () => {
         vi.fn().mockResolvedValue({
           ok: true,
           status: 200,
-          json: async () => ({ name: 'MyToken', image: 'ipfs://QmImg' }),
+          text: async () => JSON.stringify({ name: 'MyToken', image: 'ipfs://QmImg' }),
         }),
       )
 
@@ -613,7 +616,7 @@ describe('IPFSService', () => {
         vi.fn().mockResolvedValue({
           ok: true,
           status: 200,
-          json: async () => ({ name: 'MyToken', description: 'A token' }),
+          text: async () => JSON.stringify({ name: 'MyToken', description: 'A token' }),
         }),
       )
 
@@ -626,7 +629,7 @@ describe('IPFSService', () => {
         vi.fn().mockResolvedValue({
           ok: true,
           status: 200,
-          json: async () => ({ name: 42, description: true, image: null }),
+          text: async () => JSON.stringify({ name: 42, description: true, image: null }),
         }),
       )
 
@@ -643,7 +646,7 @@ describe('IPFSService', () => {
       }
       vi.stubGlobal(
         'fetch',
-        vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => raw }),
+        vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => JSON.stringify(raw) }),
       )
 
       const result = await service.getMetadata('ipfs://QmCID')
@@ -655,10 +658,91 @@ describe('IPFSService', () => {
     it('throws IPFSUploadError when gateway returns an empty object', async () => {
       vi.stubGlobal(
         'fetch',
-        vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({}) }),
+        vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => JSON.stringify({}) }),
       )
 
       await expect(service.getMetadata('ipfs://QmCID')).rejects.toBeInstanceOf(IPFSUploadError)
+    })
+
+    // Metadata can be pinned directly to IPFS without going through our upload
+    // form, so the read path is the only place a length limit actually binds.
+    // An unbounded description renders into every visitor's page: enough text
+    // stalls the tab, and enough newlines push phishing content below the fold.
+    describe('length caps on untrusted free text', () => {
+      const gateway = (meta: Record<string, unknown>) =>
+        vi.stubGlobal(
+          'fetch',
+          vi.fn().mockResolvedValue({
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify(meta),
+          }),
+        )
+
+      it('truncates a description longer than the cap', async () => {
+        gateway({
+          name: 'T',
+          description: 'a'.repeat(MAX_METADATA_DESCRIPTION_LENGTH + 5_000),
+          image: 'ipfs://QmImg',
+        })
+
+        const result = await service.getMetadata('ipfs://QmCID')
+
+        expect([...result.description].length).toBe(MAX_METADATA_DESCRIPTION_LENGTH + 1) // + ellipsis
+        expect(result.description.endsWith('…')).toBe(true)
+      })
+
+      it('leaves a description at exactly the cap untouched', async () => {
+        const exact = 'b'.repeat(MAX_METADATA_DESCRIPTION_LENGTH)
+        gateway({ name: 'T', description: exact, image: 'ipfs://QmImg' })
+
+        const result = await service.getMetadata('ipfs://QmCID')
+
+        expect(result.description).toBe(exact)
+        expect(result.description).not.toContain('…')
+      })
+
+      it('truncates an over-long name', async () => {
+        gateway({
+          name: 'n'.repeat(MAX_METADATA_NAME_LENGTH + 500),
+          description: 'd',
+          image: 'ipfs://QmImg',
+        })
+
+        const result = await service.getMetadata('ipfs://QmCID')
+
+        expect([...result.name].length).toBe(MAX_METADATA_NAME_LENGTH + 1)
+      })
+
+      it('does not split a surrogate pair when truncating', async () => {
+        // Emoji are two UTF-16 code units each; slicing by .length would cut one
+        // in half and leave an unpaired surrogate (renders as a replacement char).
+        gateway({
+          name: 'T',
+          description: '😀'.repeat(MAX_METADATA_DESCRIPTION_LENGTH + 100),
+          image: 'ipfs://QmImg',
+        })
+
+        const result = await service.getMetadata('ipfs://QmCID')
+
+        expect(result.description).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/)
+        expect(result.description).not.toMatch(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/)
+      })
+
+      it('rejects a payload too large to parse rather than truncating it', async () => {
+        // Guards the cost of JSON.parse itself — truncating after parse would
+        // still mean walking the whole multi-megabyte document first.
+        vi.stubGlobal(
+          'fetch',
+          vi.fn().mockResolvedValue({
+            ok: true,
+            status: 200,
+            text: async () => 'x'.repeat(200 * 1024),
+          }),
+        )
+
+        await expect(service.getMetadata('ipfs://QmCID')).rejects.toThrow(/too large/i)
+      })
     })
 
     it('throws IPFSUploadError when gateway returns a non-object (array)', async () => {
@@ -667,7 +751,7 @@ describe('IPFSService', () => {
         vi.fn().mockResolvedValue({
           ok: true,
           status: 200,
-          json: async () => ['name', 'description', 'image'],
+          text: async () => JSON.stringify(['name', 'description', 'image']),
         }),
       )
 

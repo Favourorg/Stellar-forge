@@ -93,6 +93,8 @@ Burn `amount` of `token_address` from `from`'s balance. Honors `burn_enabled`; r
 
 Set an IPFS / HTTPS metadata URI for an existing token. One-shot — re-setting returns `Error::MetadataAlreadySet`.
 
+The contract stores the URI opaquely and does not validate the document it points at. The frontend does, and enforces length caps on `name` and `description` plus an `ipfs://`-only rule for `image` when rendering — see [Token Metadata Format](./metadata-format.md) before pinning your own metadata.
+
 ### `set_burn_enabled(token_address, admin, enabled)`
 
 Toggle the burn flag for a token.

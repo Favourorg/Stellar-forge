@@ -20,6 +20,7 @@ import { BurnForm } from './BurnForm'
 import { SetMetadataForm } from './SetMetadataForm'
 import { TokenHistory } from './TokenHistory'
 import { NotFound } from './NotFound'
+import { ClampedText } from './ClampedText'
 
 const BASE_URL = 'https://stellarforge.app'
 
@@ -269,10 +270,14 @@ export const TokenDetail: React.FC = () => {
             )}
             <div className="space-y-1 text-sm">
               {metadata.name && (
-                <p className="font-medium text-gray-900 dark:text-gray-100">{metadata.name}</p>
+                <p className="font-medium text-gray-900 dark:text-gray-100 line-clamp-2 break-words">
+                  {metadata.name}
+                </p>
               )}
               {metadata.description && (
-                <p className="text-gray-600 dark:text-gray-400">{metadata.description}</p>
+                <ClampedText lines={3} expandable className="text-gray-600 dark:text-gray-400">
+                  {metadata.description}
+                </ClampedText>
               )}
             </div>
           </div>
