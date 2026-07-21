@@ -142,19 +142,6 @@ export const TokenDetail: React.FC = () => {
 
   const imageUrl = metadata?.image ? ipfsToGatewayUrl(metadata.image) : null
 
-  useEffect(() => {
-    const metadataUri = typeof token?.metadataUri === 'string' ? token.metadataUri : undefined
-    if (!metadataUri) return
-    ipfsService
-      .getMetadata(metadataUri)
-      // Untrusted metadata that fails validation (e.g. a non-ipfs:// image) is
-      // treated as absent rather than surfaced as a page error.
-      .then(setMetadata)
-      .catch(() => setMetadata(null))
-  }, [token])
-
-  const imageUrl = metadata ? ipfsToGatewayUrl(metadata.image) : null
-
   return (
     <div className="space-y-6 max-w-2xl mx-auto">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">

@@ -18,7 +18,7 @@ function renderTokenDetail(address = 'CABC123') {
       <Routes>
         <Route path="/tokens/:address" element={<TokenDetail />} />
       </Routes>
-    </MemoryRouter>
+    </MemoryRouter>,
   )
 }
 

@@ -34,7 +34,7 @@ describe('IPFSService.uploadMetadata', () => {
         ok: true,
         status: 200,
         json: async () => ({ cid: 'QmFakeMetadataCid' }),
-      } as Response)
+      } as Response),
     )
   })
 
