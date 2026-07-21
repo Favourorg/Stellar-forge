@@ -107,6 +107,19 @@ async function decodeFactoryState(scVal: unknown): Promise<FactoryState> {
     return v.b() as boolean
   }
 
+  // BytesN<32> → lowercase hex. Returns undefined rather than throwing so a
+  // factory deployed with an older state schema still decodes; the WASM-hash
+  // verification hook treats a missing value as "cannot verify", not "drift".
+  function getBytesHex(key: string): string | undefined {
+    const v = map.get(key)
+    if (!v) return undefined
+    try {
+      return [...new Uint8Array(v.bytes())].map((b) => b.toString(16).padStart(2, '0')).join('')
+    } catch {
+      return undefined
+    }
+  }
+
   return {
     admin: getAddress('admin'),
     treasury: getAddress('treasury'),
@@ -114,6 +127,7 @@ async function decodeFactoryState(scVal: unknown): Promise<FactoryState> {
     metadataFee: getI128('metadata_fee').toString(),
     tokenCount: getU32('token_count'),
     paused: getBool('paused'),
+    tokenWasmHash: getBytesHex('token_wasm_hash'),
   }
 }
 
