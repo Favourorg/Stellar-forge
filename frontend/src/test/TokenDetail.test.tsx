@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { TokenDetail } from '../components/TokenDetail'
 import { StellarContext } from '../context/StellarContext'
 import { TOKEN_IMAGE_PLACEHOLDER } from '../utils/formatting'
-import { IPFSService } from '../services/ipfs'
+import { IPFSService, MAX_METADATA_DESCRIPTION_LENGTH } from '../services/ipfs'
 import type { StellarService } from '../services/stellar'
 import type { TokenInfo } from '../types'
 
@@ -29,14 +29,14 @@ vi.mock('../hooks/useWallet', () => ({
 
 const getTokenInfoByAddress = vi.fn()
 
-// TokenDetail resolves its services from StellarContext, not from a module
-// import — mocking '../services/stellar' would never bind. Supply the context
-// directly with a stub service plus a real IPFSService, whose gateway fetch is
-// stubbed through global fetch below.
 // Must be a real, checksum-valid contract address — TokenDetail short-circuits
 // to NotFound before fetching anything if isValidContractAddress fails.
 const TOKEN_ADDRESS = 'CA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKERYNZGGA5SOAOPIFY6YQGAXE'
 
+// TokenDetail resolves its services from StellarContext, not from a module
+// import — mocking '../services/stellar' would never bind. Supply the context
+// directly with a stub service plus a real IPFSService, whose gateway fetch is
+// stubbed through global fetch below.
 function renderTokenDetail(address = TOKEN_ADDRESS) {
   const value = {
     stellarService: { getTokenInfoByAddress } as unknown as StellarService,
@@ -71,8 +71,9 @@ const mockPinnedMetadata = (metadata: Record<string, unknown>) => {
     vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
-      json: async () => metadata,
-    } as Response),
+      // getMetadata reads text() so it can size-check before parsing.
+      text: async () => JSON.stringify(metadata),
+    } as unknown as Response),
   )
 }
 
