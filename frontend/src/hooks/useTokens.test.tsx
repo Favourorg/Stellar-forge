@@ -29,6 +29,7 @@ function makeTokenBatch(start: number, count: number) {
 vi.mock('../services/stellar', () => ({
   stellarService: {
     getTokensByCreator: vi.fn(),
+    getAllTokens: vi.fn(),
     getContractEvents: vi.fn(),
     getTokenInfoByAddress: vi.fn(),
   },
@@ -109,79 +110,79 @@ describe('useTokens', () => {
     expect(stellarService.getTokensByCreator).toHaveBeenCalledWith('GABC', 50, 50)
   })
 
-  it('fetches all tokens in parallel when no creator given', async () => {
-    vi.mocked(stellarService.getContractEvents).mockResolvedValue({
-      events: [
-        {
-          id: '1',
-          type: 'created',
-          ledger: 1,
-          timestamp: 1000,
-          txHash: 'x',
-          data: { tokenAddress: 'CAAA' },
-        },
-        {
-          id: '2',
-          type: 'created',
-          ledger: 2,
-          timestamp: 2000,
-          txHash: 'y',
-          data: { tokenAddress: 'CBBB' },
-        },
-      ],
-      cursor: null,
+  it('fetches the first server page from getAllTokens when no creator given', async () => {
+    vi.mocked(stellarService.getAllTokens).mockResolvedValue({
+      tokens: [TOKEN_A, TOKEN_B],
+      total: 2,
     })
-    vi.mocked(stellarService.getTokenInfoByAddress)
-      .mockResolvedValueOnce(TOKEN_A)
-      .mockResolvedValueOnce(TOKEN_B)
 
     const { result } = renderHook(() => useTokens())
 
     await waitFor(() => expect(result.current.tokens).toHaveLength(2))
-    expect(stellarService.getTokenInfoByAddress).toHaveBeenCalledTimes(2)
+    // Page 1 with the default page size — server-side offset/limit.
+    expect(stellarService.getAllTokens).toHaveBeenCalledWith(0, 10)
+    expect(result.current.totalCount).toBe(2)
+    // The event-derived path must no longer be used for the global list.
+    expect(stellarService.getTokenInfoByAddress).not.toHaveBeenCalled()
   })
 
-  // Regression test: a single fixed-size getContractEvents() call silently
-  // drops any `created` events beyond the page limit. This asserts the "all
-  // tokens" path pages through the full event history via the returned
-  // cursor instead, so every token is still found once the factory has
-  // emitted more than one page's worth of events.
-  it('pages through the full event history when there are more than one page of created events', async () => {
-    const makeEvent = (i: number) => ({
-      id: String(i),
-      type: 'created' as const,
-      ledger: i,
-      timestamp: i,
-      txHash: `tx${i}`,
-      data: { tokenAddress: `CADDR${i}` },
-    })
-    const page1 = Array.from({ length: 100 }, (_, i) => makeEvent(i))
-    const page2 = Array.from({ length: 20 }, (_, i) => makeEvent(100 + i))
-
-    vi.mocked(stellarService.getContractEvents)
-      .mockResolvedValueOnce({ events: page1, cursor: 'cursor-1' })
-      .mockResolvedValueOnce({ events: page2, cursor: 'cursor-2' })
-    vi.mocked(stellarService.getTokenInfoByAddress).mockImplementation((addr: string) =>
-      Promise.resolve({ ...TOKEN_A, name: addr }),
-    )
+  it('server-paginates the global list: navigating pages re-fetches with a new offset', async () => {
+    // 25 tokens total, 10 per page → 3 pages. Each page is one server call.
+    vi.mocked(stellarService.getAllTokens).mockImplementation(async (offset = 0, limit = 10) => ({
+      tokens: makeTokenBatch(offset, Math.min(limit, 25 - offset)),
+      total: 25,
+    }))
 
     const { result } = renderHook(() => useTokens())
 
-    await waitFor(() => expect(result.current.totalCount).toBe(120))
-    expect(stellarService.getContractEvents).toHaveBeenCalledTimes(2)
-    expect(stellarService.getContractEvents).toHaveBeenNthCalledWith(
-      1,
-      'CFACTORY123',
-      100,
-      undefined,
-    )
-    expect(stellarService.getContractEvents).toHaveBeenNthCalledWith(
-      2,
-      'CFACTORY123',
-      100,
-      'cursor-1',
-    )
-    expect(stellarService.getTokenInfoByAddress).toHaveBeenCalledTimes(120)
+    await waitFor(() => expect(result.current.totalCount).toBe(25))
+    expect(result.current.totalPages).toBe(3)
+    expect(result.current.tokens).toHaveLength(10)
+    expect(stellarService.getAllTokens).toHaveBeenCalledWith(0, 10)
+
+    // Navigate to page 2 → new server fetch at offset 10.
+    act(() => {
+      result.current.setPage(2)
+    })
+    await waitFor(() => expect(stellarService.getAllTokens).toHaveBeenCalledWith(10, 10))
+    await waitFor(() => expect(result.current.page).toBe(2))
+
+    // Last page is partial (5 tokens).
+    act(() => {
+      result.current.setPage(3)
+    })
+    await waitFor(() => expect(stellarService.getAllTokens).toHaveBeenCalledWith(20, 10))
+    await waitFor(() => expect(result.current.tokens).toHaveLength(5))
+  })
+
+  it('caches global pages so returning to a visited page does not re-fetch', async () => {
+    vi.mocked(stellarService.getAllTokens).mockImplementation(async (offset = 0, limit = 10) => ({
+      tokens: makeTokenBatch(offset, Math.min(limit, 25 - offset)),
+      total: 25,
+    }))
+
+    const { result } = renderHook(() => useTokens())
+    await waitFor(() => expect(result.current.totalCount).toBe(25))
+
+    act(() => result.current.setPage(2))
+    await waitFor(() => expect(result.current.page).toBe(2))
+
+    const callsAfterPage2 = vi.mocked(stellarService.getAllTokens).mock.calls.length
+
+    // Back to page 1 — served from the (network, contractId, page) cache.
+    act(() => result.current.setPage(1))
+    await waitFor(() => expect(result.current.page).toBe(1))
+    expect(vi.mocked(stellarService.getAllTokens).mock.calls.length).toBe(callsAfterPage2)
+  })
+
+  it('surfaces an error (never a fake-empty list) when the global fetch fails', async () => {
+    vi.mocked(stellarService.getAllTokens).mockRejectedValue(new Error('RPC down'))
+
+    const { result } = renderHook(() => useTokens())
+
+    await waitFor(() => expect(result.current.error).not.toBeNull())
+    expect(result.current.error?.message).toBe('RPC down')
+    expect(result.current.tokens).toHaveLength(0)
   })
 
   it('populates error on RPC failure', async () => {

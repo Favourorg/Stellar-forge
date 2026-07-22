@@ -1,11 +1,14 @@
 #![cfg(test)]
 
+extern crate std;
+
 use super::*;
 use soroban_sdk::{
     testutils::Address as _,
     token::{StellarAssetClient, TokenClient},
     Address, BytesN, Env, Map, String,
 };
+use std::panic::{catch_unwind, AssertUnwindSafe};
 
 // ── Test setup helper ─────────────────────────────────────────────────────────
 
@@ -26,25 +29,26 @@ impl Setup {
         let env = Env::default();
         env.mock_all_auths();
 
-        let contract_id = env.register_contract(None, TokenFactory);
-        // SAFETY: the client borrows `env` which lives for the duration of the test.
-        let client = TokenFactoryClient::new(&env, &contract_id);
-        let client: TokenFactoryClient<'static> = unsafe { core::mem::transmute(client) };
-
         let admin = Address::generate(&env);
         let treasury = Address::generate(&env);
         let fee_token = env
             .register_stellar_asset_contract_v2(admin.clone())
             .address();
 
-        client.initialize(
-            &admin,
-            &treasury,
-            &fee_token,
-            &dummy_hash(&env),
-            &1_000,
-            &500,
+        let contract_id = env.register(
+            TokenFactory,
+            TokenFactoryArgs::__constructor(
+                &admin,
+                &treasury,
+                &fee_token,
+                &dummy_hash(&env),
+                &1_000,
+                &500,
+            ),
         );
+        // SAFETY: the client borrows `env` which lives for the duration of the test.
+        let client = TokenFactoryClient::new(&env, &contract_id);
+        let client: TokenFactoryClient<'static> = unsafe { core::mem::transmute(client) };
 
         Setup {
             env,
@@ -148,16 +152,29 @@ fn test_initialize() {
 
 #[test]
 fn test_initialize_already_initialized() {
+    // The constructor now runs atomically with deployment, so it can no
+    // longer be invoked as a second, separate call against a live contract.
+    // The only way to exercise the `AlreadyInitialized` guard is the
+    // test-only re-registration path (re-running the constructor against an
+    // address whose instance storage was already populated) — the doc
+    // comment on `Env::register_at` notes this isn't reproducible on-chain,
+    // but the guard is kept as defense in depth.
     let s = Setup::new();
-    let result = s.client.try_initialize(
-        &s.admin,
-        &s.treasury,
-        &s.fee_token,
-        &s.dummy_hash(),
-        &1_000,
-        &500,
-    );
-    assert_eq!(result, Err(Ok(Error::AlreadyInitialized)));
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        s.env.register_at(
+            &s.client.address,
+            TokenFactory,
+            TokenFactoryArgs::__constructor(
+                &s.admin,
+                &s.treasury,
+                &s.fee_token,
+                &s.dummy_hash(),
+                &1_000,
+                &500,
+            ),
+        )
+    }));
+    assert!(result.is_err());
 }
 
 // ── supply boundary tests (issue #909) ───────────────────────────────────────
@@ -869,70 +886,48 @@ fn test_update_fees_unauthorized() {
 //      implementation-defined on the SEP-41 token contract side and has
 //      not been tested or audited for this factory.
 
-#[test]
-fn test_initialize_negative_base_fee_rejected() {
+/// Registers a fresh `TokenFactory` with the given fees and returns whether
+/// the constructor rejected them. A constructor is invoked atomically during
+/// registration/deployment and has no client-callable `try_*` form, so an
+/// `Err` return surfaces as a host trap — caught here via `catch_unwind`
+/// instead of an `assert_eq!` on a `Result` value.
+fn init_rejects(base_fee: i128, metadata_fee: i128) -> bool {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, TokenFactory);
-    let client = TokenFactoryClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
     let treasury = Address::generate(&env);
     let fee_token = env
         .register_stellar_asset_contract_v2(admin.clone())
         .address();
-    let result = client.try_initialize(
-        &admin,
-        &treasury,
-        &fee_token,
-        &BytesN::from_array(&env, &[0u8; 32]),
-        &-1_i128,
-        &500_i128,
-    );
-    assert_eq!(result, Err(Ok(Error::InvalidParameters)));
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        env.register(
+            TokenFactory,
+            TokenFactoryArgs::__constructor(
+                &admin,
+                &treasury,
+                &fee_token,
+                &BytesN::from_array(&env, &[0u8; 32]),
+                &base_fee,
+                &metadata_fee,
+            ),
+        )
+    }));
+    result.is_err()
+}
+
+#[test]
+fn test_initialize_negative_base_fee_rejected() {
+    assert!(init_rejects(-1_i128, 500_i128));
 }
 
 #[test]
 fn test_initialize_negative_metadata_fee_rejected() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register_contract(None, TokenFactory);
-    let client = TokenFactoryClient::new(&env, &contract_id);
-    let admin = Address::generate(&env);
-    let treasury = Address::generate(&env);
-    let fee_token = env
-        .register_stellar_asset_contract_v2(admin.clone())
-        .address();
-    let result = client.try_initialize(
-        &admin,
-        &treasury,
-        &fee_token,
-        &BytesN::from_array(&env, &[0u8; 32]),
-        &1_000_i128,
-        &-1_i128,
-    );
-    assert_eq!(result, Err(Ok(Error::InvalidParameters)));
+    assert!(init_rejects(1_000_i128, -1_i128));
 }
 
 #[test]
 fn test_initialize_both_fees_negative_rejected() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register_contract(None, TokenFactory);
-    let client = TokenFactoryClient::new(&env, &contract_id);
-    let admin = Address::generate(&env);
-    let treasury = Address::generate(&env);
-    let fee_token = env
-        .register_stellar_asset_contract_v2(admin.clone())
-        .address();
-    let result = client.try_initialize(
-        &admin,
-        &treasury,
-        &fee_token,
-        &BytesN::from_array(&env, &[0u8; 32]),
-        &-100_i128,
-        &-200_i128,
-    );
-    assert_eq!(result, Err(Ok(Error::InvalidParameters)));
+    assert!(init_rejects(-100_i128, -200_i128));
 }
 
 #[test]
@@ -940,24 +935,7 @@ fn test_initialize_i128_min_fee_rejected() {
     // i128::MIN is the most dangerous negative: saturating_abs() of it is
     // still i128::MAX, so any code that tries to normalise it before checking
     // would still fail. Ensure the raw sign check fires first.
-    let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register_contract(None, TokenFactory);
-    let client = TokenFactoryClient::new(&env, &contract_id);
-    let admin = Address::generate(&env);
-    let treasury = Address::generate(&env);
-    let fee_token = env
-        .register_stellar_asset_contract_v2(admin.clone())
-        .address();
-    let result = client.try_initialize(
-        &admin,
-        &treasury,
-        &fee_token,
-        &BytesN::from_array(&env, &[0u8; 32]),
-        &i128::MIN,
-        &0_i128,
-    );
-    assert_eq!(result, Err(Ok(Error::InvalidParameters)));
+    assert!(init_rejects(i128::MIN, 0_i128));
 }
 
 #[test]
@@ -965,21 +943,23 @@ fn test_initialize_zero_fees_allowed() {
     // Zero fee is valid — free token creation is a legitimate use-case.
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, TokenFactory);
-    let client = TokenFactoryClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
     let treasury = Address::generate(&env);
     let fee_token = env
         .register_stellar_asset_contract_v2(admin.clone())
         .address();
-    client.initialize(
-        &admin,
-        &treasury,
-        &fee_token,
-        &BytesN::from_array(&env, &[0u8; 32]),
-        &0_i128,
-        &0_i128,
+    let contract_id = env.register(
+        TokenFactory,
+        TokenFactoryArgs::__constructor(
+            &admin,
+            &treasury,
+            &fee_token,
+            &BytesN::from_array(&env, &[0u8; 32]),
+            &0_i128,
+            &0_i128,
+        ),
     );
+    let client = TokenFactoryClient::new(&env, &contract_id);
     let state = client.get_state();
     assert_eq!(state.base_fee, 0);
     assert_eq!(state.metadata_fee, 0);
@@ -1154,6 +1134,110 @@ fn test_get_token_info_not_found() {
     );
 }
 
+// ── get_token_index / get_token_info_by_address / get_metadata ────────────────
+
+#[test]
+fn test_get_token_index_resolves_registered_address() {
+    let s = Setup::new();
+    let creator = Address::generate(&s.env);
+    let token_addr = seed_token(&s, &creator, true, None);
+    // seed_token increments token_count starting from 1, so this is index 1.
+    assert_eq!(s.client.get_token_index(&token_addr), 1);
+}
+
+#[test]
+fn test_get_token_index_not_found_for_unregistered_address() {
+    let s = Setup::new();
+    let stranger = Address::generate(&s.env);
+    assert_eq!(
+        s.client.try_get_token_index(&stranger),
+        Err(Ok(Error::TokenNotFound))
+    );
+}
+
+/// Regression for #1018: a token's identity must resolve from its address via
+/// the contract regardless of how old it is or how many events came after it.
+/// Event-derived lookups dropped tokens created beyond the first event page and
+/// fabricated placeholder data (address-as-name, guessed decimals); the on-chain
+/// index has no such window.
+#[test]
+fn test_get_token_info_by_address_returns_authoritative_identity() {
+    let s = Setup::new();
+    let creator = Address::generate(&s.env);
+    let token_addr = s.new_token(&creator);
+    let info = TokenInfo {
+        name: String::from_str(&s.env, "AncientToken"),
+        symbol: String::from_str(&s.env, "OLD"),
+        decimals: 12,
+        creator: creator.clone(),
+        created_at: 42,
+        burn_enabled: false,
+        max_supply: Some(1_000_000),
+    };
+    s.env.as_contract(&s.client.address, || {
+        s.env.storage().instance().set(&DataKey::TokenInfo(7), &info);
+        s.env
+            .storage()
+            .instance()
+            .set(&DataKey::TokenIndex(token_addr.clone()), &7u32);
+    });
+
+    let resolved = s.client.get_token_info_by_address(&token_addr);
+    assert_eq!(resolved.name, String::from_str(&s.env, "AncientToken"));
+    assert_eq!(resolved.symbol, String::from_str(&s.env, "OLD"));
+    assert_eq!(resolved.decimals, 12);
+    assert_eq!(resolved.creator, creator);
+    assert_eq!(resolved.created_at, 42);
+    assert_eq!(resolved.max_supply, Some(1_000_000));
+}
+
+#[test]
+fn test_get_token_info_by_address_not_found() {
+    let s = Setup::new();
+    let stranger = Address::generate(&s.env);
+    assert_eq!(
+        s.client.try_get_token_info_by_address(&stranger),
+        Err(Ok(Error::TokenNotFound))
+    );
+}
+
+/// A registered `TokenIndex` whose `TokenInfo` entry is missing must surface
+/// as `TokenNotFound` rather than trapping.
+#[test]
+fn test_get_token_info_by_address_missing_info_entry() {
+    let s = Setup::new();
+    let token_addr = s.new_token(&Address::generate(&s.env));
+    s.env.as_contract(&s.client.address, || {
+        s.env
+            .storage()
+            .instance()
+            .set(&DataKey::TokenIndex(token_addr.clone()), &99u32);
+    });
+    assert_eq!(
+        s.client.try_get_token_info_by_address(&token_addr),
+        Err(Ok(Error::TokenNotFound))
+    );
+}
+
+#[test]
+fn test_get_metadata_none_before_set_then_some_after() {
+    let s = Setup::new();
+    let creator = Address::generate(&s.env);
+    let token_addr = seed_token(&s, &creator, true, None);
+
+    assert_eq!(s.client.get_metadata(&token_addr), None);
+
+    let uri = String::from_str(&s.env, "ipfs://QmMeta");
+    s.env.as_contract(&s.client.address, || {
+        s.env
+            .storage()
+            .instance()
+            .set(&DataKey::Metadata(token_addr.clone()), &uri);
+    });
+
+    assert_eq!(s.client.get_metadata(&token_addr), Some(uri));
+}
+
 #[test]
 fn test_get_tokens_by_creator() {
     let s = Setup::new();
@@ -1313,20 +1397,21 @@ fn test_get_tokens_by_creator_partial_last_page() {
 fn test_ttl_extended_after_initialize() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, TokenFactory);
-    let client = TokenFactoryClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
     let treasury = Address::generate(&env);
     let fee_token = env
         .register_stellar_asset_contract_v2(admin.clone())
         .address();
-    client.initialize(
-        &admin,
-        &treasury,
-        &fee_token,
-        &BytesN::from_array(&env, &[0u8; 32]),
-        &1_000,
-        &500,
+    let contract_id = env.register(
+        TokenFactory,
+        TokenFactoryArgs::__constructor(
+            &admin,
+            &treasury,
+            &fee_token,
+            &BytesN::from_array(&env, &[0u8; 32]),
+            &1_000,
+            &500,
+        ),
     );
     env.as_contract(&contract_id, || {
         use soroban_sdk::testutils::storage::Instance;
@@ -1344,6 +1429,26 @@ fn make_split(s: &Setup, pairs: &[(&Address, u32)]) -> Map<Address, u32> {
     let mut m = Map::new(&s.env);
     for (addr, bps) in pairs {
         m.set((*addr).clone(), *bps);
+    }
+    m
+}
+
+/// Build a fee-split map with `n` distinct recipients whose basis points sum
+/// to exactly 10_000, for boundary-testing `MAX_FEE_SPLIT_RECIPIENTS`.
+fn make_split_n(s: &Setup, n: u32) -> Map<Address, u32> {
+    let mut m = Map::new(&s.env);
+    let share = 10_000 / n;
+    let mut distributed: u32 = 0;
+    for i in 0..n {
+        // The last recipient absorbs the rounding remainder so the total is
+        // always exactly 10_000, matching `set_fee_split`'s validation.
+        let bps = if i == n - 1 {
+            10_000 - distributed
+        } else {
+            share
+        };
+        m.set(Address::generate(&s.env), bps);
+        distributed += bps;
     }
     m
 }
@@ -1389,6 +1494,24 @@ fn test_set_fee_split_empty_clears_split() {
     s.client.set_fee_split(&s.admin, &splits);
     s.client.set_fee_split(&s.admin, &Map::new(&s.env));
     assert!(s.client.get_fee_split().is_empty());
+}
+
+#[test]
+fn test_set_fee_split_at_max_recipients_accepted() {
+    let s = Setup::new();
+    let splits = make_split_n(&s, MAX_FEE_SPLIT_RECIPIENTS);
+    s.client.set_fee_split(&s.admin, &splits);
+    assert_eq!(s.client.get_fee_split().len(), MAX_FEE_SPLIT_RECIPIENTS);
+}
+
+#[test]
+fn test_set_fee_split_over_max_recipients_rejected() {
+    let s = Setup::new();
+    let splits = make_split_n(&s, MAX_FEE_SPLIT_RECIPIENTS + 1);
+    assert_eq!(
+        s.client.try_set_fee_split(&s.admin, &splits),
+        Err(Ok(Error::TooManyFeeSplitRecipients))
+    );
 }
 
 #[test]

@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { stellarService } from '../services/stellar'
 import { STELLAR_CONFIG } from '../config/stellar'
-import { fetchAllContractEvents } from '../utils/fetchAllContractEvents'
 import type { TokenInfo } from '../types'
 
 // ── Module-level cache keyed by creator address ('' = all tokens) ─────────────
@@ -22,9 +21,41 @@ export const CACHE_MAX_SIZE = 50
 interface CacheEntry {
   tokens: TokenInfo[]
   fetchedAt: number
+  /**
+   * Server-reported total for global (all-tokens) pages. Undefined for
+   * creator-keyed entries, whose total is simply `tokens.length`.
+   */
+  total?: number
 }
 
 const cache = new Map<string, CacheEntry>()
+
+// ── Global "all tokens" page cache ──────────────────────────────────────────
+//
+// Global pages are server-paginated via `getAllTokens(offset, limit)` and
+// cached per (network, contractId, pageSize, page) so navigating back and
+// forth between pages does not re-hit the RPC within the TTL window. Keeping
+// the key network/contract-scoped means switching network or factory never
+// serves a stale page from a different chain.
+
+const GLOBAL_KEY_PREFIX = 'all'
+
+function globalPageKey(page: number, pageSize: number): string {
+  return `${GLOBAL_KEY_PREFIX}:${STELLAR_CONFIG.network}:${STELLAR_CONFIG.factoryContractId}:${pageSize}:${page}`
+}
+
+/**
+ * Drop every cached global page for the current (network, contractId). Called
+ * on `refresh()` in global mode — e.g. after a confirmed `created` event
+ * invalidates the list (see App's CreateTokenWrapper) — so a new token shows
+ * up without waiting for the TTL to lapse.
+ */
+function invalidateGlobalPages(): void {
+  const prefix = `${GLOBAL_KEY_PREFIX}:${STELLAR_CONFIG.network}:${STELLAR_CONFIG.factoryContractId}:`
+  for (const key of [...cache.keys()]) {
+    if (key.startsWith(prefix)) cache.delete(key)
+  }
+}
 
 /**
  * Read an entry and promote it to most-recently-used.
@@ -188,10 +219,10 @@ export interface UseTokensResult {
   /** Tokens for the current page (1-based) */
   tokens: TokenInfo[]
   /**
-   * Accumulated tokens across all fetched pages. Kept on the result shape
-   * for backward-compatibility with code that consumed the previous client-
-   * side pagination API; in the new server-paginated implementation this is
-   * the same value backing `tokens`.
+   * The full working set backing `tokens`. In creator mode this is every
+   * token for that creator (sliced client-side into `tokens`); in global mode
+   * the server already returns one page at a time, so this equals `tokens`.
+   * Kept for backward-compatibility with earlier consumers.
    */
   allTokens: TokenInfo[]
   isLoading: boolean
@@ -210,21 +241,39 @@ export interface UseTokensResult {
 // ── Hook ──────────────────────────────────────────────────────────────────────
 
 export function useTokens(creator?: string): UseTokensResult {
-  const cacheKey = creator ?? ''
+  // Two data paths share this hook:
+  //   • Creator mode (`creator` given): the contract's paginated
+  //     `get_tokens_by_creator` view is walked to completion once, cached by
+  //     creator address, and sliced client-side for page navigation.
+  //   • Global mode (no `creator`): the "all tokens" list is server-paginated
+  //     via `getAllTokens(offset, limit)` — one page per fetch, newest-first,
+  //     cached per (network, contractId, pageSize, page).
+  const isGlobal = !creator
+  const creatorKey = creator ?? ''
 
-  const [tokens, setTokens] = useState<TokenInfo[]>(() => cacheGet(cacheKey)?.tokens ?? [])
+  const [tokens, setTokens] = useState<TokenInfo[]>(() =>
+    isGlobal ? [] : (cacheGet(creatorKey)?.tokens ?? []),
+  )
+  // Server-reported total, used only in global mode (creator mode derives its
+  // total from the accumulated list length).
+  const [serverTotal, setServerTotal] = useState(0)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<Error | null>(null)
   const [page, setPageRaw] = useState(1)
   const [pageSize, setPageSizeRaw] = useState(10)
 
-  // Prevent duplicate in-flight requests when multiple components mount at once
+  // Creator mode: prevent duplicate in-flight requests when multiple
+  // components mount at once.
   const fetchingRef = useRef(false)
+  // Global mode: "latest request wins". Page navigation can supersede an
+  // in-flight fetch, so responses tagged with a stale id are discarded rather
+  // than clobbering the page the user actually navigated to.
+  const requestIdRef = useRef(0)
 
-  const load = useCallback(
+  const loadCreator = useCallback(
     async (bypassCache: boolean) => {
       const now = Date.now()
-      const hit = cacheGet(cacheKey)
+      const hit = cacheGet(creatorKey)
 
       if (!bypassCache && hit && now - hit.fetchedAt < CACHE_TTL_MS) {
         setTokens(hit.tokens)
@@ -238,15 +287,9 @@ export function useTokens(creator?: string): UseTokensResult {
       setError(null)
 
       try {
-        let result: TokenInfo[]
-        if (creator) {
-          result = await fetchAllTokensByCreator(creator)
-        } else {
-          result = await fetchAllTokens()
-        }
-        cacheSet(cacheKey, { tokens: result, fetchedAt: Date.now() })
+        const result = await fetchAllTokensByCreator(creatorKey)
+        cacheSet(creatorKey, { tokens: result, fetchedAt: Date.now() })
         setTokens(result)
-        // Reset to first page whenever data is refreshed
         setPageRaw(1)
       } catch (err) {
         setError(err instanceof Error ? err : new Error(String(err)))
@@ -255,22 +298,65 @@ export function useTokens(creator?: string): UseTokensResult {
         fetchingRef.current = false
       }
     },
-    [cacheKey, creator],
+    [creatorKey],
+  )
+
+  const loadGlobalPage = useCallback(
+    async (targetPage: number, size: number, bypassCache: boolean) => {
+      if (bypassCache) invalidateGlobalPages()
+
+      const key = globalPageKey(targetPage, size)
+      const now = Date.now()
+      const hit = cacheGet(key)
+
+      if (!bypassCache && hit && now - hit.fetchedAt < CACHE_TTL_MS) {
+        setTokens(hit.tokens)
+        setServerTotal(hit.total ?? hit.tokens.length)
+        return
+      }
+
+      const reqId = ++requestIdRef.current
+      setIsLoading(true)
+      setError(null)
+
+      try {
+        const { tokens: pageTokens, total } = await stellarService.getAllTokens(
+          (targetPage - 1) * size,
+          size,
+        )
+        if (reqId !== requestIdRef.current) return // superseded by a newer page
+        cacheSet(key, { tokens: pageTokens, total, fetchedAt: Date.now() })
+        setTokens(pageTokens)
+        setServerTotal(total)
+      } catch (err) {
+        if (reqId !== requestIdRef.current) return
+        setError(err instanceof Error ? err : new Error(String(err)))
+      } finally {
+        if (reqId === requestIdRef.current) setIsLoading(false)
+      }
+    },
+    [],
   )
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- load sets loading state synchronously as the token fetch starts. See #1002 follow-up
-    load(false)
-  }, [load])
+    const load = isGlobal ? () => loadGlobalPage(page, pageSize, false) : () => loadCreator(false)
+    load()
+  }, [isGlobal, page, pageSize, loadGlobalPage, loadCreator])
 
-  const refresh = useCallback(() => load(true), [load])
+  const refresh = useCallback(() => {
+    if (isGlobal) return loadGlobalPage(page, pageSize, true)
+    return loadCreator(true)
+  }, [isGlobal, page, pageSize, loadGlobalPage, loadCreator])
 
-  const totalCount = tokens.length
+  const totalCount = isGlobal ? serverTotal : tokens.length
   const totalPages = Math.max(1, Math.ceil(totalCount / pageSize))
 
   const setPage = useCallback(
-    (p: number) => setPageRaw(Math.min(Math.max(1, p), totalPages)),
-    [totalPages],
+    (p: number) => {
+      const pages = Math.max(1, Math.ceil(totalCount / pageSize))
+      setPageRaw(Math.min(Math.max(1, p), pages))
+    },
+    [totalCount, pageSize],
   )
 
   const setPageSize = useCallback((size: number) => {
@@ -278,13 +364,13 @@ export function useTokens(creator?: string): UseTokensResult {
     setPageRaw(1)
   }, [])
 
-  // Slice the accumulated list to the current page. Because the contract call
-  // is paginated server-side via offset/limit but the hook iterates fully to
-  // populate this list, page navigation stays cheap and snappy.
+  // In global mode `tokens` already holds exactly the current server page. In
+  // creator mode it holds the full accumulated list, sliced to the page here.
   const visible = useMemo(() => {
+    if (isGlobal) return tokens
     const start = (page - 1) * pageSize
     return tokens.slice(start, start + pageSize)
-  }, [tokens, page, pageSize])
+  }, [isGlobal, tokens, page, pageSize])
 
   return {
     tokens: visible,
@@ -299,35 +385,4 @@ export function useTokens(creator?: string): UseTokensResult {
     setPageSize,
     refresh,
   }
-}
-
-// ── Fallback "all tokens" fetcher (kept from the original hook) ──────────────
-//
-// There's no `get_all_tokens` contract view (only the per-creator, paginated
-// `get_tokens_by_creator`), so the global explorer has to derive the token
-// list from factory `created` events instead. See fetchAllContractEvents for
-// why a single fixed-size getContractEvents() call is not safe here — it
-// silently drops the newest tokens once event history exceeds one page.
-
-async function fetchAllTokens(): Promise<TokenInfo[]> {
-  const contractId = STELLAR_CONFIG.factoryContractId
-  if (!contractId) throw new Error('VITE_FACTORY_CONTRACT_ID is not configured')
-
-  const events = await fetchAllContractEvents(stellarService, contractId)
-  const addresses = [
-    ...new Set(
-      events
-        .filter((e) => e.type === 'created')
-        .map((e) => e.data.tokenAddress)
-        .filter((addr): addr is string => !!addr),
-    ),
-  ]
-
-  const results = await Promise.allSettled(
-    addresses.map((addr) => stellarService.getTokenInfoByAddress(addr)),
-  )
-
-  return results
-    .filter((r): r is PromiseFulfilledResult<TokenInfo> => r.status === 'fulfilled')
-    .map((r) => r.value)
 }

@@ -29,6 +29,36 @@ One-time setup. Fails with `Error::AlreadyInitialized` on retry.
 | `token_wasm_hash` | `BytesN<32>` | Hash of the token-contract WASM deployed for each new token.                           |
 | `base_fee`        | `i128`       | Fee charged for `create_token`, `mint_tokens`, `create_tokens_batch`. **Must be ≥ 0.** |
 | `metadata_fee`    | `i128`       | Fee charged for `set_metadata`. **Must be ≥ 0.**                                       |
+### `__constructor(admin, treasury, fee_token, token_wasm_hash, base_fee, metadata_fee)`
+
+> Formerly a plain `initialize(...)` entrypoint invoked _after_ deployment in a
+> separate transaction. That left a window between deployment and
+> initialization where an attacker could race the deployer's own
+> `initialize` call with their own, passing themselves as `admin`/`treasury`
+> and permanently seizing the factory (see
+> [issue #1005](https://github.com/Favourorg/Stellar-forge/issues/1005)).
+> It is now the contract's `__constructor` (Soroban SDK ≥ 22), which the host
+> runs atomically as part of the deployment transaction itself (`deploy_v2`),
+> so there is no separate transaction to race. `admin.require_auth()` is also
+> now required, so the named `admin` address must itself authorize the
+> deployment, not just the deploying account. Deploy tooling calls this via
+> `stellar contract deploy ... -- --admin ... --treasury ...` (constructor
+> args after `--`) rather than a follow-up `contract invoke`; see
+> `scripts/deploy-contract.sh` and
+> [`docs/mainnet-deployment-checklist.md`](./mainnet-deployment-checklist.md).
+> This is a naming/entrypoint and auth change only — `FactoryState`'s field
+> layout is unchanged, so `CURRENT_SCHEMA_VERSION` was not bumped.
+
+One-time setup, atomic with deployment. Fails with `Error::AlreadyInitialized` if the factory's state already exists.
+
+| Param             | Type         | Description                                                                                                |
+| ----------------- | ------------ | ---------------------------------------------------------------------------------------------------------- |
+| `admin`           | `Address`    | Authority for upgrades, fee updates, pause, and admin transfer. Must authorize this call (`require_auth`). |
+| `treasury`        | `Address`    | Default recipient of factory fees.                                                                         |
+| `fee_token`       | `Address`    | SEP-41 token used for fee payments.                                                                        |
+| `token_wasm_hash` | `BytesN<32>` | Hash of the token-contract WASM deployed for each new token.                                               |
+| `base_fee`        | `i128`       | Fee charged for `create_token`, `mint_tokens`, `create_tokens_batch`. **Must be ≥ 0.**                     |
+| `metadata_fee`    | `i128`       | Fee charged for `set_metadata`. **Must be ≥ 0.**                                                           |
 
 **Fee sign constraint:** Both `base_fee` and `metadata_fee` must be **≥ 0**. A value of `0` is explicitly permitted (free token creation is a valid use-case). Any negative value is rejected with `Error::InvalidParameters` before any state is written. This constraint exists because:
 
@@ -132,6 +162,18 @@ Current set-metadata fee.
 
 Look up a single token by 1-based index. Returns `Error::TokenNotFound` for unknown indices.
 
+### `get_token_index(token_address) → u32`
+
+Resolve a token's 1-based storage index from its contract address, via the `TokenIndex(address)` mapping written at creation. Returns `Error::TokenNotFound` for addresses not registered with this factory. This is the authoritative address → index lookup — clients must not re-derive identity from the factory event stream, which only reflects a bounded RPC retention window.
+
+### `get_token_info_by_address(token_address) → TokenInfo`
+
+Return a token's full `TokenInfo` addressed by its contract address — equivalent to `get_token_info(get_token_index(address))` in a single call. This is the **source of truth** for a token's name, symbol, decimals, creator and creation time; unlike event-derived data it is unaffected by RPC event retention, so a token created arbitrarily long ago still resolves correctly. Returns `Error::TokenNotFound` for unregistered addresses (including the case where the index mapping exists but the `TokenInfo` entry is missing).
+
+### `get_metadata(token_address) → Option<String>`
+
+Return the metadata URI set for a token via `set_metadata`, or `None` if none was set. Reads directly from `Metadata(address)` state instead of scanning `meta` events (which are subject to the same retention truncation).
+
 ### `get_tokens_by_creator(creator, offset, limit) → Vec<u32>`
 
 Return a paginated slice of token indices owned by `creator`. This replaces an earlier non-paginated version that returned the full `Vec<u32>` (which could exceed Stellar ledger entry size limits on creators with hundreds of registered tokens).
@@ -168,7 +210,7 @@ The frontend helper `fetchAllTokensByCreator` in `frontend/src/hooks/useTokens.t
 
 Adjust either fee. `None` leaves the corresponding fee unchanged.
 
-**Fee sign constraint:** Any `Some(value)` provided for `base_fee` or `metadata_fee` must be **≥ 0**. Negative values are rejected with `Error::InvalidParameters` and the stored fees are left unchanged. The same constraint applies as for `initialize` — see that section for the rationale.
+**Fee sign constraint:** Any `Some(value)` provided for `base_fee` or `metadata_fee` must be **≥ 0**. Negative values are rejected with `Error::InvalidParameters` and the stored fees are left unchanged. The same constraint applies as for `__constructor` — see that section for the rationale.
 
 ### `pause(admin)` / `unpause(admin)`
 
@@ -177,6 +219,10 @@ Toggle factory-wide pause. `create_token`, `create_tokens_batch`, `mint_tokens`,
 ### `set_fee_split(admin, splits)`
 
 Set a fee split where `splits` is a `Map<Address, u32>` of basis-point recipients summing to `10_000`. Empty map clears the split (full fee goes back to `treasury`).
+
+**Recipient cap:** `splits` may contain at most **20 recipients** (`MAX_FEE_SPLIT_RECIPIENTS`). Exceeding it is rejected with `Error::TooManyFeeSplitRecipients` before the basis-point sum is even checked. This exists because `distribute_fee` transfers a share to every configured recipient on **every** `create_token`, `create_tokens_batch`, `mint_tokens`, and `set_metadata` call — an unbounded admin-configured split would make every fee-paying call on the contract arbitrarily expensive for the caller, and risk exceeding Soroban's per-transaction resource limits outright.
+
+The cap was derived by measuring `distribute_fee`'s resource cost via the benchmark harness (`contracts/token-factory/src/bench.rs`, `bench_fee_split_mint_*`) across a range of split sizes. Ledger *writes* — not CPU or memory — turned out to be the binding resource: each non-zero-share recipient writes a new SEP-41 balance entry, at a measured rate of ~1.03 writes per recipient. At 20 recipients that's 24 of the mainnet per-transaction write-entry limit of 50 (48%), leaving a 52% margin; CPU and memory stay under 1.5% of their respective limits at this size. See `bench_fee_split_at_max_within_limits` for the test that keeps this margin enforced going forward.
 
 ### `get_fee_split() → Map<Address, u32>`
 
@@ -220,6 +266,26 @@ One-time back-fill of the tracked-supply counter for a capped token created befo
 | 16   | `MaxSupplyExceeded`        | mint would exceed cap                                   |
 | 17   | `InvalidFeeSplit`          | `set_fee_split` map bps do not sum to 10_000            |
 | 18   | `AlreadyBackfilled`        | `backfill_capped_supply` already applied for this token |
+| Code | Symbol | When |
+|---|---|---|
+| 1 | `InsufficientFee` | `fee_payment < required_fee` |
+| 2 | `Unauthorized` | caller is not allowed for this operation |
+| 3 | `InvalidParameters` | argument out of range or malformed |
+| 4 | `TokenNotFound` | unknown token index or address |
+| 5 | `MetadataAlreadySet` | `set_metadata` called twice |
+| 6 | `AlreadyInitialized` | double-initialize attempt |
+| 7 | `BurnAmountExceedsBalance` | `burn` > balance |
+| 8 | `BurnNotEnabled` | burning on a token that has been disabled |
+| 9 | `InvalidBurnAmount` | zero or negative burn |
+| 10 | `ContractPaused` | operation blocked because factory is paused |
+| 11 | `Reentrancy` | concurrent reentrant call detected |
+| 12 | `ArithmeticOverflow` | checked-op failed |
+| 13 | `StateNotFound` | factory not yet initialized |
+| 14 | `InvalidTokenParams` | name/symbol validation failed during token creation |
+| 15 | `InvalidDecimals` | decimals outside `[0, 18]` |
+| 16 | `MaxSupplyExceeded` | mint would exceed cap |
+| 17 | `InvalidFeeSplit` | `set_fee_split` map bps do not sum to 10_000 |
+| 18 | `TooManyFeeSplitRecipients` | `set_fee_split` map has more than `MAX_FEE_SPLIT_RECIPIENTS` (20) recipients |
 
 ## Events
 
@@ -228,6 +294,7 @@ The contract emits Soroban events on a `(factory, action)` topic. The frontend p
 | Action    | Payload                                  | Trigger                                |
 | --------- | ---------------------------------------- | -------------------------------------- |
 | `init`    | `(admin)`                                | `initialize`                           |
+| `init`    | `(admin)`                                | `__constructor`                        |
 | `created` | `(token_address, creator, name, symbol)` | `create_token` / `create_tokens_batch` |
 | `meta`    | `(token_address, metadata_uri)`          | `set_metadata`                         |
 | `mint`    | `(token_address, to, amount)`            | `mint_tokens`                          |

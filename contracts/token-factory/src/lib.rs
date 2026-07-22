@@ -140,6 +140,8 @@ pub enum Error {
     InvalidFeeSplit = 17,
     /// `backfill_capped_supply` already applied for this token
     AlreadyBackfilled = 18,
+    /// Fee split recipient count exceeds `MAX_FEE_SPLIT_RECIPIENTS`
+    TooManyFeeSplitRecipients = 18,
 }
 
 #[contract]
@@ -153,6 +155,25 @@ const MAX_TTL: u32 = 535_000;
 /// has registered many tokens, which is the problem this cap was added to
 /// address.
 const MAX_TOKENS_BY_CREATOR_PAGE: u32 = 50;
+/// Maximum number of recipients allowed in a `set_fee_split` map.
+///
+/// `distribute_fee` transfers a share to every configured recipient on each
+/// `create_token` / `create_tokens_batch` / `mint_tokens` / `set_metadata`
+/// call, so an unbounded recipient count makes every fee-paying call
+/// arbitrarily expensive for the caller and risks exceeding Soroban's
+/// per-transaction resource limits.
+///
+/// Empirically measured (`bench_fee_split_mint_*` in `bench.rs`): ledger
+/// *writes* — not CPU or memory — is the binding resource, since each
+/// non-zero-share recipient writes a new SEP-41 balance entry. Cost grows at
+/// ~1.03 writes per recipient; at 20 recipients that's 24 of the mainnet
+/// per-transaction write-entry limit of 50 (48%), leaving a 52% margin.
+/// CPU/memory stay under 1.5% of their respective mainnet limits at this
+/// size, even before accounting for the native-test-host underestimate
+/// (~30x CPU, ~5x memory) documented in `docs/contract-abi.md`. See
+/// `bench_fee_split_mint_20_within_limits` for the assertion that enforces
+/// this margin going forward.
+const MAX_FEE_SPLIT_RECIPIENTS: u32 = 20;
 
 /// Maximum number of recipients allowed in a single fee split map.
 ///
@@ -181,8 +202,16 @@ pub const MAX_FEE_SPLIT_RECIPIENTS: u32 = 10;
 
 #[contractimpl]
 impl TokenFactory {
-    /// Initialize the factory. `fee_token` is the SEP-41 token used for all
-    /// fee payments; fees are transferred from the caller to `treasury`.
+    /// Constructor — runs atomically as part of contract deployment (Soroban
+    /// SDK ≥ 22 `deploy_v2` constructor support), so there is no window
+    /// between deployment and initialization for an attacker to front-run
+    /// with their own admin/treasury. `fee_token` is the SEP-41 token used
+    /// for all fee payments; fees are transferred from the caller to
+    /// `treasury`.
+    ///
+    /// `admin.require_auth()` additionally ensures the designated admin
+    /// address itself has authorized taking on that role, not just the
+    /// deploying account.
     ///
     /// `base_fee` and `metadata_fee` must be **≥ 0**. A value of `0` is
     /// explicitly allowed (free token creation / free metadata). Negative
@@ -191,7 +220,7 @@ impl TokenFactory {
     /// gate trivially by-passable) and would flow a negative amount into
     /// `distribute_fee`, whose behavior with a negative SEP-41 transfer is
     /// implementation-defined on the token contract side.
-    pub fn initialize(
+    pub fn __constructor(
         env: Env,
         admin: Address,
         treasury: Address,
@@ -200,6 +229,8 @@ impl TokenFactory {
         base_fee: i128,
         metadata_fee: i128,
     ) -> Result<(), Error> {
+        admin.require_auth();
+
         if env.storage().instance().has(&DataKey::State) {
             return Err(Error::AlreadyInitialized);
         }
@@ -957,6 +988,10 @@ impl TokenFactory {
             return Ok(());
         }
 
+        // Fail fast on an oversized map before paying for the summation loop
+        // below — see `MAX_FEE_SPLIT_RECIPIENTS` for why this bound exists.
+        if splits.len() > MAX_FEE_SPLIT_RECIPIENTS {
+            return Err(Error::TooManyFeeSplitRecipients);
         // Guard: cap the number of recipients to prevent transaction-budget
         // exhaustion and ledger-entry size overflow in `distribute_fee`.
         // Exceeding the cap is rejected with `InvalidFeeSplit` so callers get
@@ -1204,6 +1239,60 @@ impl TokenFactory {
             .instance()
             .get(&DataKey::TokenInfo(index))
             .ok_or(Error::TokenNotFound)
+    }
+
+    /// Resolve a token's storage index from its contract address.
+    ///
+    /// The `TokenIndex(address)` mapping is written by `create_token` /
+    /// `create_tokens_batch` when a token is registered, so this is the
+    /// authoritative address → index lookup. Returns `TokenNotFound` when the
+    /// address was never registered with this factory.
+    ///
+    /// This exists so off-chain clients can resolve a token's identity in O(1)
+    /// from its address alone, rather than re-deriving it from the factory's
+    /// event stream — which only reflects a bounded RPC retention window and
+    /// silently truncates once history exceeds one page.
+    pub fn get_token_index(env: Env, token_address: Address) -> Result<u32, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::TokenIndex(token_address))
+            .ok_or(Error::TokenNotFound)
+    }
+
+    /// Return a token's full `TokenInfo` addressed by its contract address.
+    ///
+    /// Equivalent to `get_token_info(get_token_index(address))` but in a single
+    /// call. This is the source of truth for a token's name, symbol, decimals,
+    /// creator and creation time — clients must prefer it over event-derived
+    /// data, which cannot be trusted for tokens created outside the RPC's
+    /// event-retention window. Returns `TokenNotFound` for unregistered
+    /// addresses.
+    pub fn get_token_info_by_address(
+        env: Env,
+        token_address: Address,
+    ) -> Result<TokenInfo, Error> {
+        let index: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TokenIndex(token_address))
+            .ok_or(Error::TokenNotFound)?;
+        env.storage()
+            .instance()
+            .get(&DataKey::TokenInfo(index))
+            .ok_or(Error::TokenNotFound)
+    }
+
+    /// Return the metadata URI set for a token, or `None` if none was set.
+    ///
+    /// Metadata is written by `set_metadata` and stored under
+    /// `DataKey::Metadata(address)`. Exposing it as a view lets clients read
+    /// the current URI directly from contract state instead of scanning `meta`
+    /// events, which are subject to the same retention truncation as every
+    /// other event.
+    pub fn get_metadata(env: Env, token_address: Address) -> Option<String> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Metadata(token_address))
     }
 
     /// Return a paginated slice of token indices for `creator`.
