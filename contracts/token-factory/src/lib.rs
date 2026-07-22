@@ -1024,16 +1024,38 @@ impl TokenFactory {
             return Err(Error::Unauthorized);
         }
         let sv_key = symbol_short!("sv");
-        let on_chain_version: u32 = env.storage().instance().get(&sv_key).unwrap_or(0);
-        if on_chain_version < CURRENT_SCHEMA_VERSION {
-            // Version 1: ensure schema_version field is set
-            let mut s = state;
-            s.schema_version = CURRENT_SCHEMA_VERSION;
+
+        // `on_chain_version` is declared `mut` so that each migration step can
+        // bump it immediately after it runs.  This is the critical detail that
+        // makes multi-step migrations compose correctly: the *next* `if` block
+        // compares against the value that was just written, not the value that
+        // was read before any step ran.  Without the `mut` + in-place bump the
+        // second block would still see the original version and would either
+        // run unconditionally (wrong) or not run at all (also wrong).
+        let mut on_chain_version: u32 = env.storage().instance().get(&sv_key).unwrap_or(0);
+
+        if on_chain_version < 1 {
+            // Version 1: stamp schema_version onto pre-versioned state.
+            let mut s = Self::load_state(&env)?;
+            s.schema_version = 1;
             Self::save_state(&env, &s);
-            env.storage()
-                .instance()
-                .set(&sv_key, &CURRENT_SCHEMA_VERSION);
+            on_chain_version = 1;
+            env.storage().instance().set(&sv_key, &on_chain_version);
         }
+
+        // Each future migration step follows the same pattern:
+        //
+        //   if on_chain_version < N {
+        //       // … apply N-specific changes …
+        //       on_chain_version = N;
+        //       env.storage().instance().set(&sv_key, &on_chain_version);
+        //   }
+        //
+        // Because `on_chain_version` is updated in-place between blocks,
+        // a contract that is K versions behind will walk through every pending
+        // step in a single `migrate` call, arriving at CURRENT_SCHEMA_VERSION.
+
+        let _ = on_chain_version; // suppress unused-variable warning when no further steps exist
         Ok(())
     }
 
