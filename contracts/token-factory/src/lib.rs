@@ -179,8 +179,16 @@ pub const MAX_FEE_SPLIT_RECIPIENTS: u32 = 10;
 
 #[contractimpl]
 impl TokenFactory {
-    /// Initialize the factory. `fee_token` is the SEP-41 token used for all
-    /// fee payments; fees are transferred from the caller to `treasury`.
+    /// Constructor — runs atomically as part of contract deployment (Soroban
+    /// SDK ≥ 22 `deploy_v2` constructor support), so there is no window
+    /// between deployment and initialization for an attacker to front-run
+    /// with their own admin/treasury. `fee_token` is the SEP-41 token used
+    /// for all fee payments; fees are transferred from the caller to
+    /// `treasury`.
+    ///
+    /// `admin.require_auth()` additionally ensures the designated admin
+    /// address itself has authorized taking on that role, not just the
+    /// deploying account.
     ///
     /// `base_fee` and `metadata_fee` must be **≥ 0**. A value of `0` is
     /// explicitly allowed (free token creation / free metadata). Negative
@@ -189,7 +197,7 @@ impl TokenFactory {
     /// gate trivially by-passable) and would flow a negative amount into
     /// `distribute_fee`, whose behavior with a negative SEP-41 transfer is
     /// implementation-defined on the token contract side.
-    pub fn initialize(
+    pub fn __constructor(
         env: Env,
         admin: Address,
         treasury: Address,
@@ -198,6 +206,8 @@ impl TokenFactory {
         base_fee: i128,
         metadata_fee: i128,
     ) -> Result<(), Error> {
+        admin.require_auth();
+
         if env.storage().instance().has(&DataKey::State) {
             return Err(Error::AlreadyInitialized);
         }

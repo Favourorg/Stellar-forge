@@ -37,7 +37,7 @@ impl Setup {
             .register_stellar_asset_contract_v2(admin.clone())
             .address();
 
-        client.initialize(
+        client.__constructor(
             &admin,
             &treasury,
             &fee_token,
@@ -972,7 +972,7 @@ fn test_initialize_zero_fees_allowed() {
     let fee_token = env
         .register_stellar_asset_contract_v2(admin.clone())
         .address();
-    client.initialize(
+    client.__constructor(
         &admin,
         &treasury,
         &fee_token,
@@ -1320,7 +1320,7 @@ fn test_ttl_extended_after_initialize() {
     let fee_token = env
         .register_stellar_asset_contract_v2(admin.clone())
         .address();
-    client.initialize(
+    client.__constructor(
         &admin,
         &treasury,
         &fee_token,

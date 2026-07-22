@@ -112,7 +112,7 @@ impl BenchSetup {
         // Fund creator with enough fee tokens.
         StellarAssetClient::new(&env, &fee_token).mint(&creator, &10_000_000);
 
-        client.initialize(
+        client.__constructor(
             &admin,
             &treasury,
             &fee_token,
