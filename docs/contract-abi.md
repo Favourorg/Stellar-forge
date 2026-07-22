@@ -6,14 +6,14 @@ The contract binary is built as `token_factory.wasm` (released alongside the fro
 
 ## Conventions
 
-| Soroban | TypeScript |
-|---|---|
-| `Address` | `string` (Stellar `G...` or contract `C...`) |
-| `u32` | `number` |
-| `u64` | `number` (lossy above `Number.MAX_SAFE_INTEGER`) |
-| `i128` | `string` (decimal) |
-| `Vec<T>` | `T[]` |
-| `Option<T>` | `T \| undefined` |
+| Soroban     | TypeScript                                       |
+| ----------- | ------------------------------------------------ |
+| `Address`   | `string` (Stellar `G...` or contract `C...`)     |
+| `u32`       | `number`                                         |
+| `u64`       | `number` (lossy above `Number.MAX_SAFE_INTEGER`) |
+| `i128`      | `string` (decimal)                               |
+| `Vec<T>`    | `T[]`                                            |
+| `Option<T>` | `T \| undefined`                                 |
 
 ## Initialization
 
@@ -21,14 +21,14 @@ The contract binary is built as `token_factory.wasm` (released alongside the fro
 
 One-time setup. Fails with `Error::AlreadyInitialized` on retry.
 
-| Param | Type | Description |
-|---|---|---|
-| `admin` | `Address` | Authority for upgrades, fee updates, pause, and admin transfer. |
-| `treasury` | `Address` | Default recipient of factory fees. |
-| `fee_token` | `Address` | SEP-41 token used for fee payments. |
-| `token_wasm_hash` | `BytesN<32>` | Hash of the token-contract WASM deployed for each new token. |
-| `base_fee` | `i128` | Fee charged for `create_token`, `mint_tokens`, `create_tokens_batch`. **Must be ≥ 0.** |
-| `metadata_fee` | `i128` | Fee charged for `set_metadata`. **Must be ≥ 0.** |
+| Param             | Type         | Description                                                                            |
+| ----------------- | ------------ | -------------------------------------------------------------------------------------- |
+| `admin`           | `Address`    | Authority for upgrades, fee updates, pause, and admin transfer.                        |
+| `treasury`        | `Address`    | Default recipient of factory fees.                                                     |
+| `fee_token`       | `Address`    | SEP-41 token used for fee payments.                                                    |
+| `token_wasm_hash` | `BytesN<32>` | Hash of the token-contract WASM deployed for each new token.                           |
+| `base_fee`        | `i128`       | Fee charged for `create_token`, `mint_tokens`, `create_tokens_batch`. **Must be ≥ 0.** |
+| `metadata_fee`    | `i128`       | Fee charged for `set_metadata`. **Must be ≥ 0.**                                       |
 
 **Fee sign constraint:** Both `base_fee` and `metadata_fee` must be **≥ 0**. A value of `0` is explicitly permitted (free token creation is a valid use-case). Any negative value is rejected with `Error::InvalidParameters` before any state is written. This constraint exists because:
 
@@ -51,25 +51,25 @@ Atomically deploy `tokens` (a `Vec<BatchTokenParams>`). Requires `fee_payment >=
 
 Soroban transactions are subject to per-transaction resource budgets enforced by the ledger. Exceeding these limits causes an immediate `ExceededLimit` error and costs the full simulation fee — the user never gets a refund.
 
-The table below shows measured CPU instructions and memory bytes consumed by `create_tokens_batch` at representative batch sizes. Numbers were obtained by running the benchmark harness in `contracts/token-factory/src/bench.rs` via `cargo test bench_ -- --nocapture` and comparing against the Soroban mainnet resource limits. **Important:** the Soroban native test environment underestimates real WASM CPU instruction counts (~30×) and memory (~5×) compared to an actual on-chain simulation, so the values below are used for *relative* regression detection — the production limits column reflects real network values.
+The table below shows measured CPU instructions and memory bytes consumed by `create_tokens_batch` at representative batch sizes. Numbers were obtained by running the benchmark harness in `contracts/token-factory/src/bench.rs` via `cargo test bench_ -- --nocapture` and comparing against the Soroban mainnet resource limits. **Important:** the Soroban native test environment underestimates real WASM CPU instruction counts (~30×) and memory (~5×) compared to an actual on-chain simulation, so the values below are used for _relative_ regression detection — the production limits column reflects real network values.
 
-| Batch size | Test-env CPU (M insns) | Test-env Mem (MB) | Ledger reads | Ledger writes | Within mainnet limits? |
-|:---:|---:|---:|---:|---:|:---:|
-| 1  | ~0.65 M  | ~1.1 MB  |  6 |  6 | ✅ |
-| 5  | ~2.5 M   | ~4.3 MB  | 18 | 18 | ✅ |
-| 10 | ~4.9 M   | ~8.6 MB  | 33 | 33 | ✅ |
-| 15 | ~7.3 M   | ~13 MB   | 48 | 48 | ✅ |
-| 20 | ~9.7 M   | ~17 MB   | 63 | 63 | ✅ ← **recommended max** |
-| 25 | ~12 M    | ~22 MB   | 78 | 78 | ⚠️ approaches write limit |
+| Batch size | Test-env CPU (M insns) | Test-env Mem (MB) | Ledger reads | Ledger writes |  Within mainnet limits?   |
+| :--------: | ---------------------: | ----------------: | -----------: | ------------: | :-----------------------: |
+|     1      |                ~0.65 M |           ~1.1 MB |            6 |             6 |            ✅             |
+|     5      |                 ~2.5 M |           ~4.3 MB |           18 |            18 |            ✅             |
+|     10     |                 ~4.9 M |           ~8.6 MB |           33 |            33 |            ✅             |
+|     15     |                 ~7.3 M |            ~13 MB |           48 |            48 |            ✅             |
+|     20     |                 ~9.7 M |            ~17 MB |           63 |            63 | ✅ ← **recommended max**  |
+|     25     |                  ~12 M |            ~22 MB |           78 |            78 | ⚠️ approaches write limit |
 
 **Current Soroban per-transaction limits (Stellar Protocol 21+, mainnet):**
 
-| Resource | Mainnet limit |
-|---|---|
-| CPU instructions | 600 000 000 (600 M) |
-| Memory | 41 943 040 bytes (40 MB) |
-| Ledger entries (read) | 100 per transaction |
-| Ledger entries (write) | 50 per transaction |
+| Resource               | Mainnet limit            |
+| ---------------------- | ------------------------ |
+| CPU instructions       | 600 000 000 (600 M)      |
+| Memory                 | 41 943 040 bytes (40 MB) |
+| Ledger entries (read)  | 100 per transaction      |
+| Ledger entries (write) | 50 per transaction       |
 
 > **Note:** The test-harness numbers above are native Rust measurements. Actual on-chain WASM costs are ~30× higher for CPU and ~5× higher for memory. At batch size 20 the extrapolated WASM-equivalent values are approximately 290 M CPU instructions and 85 MB memory — comfortably within the 600 M CPU limit but approaching the 40 MB memory limit. This provides a margin of ~52 % on CPU and ~0 % margin on memory at the extrapolated scale, which is why **20 is the recommended cap** rather than a higher number.
 >
@@ -117,27 +117,39 @@ Current set-metadata fee.
 
 Look up a single token by 1-based index. Returns `Error::TokenNotFound` for unknown indices.
 
+### `get_token_index(token_address) → u32`
+
+Resolve a token's 1-based storage index from its contract address, via the `TokenIndex(address)` mapping written at creation. Returns `Error::TokenNotFound` for addresses not registered with this factory. This is the authoritative address → index lookup — clients must not re-derive identity from the factory event stream, which only reflects a bounded RPC retention window.
+
+### `get_token_info_by_address(token_address) → TokenInfo`
+
+Return a token's full `TokenInfo` addressed by its contract address — equivalent to `get_token_info(get_token_index(address))` in a single call. This is the **source of truth** for a token's name, symbol, decimals, creator and creation time; unlike event-derived data it is unaffected by RPC event retention, so a token created arbitrarily long ago still resolves correctly. Returns `Error::TokenNotFound` for unregistered addresses (including the case where the index mapping exists but the `TokenInfo` entry is missing).
+
+### `get_metadata(token_address) → Option<String>`
+
+Return the metadata URI set for a token via `set_metadata`, or `None` if none was set. Reads directly from `Metadata(address)` state instead of scanning `meta` events (which are subject to the same retention truncation).
+
 ### `get_tokens_by_creator(creator, offset, limit) → Vec<u32>`
 
 Return a paginated slice of token indices owned by `creator`. This replaces an earlier non-paginated version that returned the full `Vec<u32>` (which could exceed Stellar ledger entry size limits on creators with hundreds of registered tokens).
 
-| Param | Type | Description |
-|---|---|---|
-| `creator` | `Address` | Creator whose tokens to list. |
-| `offset` | `u32` | 0-based index of the first element to return. |
-| `limit` | `u32` | Maximum number of elements to return. Capped server-side at `MAX_TOKENS_BY_CREATOR_PAGE` (currently `50`) so callers cannot request pathologically large pages. |
+| Param     | Type      | Description                                                                                                                                                     |
+| --------- | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `creator` | `Address` | Creator whose tokens to list.                                                                                                                                   |
+| `offset`  | `u32`     | 0-based index of the first element to return.                                                                                                                   |
+| `limit`   | `u32`     | Maximum number of elements to return. Capped server-side at `MAX_TOKENS_BY_CREATOR_PAGE` (currently `50`) so callers cannot request pathologically large pages. |
 
 **Returns:** `Vec<u32>` of token indices, len ≤ `min(limit, MAX_TOKENS_BY_CREATOR_PAGE)`. Use the indices with `get_token_info` to materialize each token's `TokenInfo`.
 
 **Behavior:**
 
-| Input | Output |
-|---|---|
-| `limit == 0` | empty `Vec` (defensive — read-only path, no error) |
-| `limit > MAX_TOKENS_BY_CREATOR_PAGE` | clamped down to the cap |
-| `offset >= total_tokens_for_creator` | empty `Vec` (past-the-end) |
-| Unknown creator | empty `Vec` |
-| Otherwise | slice `[offset, offset + min(limit, cap, remaining))` |
+| Input                                | Output                                                |
+| ------------------------------------ | ----------------------------------------------------- |
+| `limit == 0`                         | empty `Vec` (defensive — read-only path, no error)    |
+| `limit > MAX_TOKENS_BY_CREATOR_PAGE` | clamped down to the cap                               |
+| `offset >= total_tokens_for_creator` | empty `Vec` (past-the-end)                            |
+| Unknown creator                      | empty `Vec`                                           |
+| Otherwise                            | slice `[offset, offset + min(limit, cap, remaining))` |
 
 To iterate the full list:
 
@@ -181,41 +193,41 @@ Incrementally upgrades state between schema versions. Idempotent.
 
 ## Errors
 
-| Code | Symbol | When |
-|---|---|---|
-| 1 | `InsufficientFee` | `fee_payment < required_fee` |
-| 2 | `Unauthorized` | caller is not allowed for this operation |
-| 3 | `InvalidParameters` | argument out of range or malformed |
-| 4 | `TokenNotFound` | unknown token index or address |
-| 5 | `MetadataAlreadySet` | `set_metadata` called twice |
-| 6 | `AlreadyInitialized` | double-initialize attempt |
-| 7 | `BurnAmountExceedsBalance` | `burn` > balance |
-| 8 | `BurnNotEnabled` | burning on a token that has been disabled |
-| 9 | `InvalidBurnAmount` | zero or negative burn |
-| 10 | `ContractPaused` | operation blocked because factory is paused |
-| 11 | `Reentrancy` | concurrent reentrant call detected |
-| 12 | `ArithmeticOverflow` | checked-op failed |
-| 13 | `StateNotFound` | factory not yet initialized |
-| 14 | `InvalidTokenParams` | name/symbol validation failed during token creation |
-| 15 | `InvalidDecimals` | decimals outside `[0, 18]` |
-| 16 | `MaxSupplyExceeded` | mint would exceed cap |
-| 17 | `InvalidFeeSplit` | `set_fee_split` map bps do not sum to 10_000 |
+| Code | Symbol                     | When                                                |
+| ---- | -------------------------- | --------------------------------------------------- |
+| 1    | `InsufficientFee`          | `fee_payment < required_fee`                        |
+| 2    | `Unauthorized`             | caller is not allowed for this operation            |
+| 3    | `InvalidParameters`        | argument out of range or malformed                  |
+| 4    | `TokenNotFound`            | unknown token index or address                      |
+| 5    | `MetadataAlreadySet`       | `set_metadata` called twice                         |
+| 6    | `AlreadyInitialized`       | double-initialize attempt                           |
+| 7    | `BurnAmountExceedsBalance` | `burn` > balance                                    |
+| 8    | `BurnNotEnabled`           | burning on a token that has been disabled           |
+| 9    | `InvalidBurnAmount`        | zero or negative burn                               |
+| 10   | `ContractPaused`           | operation blocked because factory is paused         |
+| 11   | `Reentrancy`               | concurrent reentrant call detected                  |
+| 12   | `ArithmeticOverflow`       | checked-op failed                                   |
+| 13   | `StateNotFound`            | factory not yet initialized                         |
+| 14   | `InvalidTokenParams`       | name/symbol validation failed during token creation |
+| 15   | `InvalidDecimals`          | decimals outside `[0, 18]`                          |
+| 16   | `MaxSupplyExceeded`        | mint would exceed cap                               |
+| 17   | `InvalidFeeSplit`          | `set_fee_split` map bps do not sum to 10_000        |
 
 ## Events
 
 The contract emits Soroban events on a `(factory, action)` topic. The frontend parses them via `frontend/src/services/stellar-impl.ts`. Events:
 
-| Action | Payload | Trigger |
-|---|---|---|
-| `init` | `(admin)` | `initialize` |
+| Action    | Payload                                  | Trigger                                |
+| --------- | ---------------------------------------- | -------------------------------------- |
+| `init`    | `(admin)`                                | `initialize`                           |
 | `created` | `(token_address, creator, name, symbol)` | `create_token` / `create_tokens_batch` |
-| `meta` | `(token_address, metadata_uri)` | `set_metadata` |
-| `mint` | `(token_address, to, amount)` | `mint_tokens` |
-| `burn` | `(token_address, from, amount)` | `burn` |
-| `fees` | `(base_fee, metadata_fee)` | `update_fees` |
-| `pause` | `(admin)` | `pause` |
-| `unpause` | `(admin)` | `unpause` |
-| `adm_upd` | `(current_admin, new_admin)` | `update_admin` |
+| `meta`    | `(token_address, metadata_uri)`          | `set_metadata`                         |
+| `mint`    | `(token_address, to, amount)`            | `mint_tokens`                          |
+| `burn`    | `(token_address, from, amount)`          | `burn`                                 |
+| `fees`    | `(base_fee, metadata_fee)`               | `update_fees`                          |
+| `pause`   | `(admin)`                                | `pause`                                |
+| `unpause` | `(admin)`                                | `unpause`                              |
+| `adm_upd` | `(current_admin, new_admin)`             | `update_admin`                         |
 
 ## Batch creation UI
 

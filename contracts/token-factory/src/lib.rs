@@ -1110,6 +1110,60 @@ impl TokenFactory {
             .ok_or(Error::TokenNotFound)
     }
 
+    /// Resolve a token's storage index from its contract address.
+    ///
+    /// The `TokenIndex(address)` mapping is written by `create_token` /
+    /// `create_tokens_batch` when a token is registered, so this is the
+    /// authoritative address → index lookup. Returns `TokenNotFound` when the
+    /// address was never registered with this factory.
+    ///
+    /// This exists so off-chain clients can resolve a token's identity in O(1)
+    /// from its address alone, rather than re-deriving it from the factory's
+    /// event stream — which only reflects a bounded RPC retention window and
+    /// silently truncates once history exceeds one page.
+    pub fn get_token_index(env: Env, token_address: Address) -> Result<u32, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::TokenIndex(token_address))
+            .ok_or(Error::TokenNotFound)
+    }
+
+    /// Return a token's full `TokenInfo` addressed by its contract address.
+    ///
+    /// Equivalent to `get_token_info(get_token_index(address))` but in a single
+    /// call. This is the source of truth for a token's name, symbol, decimals,
+    /// creator and creation time — clients must prefer it over event-derived
+    /// data, which cannot be trusted for tokens created outside the RPC's
+    /// event-retention window. Returns `TokenNotFound` for unregistered
+    /// addresses.
+    pub fn get_token_info_by_address(
+        env: Env,
+        token_address: Address,
+    ) -> Result<TokenInfo, Error> {
+        let index: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TokenIndex(token_address))
+            .ok_or(Error::TokenNotFound)?;
+        env.storage()
+            .instance()
+            .get(&DataKey::TokenInfo(index))
+            .ok_or(Error::TokenNotFound)
+    }
+
+    /// Return the metadata URI set for a token, or `None` if none was set.
+    ///
+    /// Metadata is written by `set_metadata` and stored under
+    /// `DataKey::Metadata(address)`. Exposing it as a view lets clients read
+    /// the current URI directly from contract state instead of scanning `meta`
+    /// events, which are subject to the same retention truncation as every
+    /// other event.
+    pub fn get_metadata(env: Env, token_address: Address) -> Option<String> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Metadata(token_address))
+    }
+
     /// Return a paginated slice of token indices for `creator`.
     ///
     /// `offset` is the 0-based index of the first element to return, and
