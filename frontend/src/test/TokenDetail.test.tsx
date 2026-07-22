@@ -27,7 +27,7 @@ vi.mock('../hooks/useWallet', () => ({
   useWallet: () => ({ wallet: { isConnected: false, address: null } }),
 }))
 
-const getTokenInfoByAddress = vi.fn()
+const resolveTokenInfoByAddress = vi.fn()
 
 // Must be a real, checksum-valid contract address — TokenDetail short-circuits
 // to NotFound before fetching anything if isValidContractAddress fails.
@@ -39,7 +39,7 @@ const TOKEN_ADDRESS = 'CA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKERYNZGGA5SOAOPIFY6YQGAXE'
 // stubbed through global fetch below.
 function renderTokenDetail(address = TOKEN_ADDRESS) {
   const value = {
-    stellarService: { getTokenInfoByAddress } as unknown as StellarService,
+    stellarService: { resolveTokenInfoByAddress } as unknown as StellarService,
     ipfsService: new IPFSService(),
   }
 
@@ -80,7 +80,7 @@ const mockPinnedMetadata = (metadata: Record<string, unknown>) => {
 describe('TokenDetail — untrusted metadata rendering', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    getTokenInfoByAddress.mockResolvedValue(tokenInfo())
+    resolveTokenInfoByAddress.mockResolvedValue({ status: 'resolved', ...tokenInfo() })
   })
 
   afterEach(() => {

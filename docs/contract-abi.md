@@ -17,6 +17,18 @@ The contract binary is built as `token_factory.wasm` (released alongside the fro
 
 ## Initialization
 
+### `initialize(admin, treasury, fee_token, token_wasm_hash, base_fee, metadata_fee)`
+
+One-time setup. Fails with `Error::AlreadyInitialized` on retry.
+
+| Param             | Type         | Description                                                                            |
+| ----------------- | ------------ | -------------------------------------------------------------------------------------- |
+| `admin`           | `Address`    | Authority for upgrades, fee updates, pause, and admin transfer.                        |
+| `treasury`        | `Address`    | Default recipient of factory fees.                                                     |
+| `fee_token`       | `Address`    | SEP-41 token used for fee payments.                                                    |
+| `token_wasm_hash` | `BytesN<32>` | Hash of the token-contract WASM deployed for each new token.                           |
+| `base_fee`        | `i128`       | Fee charged for `create_token`, `mint_tokens`, `create_tokens_batch`. **Must be ≥ 0.** |
+| `metadata_fee`    | `i128`       | Fee charged for `set_metadata`. **Must be ≥ 0.**                                       |
 ### `__constructor(admin, treasury, fee_token, token_wasm_hash, base_fee, metadata_fee)`
 
 > Formerly a plain `initialize(...)` entrypoint invoked _after_ deployment in a
@@ -134,6 +146,18 @@ Current set-metadata fee.
 ### `get_token_info(index) → TokenInfo`
 
 Look up a single token by 1-based index. Returns `Error::TokenNotFound` for unknown indices.
+
+### `get_token_index(token_address) → u32`
+
+Resolve a token's 1-based storage index from its contract address, via the `TokenIndex(address)` mapping written at creation. Returns `Error::TokenNotFound` for addresses not registered with this factory. This is the authoritative address → index lookup — clients must not re-derive identity from the factory event stream, which only reflects a bounded RPC retention window.
+
+### `get_token_info_by_address(token_address) → TokenInfo`
+
+Return a token's full `TokenInfo` addressed by its contract address — equivalent to `get_token_info(get_token_index(address))` in a single call. This is the **source of truth** for a token's name, symbol, decimals, creator and creation time; unlike event-derived data it is unaffected by RPC event retention, so a token created arbitrarily long ago still resolves correctly. Returns `Error::TokenNotFound` for unregistered addresses (including the case where the index mapping exists but the `TokenInfo` entry is missing).
+
+### `get_metadata(token_address) → Option<String>`
+
+Return the metadata URI set for a token via `set_metadata`, or `None` if none was set. Reads directly from `Metadata(address)` state instead of scanning `meta` events (which are subject to the same retention truncation).
 
 ### `get_tokens_by_creator(creator, offset, limit) → Vec<u32>`
 

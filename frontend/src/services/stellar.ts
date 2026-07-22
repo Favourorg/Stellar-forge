@@ -102,9 +102,14 @@ export class StellarService {
     return impl.getTokenInfoByAddress(tokenAddress)
   }
 
-  async getTokenEvents(tokenAddress: string, limit?: number, cursor?: string) {
+  async resolveTokenInfoByAddress(tokenAddress: string) {
     const impl = await this.getImpl()
-    return impl.getTokenEvents(tokenAddress, limit, cursor)
+    return impl.resolveTokenInfoByAddress(tokenAddress)
+  }
+
+  async getTokenEvents(tokenAddress: string) {
+    const impl = await this.getImpl()
+    return impl.getTokenEvents(tokenAddress)
   }
 }
 

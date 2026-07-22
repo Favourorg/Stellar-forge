@@ -1134,6 +1134,110 @@ fn test_get_token_info_not_found() {
     );
 }
 
+// ── get_token_index / get_token_info_by_address / get_metadata ────────────────
+
+#[test]
+fn test_get_token_index_resolves_registered_address() {
+    let s = Setup::new();
+    let creator = Address::generate(&s.env);
+    let token_addr = seed_token(&s, &creator, true, None);
+    // seed_token increments token_count starting from 1, so this is index 1.
+    assert_eq!(s.client.get_token_index(&token_addr), 1);
+}
+
+#[test]
+fn test_get_token_index_not_found_for_unregistered_address() {
+    let s = Setup::new();
+    let stranger = Address::generate(&s.env);
+    assert_eq!(
+        s.client.try_get_token_index(&stranger),
+        Err(Ok(Error::TokenNotFound))
+    );
+}
+
+/// Regression for #1018: a token's identity must resolve from its address via
+/// the contract regardless of how old it is or how many events came after it.
+/// Event-derived lookups dropped tokens created beyond the first event page and
+/// fabricated placeholder data (address-as-name, guessed decimals); the on-chain
+/// index has no such window.
+#[test]
+fn test_get_token_info_by_address_returns_authoritative_identity() {
+    let s = Setup::new();
+    let creator = Address::generate(&s.env);
+    let token_addr = s.new_token(&creator);
+    let info = TokenInfo {
+        name: String::from_str(&s.env, "AncientToken"),
+        symbol: String::from_str(&s.env, "OLD"),
+        decimals: 12,
+        creator: creator.clone(),
+        created_at: 42,
+        burn_enabled: false,
+        max_supply: Some(1_000_000),
+    };
+    s.env.as_contract(&s.client.address, || {
+        s.env.storage().instance().set(&DataKey::TokenInfo(7), &info);
+        s.env
+            .storage()
+            .instance()
+            .set(&DataKey::TokenIndex(token_addr.clone()), &7u32);
+    });
+
+    let resolved = s.client.get_token_info_by_address(&token_addr);
+    assert_eq!(resolved.name, String::from_str(&s.env, "AncientToken"));
+    assert_eq!(resolved.symbol, String::from_str(&s.env, "OLD"));
+    assert_eq!(resolved.decimals, 12);
+    assert_eq!(resolved.creator, creator);
+    assert_eq!(resolved.created_at, 42);
+    assert_eq!(resolved.max_supply, Some(1_000_000));
+}
+
+#[test]
+fn test_get_token_info_by_address_not_found() {
+    let s = Setup::new();
+    let stranger = Address::generate(&s.env);
+    assert_eq!(
+        s.client.try_get_token_info_by_address(&stranger),
+        Err(Ok(Error::TokenNotFound))
+    );
+}
+
+/// A registered `TokenIndex` whose `TokenInfo` entry is missing must surface
+/// as `TokenNotFound` rather than trapping.
+#[test]
+fn test_get_token_info_by_address_missing_info_entry() {
+    let s = Setup::new();
+    let token_addr = s.new_token(&Address::generate(&s.env));
+    s.env.as_contract(&s.client.address, || {
+        s.env
+            .storage()
+            .instance()
+            .set(&DataKey::TokenIndex(token_addr.clone()), &99u32);
+    });
+    assert_eq!(
+        s.client.try_get_token_info_by_address(&token_addr),
+        Err(Ok(Error::TokenNotFound))
+    );
+}
+
+#[test]
+fn test_get_metadata_none_before_set_then_some_after() {
+    let s = Setup::new();
+    let creator = Address::generate(&s.env);
+    let token_addr = seed_token(&s, &creator, true, None);
+
+    assert_eq!(s.client.get_metadata(&token_addr), None);
+
+    let uri = String::from_str(&s.env, "ipfs://QmMeta");
+    s.env.as_contract(&s.client.address, || {
+        s.env
+            .storage()
+            .instance()
+            .set(&DataKey::Metadata(token_addr.clone()), &uri);
+    });
+
+    assert_eq!(s.client.get_metadata(&token_addr), Some(uri));
+}
+
 #[test]
 fn test_get_tokens_by_creator() {
     let s = Setup::new();
