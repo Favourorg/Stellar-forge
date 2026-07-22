@@ -595,8 +595,10 @@ impl TokenFactory {
             return Err(Error::InvalidParameters);
         }
 
-        // Transfer fee from creator to treasury using the dedicated fee_token
-        Self::distribute_fee(env, state, &creator, fee_payment)?;
+        // Charge exactly `base_fee` — `fee_payment` is only the caller's
+        // authorized upper bound (see issue #1008), so any surplus above
+        // the required fee is never transferred.
+        Self::distribute_fee(env, state, &creator, state.base_fee)?;
 
         let token_address = env
             .deployer()
@@ -792,8 +794,10 @@ impl TokenFactory {
             addresses.push_back(addr);
         }
 
-        // Transfer fee from creator to treasury using the dedicated fee_token
-        Self::distribute_fee(&env, &state, &creator, fee_payment)?;
+        // Charge exactly `total_fee` — `fee_payment` is only the caller's
+        // authorized upper bound (see issue #1008), so any surplus above
+        // the required fee is never transferred.
+        Self::distribute_fee(&env, &state, &creator, total_fee)?;
         state.locked = false;
         Self::save_state(&env, &state);
         Ok(addresses)
@@ -836,8 +840,10 @@ impl TokenFactory {
         state.locked = true;
         Self::save_state(&env, &state);
 
-        // Transfer fee from admin to treasury using the dedicated fee_token
-        Self::distribute_fee(&env, &state, &admin, fee_payment)?;
+        // Charge exactly `metadata_fee` — `fee_payment` is only the caller's
+        // authorized upper bound (see issue #1008), so any surplus above
+        // the required fee is never transferred.
+        Self::distribute_fee(&env, &state, &admin, state.metadata_fee)?;
 
         Self::set_persistent(
             &env,
@@ -912,8 +918,10 @@ impl TokenFactory {
         state.locked = true;
         Self::save_state(&env, &state);
 
-        // Transfer fee from admin to treasury using the dedicated fee_token
-        Self::distribute_fee(&env, &state, &admin, fee_payment)?;
+        // Charge exactly `base_fee` — `fee_payment` is only the caller's
+        // authorized upper bound (see issue #1008), so any surplus above
+        // the required fee is never transferred.
+        Self::distribute_fee(&env, &state, &admin, state.base_fee)?;
 
         token::StellarAssetClient::new(&env, &token_address).mint(&to, &amount);
 

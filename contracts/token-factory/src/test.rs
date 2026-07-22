@@ -314,6 +314,158 @@ fn test_set_metadata_fee_goes_to_treasury() {
     );
 }
 
+// ── exact-fee charging (issue #1008) ────────────────────────────────────────
+//
+// `fee_payment` is the caller's authorized upper bound, not the amount to
+// charge — the contract must transfer exactly the currently configured
+// required fee (`base_fee` / `metadata_fee`) and leave any surplus in the
+// caller's balance. `create_token` and `create_tokens_batch` share the exact
+// same `distribute_fee(..., state.base_fee)` call as `mint_tokens` and are
+// covered by the same fix, but can't be balance-tested directly here since a
+// successful deploy needs a real token WASM (see "create_token (error paths
+// only — deploy requires real wasm)" above) — `mint_tokens` and
+// `set_metadata` exercise the identical charging logic without that
+// limitation.
+
+#[test]
+fn test_set_metadata_overpayment_charges_exact_fee_only() {
+    let s = Setup::new();
+    let admin = Address::generate(&s.env);
+    // Fund well above 2x metadata_fee (500) so a leftover balance proves
+    // only the exact fee was taken, not the full fee_payment.
+    s.fund(&admin, 10_000);
+
+    let token_addr = seed_token(&s, &admin, true, None);
+    // Pass fee_payment = 2 * metadata_fee (1_000 vs. required 500).
+    s.client.set_metadata(
+        &token_addr,
+        &admin,
+        &String::from_str(&s.env, "ipfs://QmOverpay"),
+        &1_000,
+    );
+
+    assert_eq!(
+        TokenClient::new(&s.env, &s.fee_token).balance(&s.treasury),
+        500,
+        "treasury must receive exactly metadata_fee, not fee_payment"
+    );
+    assert_eq!(
+        TokenClient::new(&s.env, &s.fee_token).balance(&admin),
+        10_000 - 500,
+        "caller must keep the surplus above metadata_fee"
+    );
+}
+
+#[test]
+fn test_mint_tokens_overpayment_charges_exact_fee_only() {
+    let s = Setup::new();
+    let admin = Address::generate(&s.env);
+    // Fund well above 2x base_fee (1_000) so a leftover balance proves only
+    // the exact fee was taken.
+    s.fund(&admin, 10_000);
+
+    let token_addr = seed_token(&s, &admin, true, None);
+    let recipient = Address::generate(&s.env);
+    // Pass fee_payment = 2 * base_fee (2_000 vs. required 1_000).
+    s.client
+        .mint_tokens(&token_addr, &admin, &recipient, &5_000, &2_000);
+
+    assert_eq!(
+        TokenClient::new(&s.env, &s.fee_token).balance(&s.treasury),
+        1_000,
+        "treasury must receive exactly base_fee, not fee_payment"
+    );
+    assert_eq!(
+        TokenClient::new(&s.env, &s.fee_token).balance(&admin),
+        10_000 - 1_000,
+        "caller must keep the surplus above base_fee"
+    );
+    // The mint itself still uses the caller-specified `amount`, independent
+    // of the fee overpayment.
+    assert_eq!(
+        TokenClient::new(&s.env, &token_addr).balance(&recipient),
+        5_000
+    );
+}
+
+#[test]
+fn test_mint_tokens_fee_split_sums_to_charged_fee_not_payment() {
+    let s = Setup::new();
+    let recipient_a = Address::generate(&s.env);
+    let recipient_b = Address::generate(&s.env);
+    let splits = make_split(&s, &[(&recipient_a, 6_000), (&recipient_b, 4_000)]);
+    s.client.set_fee_split(&s.admin, &splits);
+
+    let admin = Address::generate(&s.env);
+    s.fund(&admin, 10_000);
+    let token_addr = seed_token(&s, &admin, true, None);
+    let mint_to = Address::generate(&s.env);
+
+    // fee_payment (5_000) is 5x base_fee (1_000).
+    s.client
+        .mint_tokens(&token_addr, &admin, &mint_to, &1, &5_000);
+
+    let a_balance = TokenClient::new(&s.env, &s.fee_token).balance(&recipient_a);
+    let b_balance = TokenClient::new(&s.env, &s.fee_token).balance(&recipient_b);
+    let treasury_balance = TokenClient::new(&s.env, &s.fee_token).balance(&s.treasury);
+
+    // 60% / 40% of the *charged* base_fee (1_000), not the fee_payment (5_000).
+    assert_eq!(a_balance, 600);
+    assert_eq!(b_balance, 400);
+    assert_eq!(treasury_balance, 0);
+
+    // Conservation against the charged amount, not the passed fee_payment.
+    assert_eq!(
+        a_balance + b_balance + treasury_balance,
+        1_000,
+        "fee-split recipients must sum to exactly the charged base_fee"
+    );
+    assert_eq!(
+        TokenClient::new(&s.env, &s.fee_token).balance(&admin),
+        10_000 - 1_000,
+        "caller must keep the surplus above base_fee even with a fee split configured"
+    );
+}
+
+/// Fee-update race: a caller submits `fee_payment` sized for the fee that was
+/// current when they built the transaction. If the admin raises the fee
+/// before the transaction lands, the call must fail cleanly with
+/// `InsufficientFee` and leave every balance untouched — no partial charge
+/// at the old rate, and no charge at all at the new rate.
+#[test]
+fn test_fee_update_race_rejects_with_no_partial_transfer() {
+    let s = Setup::new();
+    let admin = Address::generate(&s.env);
+    s.fund(&admin, 10_000);
+    let token_addr = seed_token(&s, &admin, true, None);
+    let recipient = Address::generate(&s.env);
+
+    // Admin raises base_fee from 1_000 to 2_000 after the caller already
+    // decided on a fee_payment sized for the old fee (with a little
+    // headroom: 1_500).
+    s.client.update_fees(&s.admin, &Some(2_000), &None);
+
+    let result = s
+        .client
+        .try_mint_tokens(&token_addr, &admin, &recipient, &5_000, &1_500);
+    assert_eq!(result, Err(Ok(Error::InsufficientFee)));
+
+    // No balance may have moved: the fee-gate check happens before any
+    // transfer or mint.
+    assert_eq!(
+        TokenClient::new(&s.env, &s.fee_token).balance(&admin),
+        10_000
+    );
+    assert_eq!(
+        TokenClient::new(&s.env, &s.fee_token).balance(&s.treasury),
+        0
+    );
+    assert_eq!(
+        TokenClient::new(&s.env, &token_addr).balance(&recipient),
+        0
+    );
+}
+
 #[test]
 fn test_create_token_insufficient_fee() {
     let s = Setup::new();

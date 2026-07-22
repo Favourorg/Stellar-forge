@@ -97,13 +97,24 @@ Stamps `FactoryState.schema_version = CURRENT_SCHEMA_VERSION` and stores the sam
 
 ## Token Lifecycle
 
+### Fee semantics: `fee_payment` is an upper bound, not the amount charged
+
+Every fee-gated entrypoint (`create_token`, `create_tokens_batch`, `mint_tokens`, `set_metadata`) takes a `fee_payment` argument. **`fee_payment` is the maximum the caller authorizes to be spent — the same pattern as `amount`/`max_amount` in DEX contracts — not the amount actually transferred.** The contract:
+
+1. Rejects the call with `Error::InsufficientFee` if `fee_payment` is below the currently required fee (`base_fee`, `base_fee * tokens.len()`, or `metadata_fee`).
+2. Otherwise transfers **exactly the required fee** — never more, regardless of how much headroom `fee_payment` included.
+
+This matters because clients conventionally pad `fee_payment` above the currently displayed fee so the transaction still succeeds if the admin updates fees before it lands (see the fee-update race below). Before this behavior was fixed (issue #1008), the contract charged the caller's full `fee_payment` — any padding, unit-confused value (e.g. XLM vs. stroops), or stale cached fee was kept in full with no refund. Callers should still pass a value they consider a hard ceiling, since that's what they can lose in the worst case (e.g. if the required fee rises right up to that ceiling before the transaction lands), but any padding above the fee that's actually charged is always returned to the caller by simply never being transferred.
+
+**Fee-update race:** if the admin raises the required fee between when a caller signs a transaction and when it lands, and the caller's `fee_payment` no longer covers the new fee, the call fails cleanly with `Error::InsufficientFee` and **no** value moves — not at the old rate, not at the new rate, not partially. The fee-gate check happens before any transfer.
+
 ### `create_token(creator, salt, name, symbol, decimals, initial_supply, fee_payment)`
 
-Deploy a new token contract under the factory. Requires `fee_payment >= base_fee`. Returns the deployed contract address.
+Deploy a new token contract under the factory. Requires `fee_payment >= base_fee`; charges exactly `base_fee`. Returns the deployed contract address.
 
 ### `create_tokens_batch(creator, tokens, fee_payment)`
 
-Atomically deploy `tokens` (a `Vec<BatchTokenParams>`). Requires `fee_payment >= base_fee * tokens.len()`. All parameter validation (name, symbol, decimals, initial supply, and total `token_count` arithmetic overflow checks) is front-loaded before any contract deployment or state locking begins. Furthermore, Soroban's per-invocation transaction atomicity guarantees that if any failure or host error occurs during execution, all state changes, sub-token deployments, and supply mints within the transaction are completely reverted at the ledger level.
+Atomically deploy `tokens` (a `Vec<BatchTokenParams>`). Requires `fee_payment >= base_fee * tokens.len()`; charges exactly `base_fee * tokens.len()`. All parameter validation (name, symbol, decimals, initial supply, and total `token_count` arithmetic overflow checks) is front-loaded before any contract deployment or state locking begins. Furthermore, Soroban's per-invocation transaction atomicity guarantees that if any failure or host error occurs during execution, all state changes, sub-token deployments, and supply mints within the transaction are completely reverted at the ledger level.
 
 #### Batch size limits and resource costs
 
@@ -141,7 +152,7 @@ If you need to deploy more than 20 tokens, split them into multiple sequential `
 
 ### `mint_tokens(token_address, admin, to, amount, fee_payment)`
 
-Mint `amount` of `token_address` to `to`. Rejects when a `max_supply` cap would be exceeded (`Error::MaxSupplyExceeded`).
+Mint `amount` of `token_address` to `to`. Requires `fee_payment >= base_fee`; charges exactly `base_fee`. Rejects when a `max_supply` cap would be exceeded (`Error::MaxSupplyExceeded`).
 
 #### Supply cap accounting
 
@@ -164,7 +175,7 @@ Burn `amount` of `token_address` from `from`'s balance. Honors `burn_enabled`; r
 
 ### `set_metadata(token_address, admin, metadata_uri, fee_payment)`
 
-Set an IPFS / HTTPS metadata URI for an existing token. One-shot — re-setting returns `Error::MetadataAlreadySet`.
+Set an IPFS / HTTPS metadata URI for an existing token. Requires `fee_payment >= metadata_fee`; charges exactly `metadata_fee`. One-shot — re-setting returns `Error::MetadataAlreadySet`.
 
 The contract stores the URI opaquely and does not validate the document it points at. The frontend does, and enforces length caps on `name` and `description` plus an `ipfs://`-only rule for `image` when rendering — see [Token Metadata Format](./metadata-format.md) before pinning your own metadata.
 
