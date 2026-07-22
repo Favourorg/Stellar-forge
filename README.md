@@ -952,8 +952,25 @@ The factory contract supports in-place WASM upgrades without redeploying or migr
 ### Adding a new migration (version N → N+1)
 
 1. Increment `CURRENT_SCHEMA_VERSION` in `lib.rs` to `N+1`.
-2. Add an `if on_chain_version < N+1 { … }` block inside `migrate` that reads the current state, sets new fields to their defaults, writes the updated state, and bumps `on_chain_version`.
-3. Add a test in `test.rs` that seeds `sv = N` and asserts the state is correct after calling `migrate`.
+2. Add an `if on_chain_version < N+1 { … }` block inside `migrate` that reads the current state, sets new fields to their defaults, writes the updated state, **bumps `on_chain_version` to `N+1`**, and writes the updated `sv` key. The bump must happen inside the block, before the next block's guard runs — this is what allows a contract that is multiple versions behind to walk through every pending step in a single `migrate` call.
+
+   ```rust
+   // Example: adding version 2
+   if on_chain_version < 2 {
+       let mut s = Self::load_state(&env)?;
+       s.new_field = default_value;   // initialise any new FactoryState fields
+       Self::save_state(&env, &s);
+       on_chain_version = 2;          // ← bump BEFORE the next if-block is evaluated
+       env.storage().instance().set(&sv_key, &on_chain_version);
+   }
+   ```
+
+   > **Critical:** `on_chain_version` is a `mut` local variable. Each block must assign the new version back to it after writing to storage. If you forget the in-place bump, the next `if on_chain_version < N+2` block will compare against the _original_ value read at the top of `migrate`, not the value just written — causing steps to run out of order or be skipped entirely on a multi-version catch-up.
+
+3. Add tests in `test.rs` that:
+   - Seed `sv = N-1` (or 0) and assert `migrate` walks through _all_ pending steps in one call, ending at `CURRENT_SCHEMA_VERSION`.
+   - Seed `sv = N` and confirm only the N → N+1 step runs (earlier steps are skipped).
+   - Call `migrate` twice at the final version and assert it is a no-op (idempotent).
 
 ### How it works
 
