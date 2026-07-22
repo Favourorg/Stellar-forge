@@ -97,11 +97,6 @@ impl BenchSetup {
         // multi-token batches aren't killed by the limits we're measuring.
         env.cost_estimate().disable_resource_limits();
 
-        let contract_id = env.register_contract(None, TokenFactory);
-        let client: TokenFactoryClient = TokenFactoryClient::new(&env, &contract_id);
-        // SAFETY: identical lifetime extension used throughout test.rs in this workspace.
-        let client: TokenFactoryClient<'static> = unsafe { core::mem::transmute(client) };
-
         let admin = Address::generate(&env);
         let treasury = Address::generate(&env);
         let fee_token = env
@@ -112,14 +107,20 @@ impl BenchSetup {
         // Fund creator with enough fee tokens.
         StellarAssetClient::new(&env, &fee_token).mint(&creator, &10_000_000);
 
-        client.__constructor(
-            &admin,
-            &treasury,
-            &fee_token,
-            &dummy_hash(&env),
-            &1_000,
-            &500,
+        let contract_id = env.register(
+            TokenFactory,
+            TokenFactoryArgs::__constructor(
+                &admin,
+                &treasury,
+                &fee_token,
+                &dummy_hash(&env),
+                &1_000,
+                &500,
+            ),
         );
+        let client: TokenFactoryClient = TokenFactoryClient::new(&env, &contract_id);
+        // SAFETY: identical lifetime extension used throughout test.rs in this workspace.
+        let client: TokenFactoryClient<'static> = unsafe { core::mem::transmute(client) };
 
         // Avoid 0-timestamp on ledger entries for more realistic conditions.
         env.ledger().with_mut(|li| {
