@@ -239,7 +239,7 @@ The authoritative, field-by-field reference — including parameter tables, ever
 
 ### Initialization
 
-- `initialize(admin, treasury, fee_token, token_wasm_hash, base_fee, metadata_fee)`: One-time factory setup. Fails with `AlreadyInitialized` on retry.
+- `__constructor(admin, treasury, fee_token, token_wasm_hash, base_fee, metadata_fee)`: One-time factory setup, run atomically as part of contract deployment. Fails with `AlreadyInitialized` on retry.
 
 ### Token Lifecycle
 
@@ -354,24 +354,9 @@ stellar contract optimize \
 
 The optimized WASM will be at `../../target/wasm32-unknown-unknown/release/token_factory.optimized.wasm`.
 
-#### Step 3: Deploy the Factory Contract
+#### Step 3: Upload Token Contract WASM
 
-```bash
-# Deploy to testnet
-stellar contract deploy \
-  --wasm ../../target/wasm32-unknown-unknown/release/token_factory.optimized.wasm \
-  --source deployer \
-  --network testnet
-
-# Save the contract ID (starts with C...)
-# Example output: CXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-```
-
-**Save this contract ID** - you'll need it for initialization and frontend configuration.
-
-#### Step 4: Upload Token Contract WASM
-
-The factory needs the token contract WASM hash to deploy tokens.
+The factory needs the token contract WASM hash _before_ it's deployed, since that hash is now one of its constructor arguments (see Step 4).
 
 ```bash
 # First, build the standard Stellar token contract
@@ -398,33 +383,51 @@ stellar contract install \
   --network testnet
 ```
 
-#### Step 5: Initialize the Factory
+#### Step 4: Deploy and Initialize the Factory (atomically)
+
+`initialize` is the contract's `__constructor`, so deployment and initialization happen in a **single transaction** — there is no separate `invoke` step, and therefore no window where an attacker could race the deployer's own initialization with their own and seize the admin role (see [issue #1005](https://github.com/Favourorg/Stellar-forge/issues/1005) and [`docs/contract-abi.md`](./docs/contract-abi.md)). Constructor arguments go after `--`, the same as any other `stellar contract deploy` invocation with a constructor.
 
 ```bash
 # Get your admin address (same as deployer for simplicity)
 ADMIN_ADDRESS=$(stellar keys address deployer)
 
-# Initialize the contract
+# Deploy and initialize in one atomic call
+stellar contract deploy \
+  --wasm ../../target/wasm32-unknown-unknown/release/token_factory.optimized.wasm \
+  --source deployer \
+  --network testnet \
+  -- \
+  --admin $ADMIN_ADDRESS \
+  --treasury $ADMIN_ADDRESS \
+  --fee_token <NATIVE_XLM_CONTRACT_ADDRESS> \
+  --token_wasm_hash <TOKEN_WASM_HASH_FROM_STEP_3> \
+  --base_fee 100000000 \
+  --metadata_fee 50000000
+
+# Save the contract ID (starts with C...)
+# Example output: CXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+```
+
+**Save this contract ID** - you'll need it for frontend configuration.
+
+Before using this contract ID anywhere (frontend `.env`, docs, announcements), verify the on-chain admin matches:
+
+```bash
 stellar contract invoke \
   --id <FACTORY_CONTRACT_ID> \
   --source deployer \
   --network testnet \
   -- \
-  initialize \
-  --admin $ADMIN_ADDRESS \
-  --treasury $ADMIN_ADDRESS \
-  --fee_token <NATIVE_XLM_CONTRACT_ADDRESS> \
-  --token_wasm_hash <TOKEN_WASM_HASH_FROM_STEP_4> \
-  --base_fee 100000000 \
-  --metadata_fee 50000000
+  get_state
+# Confirm the "admin" field equals $ADMIN_ADDRESS before proceeding.
 ```
 
 **Parameters explained:**
 
-- `admin`: Address that can update fees, pause the factory, manage the whitelist and fee split, rotate the admin, and upgrade the contract
+- `admin`: Address that can update fees, pause the factory, manage the whitelist and fee split, rotate the admin, and upgrade the contract. Must authorize this deployment (`require_auth`).
 - `treasury`: Default address that receives fees from token creation (overridden per-recipient if a fee split is configured)
 - `fee_token`: Contract address for the SEP-41 token used to pay all fees (use native XLM contract: `CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC`)
-- `token_wasm_hash`: The WASM hash uploaded in Step 4 — every token the factory deploys is an instance of this code
+- `token_wasm_hash`: The WASM hash uploaded in Step 3 — every token the factory deploys is an instance of this code
 - `base_fee`: Fee for `create_token` / `mint_tokens` / each token in `create_tokens_batch` (in stroops, 1 XLM = 10,000,000 stroops)
 - `metadata_fee`: Fee for `set_metadata`
 
@@ -452,7 +455,7 @@ VITE_IPFS_API_SECRET=<your-pinata-api-secret>
 
 > **Keep `VITE_TOKEN_WASM_HASH` in sync with the factory.** This value must equal the
 > factory's on-chain `token_wasm_hash` — the WASM the factory actually deploys tokens
-> from. That field is set at `initialize` time and can only change through a contract
+> from. That field is set at deployment (`__constructor`) time and can only change through a contract
 > upgrade + migrate, so the realistic way they drift apart is a factory upgrade that
 > ships without a matching frontend redeploy.
 >
@@ -943,7 +946,7 @@ The factory contract supports in-place WASM upgrades without redeploying or migr
 
 ### Schema versioning
 
-`FactoryState` carries a `schema_version: u32` field. The constant `CURRENT_SCHEMA_VERSION` in `lib.rs` is the source of truth. `initialize` stamps the current version on every fresh deployment. `migrate` reads the on-chain version from a standalone `"sv"` storage key and applies each pending upgrade step in order, making it safe to call multiple times (idempotent).
+`FactoryState` carries a `schema_version: u32` field. The constant `CURRENT_SCHEMA_VERSION` in `lib.rs` is the source of truth. `__constructor` stamps the current version on every fresh deployment. `migrate` reads the on-chain version from a standalone `"sv"` storage key and applies each pending upgrade step in order, making it safe to call multiple times (idempotent).
 
 | Version | Change                                                                    |
 | ------- | ------------------------------------------------------------------------- |

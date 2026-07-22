@@ -55,6 +55,51 @@ function toAppError(err: unknown): AppError {
   return { code: 'CONTRACT_ERROR', message: parsed.message }
 }
 
+/**
+ * Default page size for `getAllTokens` when a caller does not specify one.
+ * Mirrors the Token Explorer / dashboard default so the first page maps to a
+ * single index-range fetch.
+ */
+const DEFAULT_TOKEN_PAGE_LIMIT = 10
+
+/**
+ * Maximum number of `get_token_info` view calls kept in flight at once while
+ * assembling one page of the global token list. The SDF publishes no static
+ * RPC rate limit and throttles dynamically (see docs/rpc-rate-limits.md), so
+ * we stay deliberately conservative — a single page never bursts more than
+ * this many simultaneous simulations at the endpoint.
+ */
+const GET_ALL_TOKENS_CONCURRENCY = 5
+
+/**
+ * Resolve `tasks` with at most `limit` running concurrently, preserving input
+ * order. Uses `Promise.allSettled` semantics: every task settles and the
+ * caller decides how to treat rejections, so one failing index read never
+ * rejects the whole batch.
+ */
+async function allSettledWithConcurrency<T>(
+  tasks: Array<() => Promise<T>>,
+  limit: number,
+): Promise<PromiseSettledResult<T>[]> {
+  const results = new Array<PromiseSettledResult<T>>(tasks.length)
+  let nextIndex = 0
+
+  async function worker() {
+    while (nextIndex < tasks.length) {
+      const i = nextIndex++
+      try {
+        results[i] = { status: 'fulfilled', value: await tasks[i]!() }
+      } catch (reason) {
+        results[i] = { status: 'rejected', reason }
+      }
+    }
+  }
+
+  const workerCount = Math.max(1, Math.min(limit, tasks.length))
+  await Promise.all(Array.from({ length: workerCount }, worker))
+  return results
+}
+
 // ── Network helpers ───────────────────────────────────────────────────────────
 
 function getNetworkConfig(network: Network) {
@@ -878,8 +923,74 @@ export class StellarService {
 
   // ── getAllTokens ─────────────────────────────────────────────────────────────
 
-  async getAllTokens(): Promise<TokenInfo[]> {
-    return []
+  /**
+   * Fetch a page of the global token list, newest-first.
+   *
+   * The factory exposes no `get_all_tokens` view, but it maintains a
+   * monotonically increasing `token_count` and stores every token at a 1-based
+   * index (`TokenInfo(1..=token_count)`), readable via `get_token_info(index)`.
+   * We page over that index range instead of walking event history.
+   *
+   * `offset`/`limit` describe a newest-first window: `offset = 0` starts at the
+   * most-recently-created token (index `total`) and walks down toward index 1.
+   * Index reads are issued with bounded concurrency
+   * (`GET_ALL_TOKENS_CONCURRENCY`) to respect RPC rate limits
+   * (docs/rpc-rate-limits.md) and collected with `Promise.allSettled` semantics
+   * so a single transiently-missing index does not fail the whole page.
+   *
+   * Returns `{ tokens, total }` where `total` is the factory's `token_count`.
+   * Callers MUST use `total` (not `tokens.length`) to distinguish "factory has
+   * zero tokens" from "this page failed" — a short/empty page is never on its
+   * own a truthful "no tokens exist" signal.
+   *
+   * Throws when the factory state cannot be read, or when a non-empty index
+   * window was requested but *every* index read failed — so consumers render an
+   * error state rather than a fake-empty list.
+   */
+  async getAllTokens(
+    offset = 0,
+    limit = DEFAULT_TOKEN_PAGE_LIMIT,
+  ): Promise<{ tokens: TokenInfo[]; total: number }> {
+    const contractId = STELLAR_CONFIG.factoryContractId
+    if (!contractId) throw new Error('Factory contract ID is not configured')
+
+    const { tokenCount } = await this.getFactoryState()
+    const total = Math.max(0, tokenCount)
+    if (total === 0 || limit <= 0) return { tokens: [], total }
+
+    // Newest-first window over the 1-based index range [1, total].
+    const highIndex = total - Math.max(0, offset)
+    if (highIndex < 1) return { tokens: [], total } // offset past the oldest token
+    const lowIndex = Math.max(1, highIndex - limit + 1)
+
+    const indices: number[] = []
+    for (let i = highIndex; i >= lowIndex; i--) indices.push(i)
+
+    const settled = await allSettledWithConcurrency(
+      indices.map((index) => () => this.getTokenInfo(index)),
+      GET_ALL_TOKENS_CONCURRENCY,
+    )
+
+    // `settled[k]` corresponds to `indices[k]`; stamp the resolved 1-based
+    // index onto each token so consumers can correlate it (e.g. to a token
+    // address derived from `created` events, the complementary path).
+    const tokens: TokenInfo[] = []
+    settled.forEach((r, k) => {
+      if (r.status === 'fulfilled') tokens.push({ ...r.value, index: indices[k]! })
+    })
+
+    // A non-empty window that resolved nothing is a fetch failure, not an
+    // empty factory — surface it so the UI never shows a fake-empty list.
+    if (tokens.length === 0) {
+      const firstRejection = settled.find(
+        (r): r is PromiseRejectedResult => r.status === 'rejected',
+      )
+      throw firstRejection?.reason instanceof Error
+        ? firstRejection.reason
+        : new Error('Failed to fetch any tokens for the requested page')
+    }
+
+    return { tokens, total }
   }
 
   // ── getTokensByCreator ───────────────────────────────────────────────────────
