@@ -32,6 +32,12 @@ export interface TokenInfo {
   createdAt: number // unix seconds (u64 from contract)
   totalSupply?: string // derived from events, not stored on contract
   metadataUri?: string // stored separately in contract
+  /**
+   * The token's stable 1-based factory index (`TokenInfo(index)` on-chain).
+   * Set when a token is resolved via the index-range path (`getAllTokens`);
+   * undefined for tokens resolved purely from events, which carry no index.
+   */
+  index?: number
 }
 
 /**
@@ -84,7 +90,15 @@ export interface AppError {
 
 export type SortOrder = 'newest' | 'oldest' | 'alphabetical'
 export type ContractEventType =
-  'init' | 'created' | 'meta' | 'mint' | 'burn' | 'fees' | 'pause' | 'unpause' | 'admin_update'
+  | 'init'
+  | 'created'
+  | 'meta'
+  | 'mint'
+  | 'burn'
+  | 'fees'
+  | 'pause'
+  | 'unpause'
+  | 'admin_update'
 
 export interface ContractEvent {
   id: string

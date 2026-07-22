@@ -87,9 +87,9 @@ export class StellarService {
     return impl.getContractEvents(contractId, limit, cursor)
   }
 
-  async getAllTokens() {
+  async getAllTokens(offset?: number, limit?: number) {
     const impl = await this.getImpl()
-    return impl.getAllTokens()
+    return impl.getAllTokens(offset, limit)
   }
 
   async getTokensByCreator(creator: string, offset: number, limit: number) {

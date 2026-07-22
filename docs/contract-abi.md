@@ -181,6 +181,10 @@ Toggle factory-wide pause. `create_token`, `create_tokens_batch`, `mint_tokens`,
 
 Set a fee split where `splits` is a `Map<Address, u32>` of basis-point recipients summing to `10_000`. Empty map clears the split (full fee goes back to `treasury`).
 
+**Recipient cap:** `splits` may contain at most **20 recipients** (`MAX_FEE_SPLIT_RECIPIENTS`). Exceeding it is rejected with `Error::TooManyFeeSplitRecipients` before the basis-point sum is even checked. This exists because `distribute_fee` transfers a share to every configured recipient on **every** `create_token`, `create_tokens_batch`, `mint_tokens`, and `set_metadata` call — an unbounded admin-configured split would make every fee-paying call on the contract arbitrarily expensive for the caller, and risk exceeding Soroban's per-transaction resource limits outright.
+
+The cap was derived by measuring `distribute_fee`'s resource cost via the benchmark harness (`contracts/token-factory/src/bench.rs`, `bench_fee_split_mint_*`) across a range of split sizes. Ledger *writes* — not CPU or memory — turned out to be the binding resource: each non-zero-share recipient writes a new SEP-41 balance entry, at a measured rate of ~1.03 writes per recipient. At 20 recipients that's 24 of the mainnet per-transaction write-entry limit of 50 (48%), leaving a 52% margin; CPU and memory stay under 1.5% of their respective limits at this size. See `bench_fee_split_at_max_within_limits` for the test that keeps this margin enforced going forward.
+
 ### `get_fee_split() → Map<Address, u32>`
 
 Read the current split (empty map means no split).
@@ -199,25 +203,26 @@ Incrementally upgrades state between schema versions. Idempotent.
 
 ## Errors
 
-| Code | Symbol                     | When                                                |
-| ---- | -------------------------- | --------------------------------------------------- |
-| 1    | `InsufficientFee`          | `fee_payment < required_fee`                        |
-| 2    | `Unauthorized`             | caller is not allowed for this operation            |
-| 3    | `InvalidParameters`        | argument out of range or malformed                  |
-| 4    | `TokenNotFound`            | unknown token index or address                      |
-| 5    | `MetadataAlreadySet`       | `set_metadata` called twice                         |
-| 6    | `AlreadyInitialized`       | double-initialize attempt                           |
-| 7    | `BurnAmountExceedsBalance` | `burn` > balance                                    |
-| 8    | `BurnNotEnabled`           | burning on a token that has been disabled           |
-| 9    | `InvalidBurnAmount`        | zero or negative burn                               |
-| 10   | `ContractPaused`           | operation blocked because factory is paused         |
-| 11   | `Reentrancy`               | concurrent reentrant call detected                  |
-| 12   | `ArithmeticOverflow`       | checked-op failed                                   |
-| 13   | `StateNotFound`            | factory not yet initialized                         |
-| 14   | `InvalidTokenParams`       | name/symbol validation failed during token creation |
-| 15   | `InvalidDecimals`          | decimals outside `[0, 18]`                          |
-| 16   | `MaxSupplyExceeded`        | mint would exceed cap                               |
-| 17   | `InvalidFeeSplit`          | `set_fee_split` map bps do not sum to 10_000        |
+| Code | Symbol | When |
+|---|---|---|
+| 1 | `InsufficientFee` | `fee_payment < required_fee` |
+| 2 | `Unauthorized` | caller is not allowed for this operation |
+| 3 | `InvalidParameters` | argument out of range or malformed |
+| 4 | `TokenNotFound` | unknown token index or address |
+| 5 | `MetadataAlreadySet` | `set_metadata` called twice |
+| 6 | `AlreadyInitialized` | double-initialize attempt |
+| 7 | `BurnAmountExceedsBalance` | `burn` > balance |
+| 8 | `BurnNotEnabled` | burning on a token that has been disabled |
+| 9 | `InvalidBurnAmount` | zero or negative burn |
+| 10 | `ContractPaused` | operation blocked because factory is paused |
+| 11 | `Reentrancy` | concurrent reentrant call detected |
+| 12 | `ArithmeticOverflow` | checked-op failed |
+| 13 | `StateNotFound` | factory not yet initialized |
+| 14 | `InvalidTokenParams` | name/symbol validation failed during token creation |
+| 15 | `InvalidDecimals` | decimals outside `[0, 18]` |
+| 16 | `MaxSupplyExceeded` | mint would exceed cap |
+| 17 | `InvalidFeeSplit` | `set_fee_split` map bps do not sum to 10_000 |
+| 18 | `TooManyFeeSplitRecipients` | `set_fee_split` map has more than `MAX_FEE_SPLIT_RECIPIENTS` (20) recipients |
 
 ## Events
 

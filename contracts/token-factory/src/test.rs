@@ -1329,6 +1329,26 @@ fn make_split(s: &Setup, pairs: &[(&Address, u32)]) -> Map<Address, u32> {
     m
 }
 
+/// Build a fee-split map with `n` distinct recipients whose basis points sum
+/// to exactly 10_000, for boundary-testing `MAX_FEE_SPLIT_RECIPIENTS`.
+fn make_split_n(s: &Setup, n: u32) -> Map<Address, u32> {
+    let mut m = Map::new(&s.env);
+    let share = 10_000 / n;
+    let mut distributed: u32 = 0;
+    for i in 0..n {
+        // The last recipient absorbs the rounding remainder so the total is
+        // always exactly 10_000, matching `set_fee_split`'s validation.
+        let bps = if i == n - 1 {
+            10_000 - distributed
+        } else {
+            share
+        };
+        m.set(Address::generate(&s.env), bps);
+        distributed += bps;
+    }
+    m
+}
+
 #[test]
 fn test_set_fee_split_valid() {
     let s = Setup::new();
@@ -1370,6 +1390,24 @@ fn test_set_fee_split_empty_clears_split() {
     s.client.set_fee_split(&s.admin, &splits);
     s.client.set_fee_split(&s.admin, &Map::new(&s.env));
     assert!(s.client.get_fee_split().is_empty());
+}
+
+#[test]
+fn test_set_fee_split_at_max_recipients_accepted() {
+    let s = Setup::new();
+    let splits = make_split_n(&s, MAX_FEE_SPLIT_RECIPIENTS);
+    s.client.set_fee_split(&s.admin, &splits);
+    assert_eq!(s.client.get_fee_split().len(), MAX_FEE_SPLIT_RECIPIENTS);
+}
+
+#[test]
+fn test_set_fee_split_over_max_recipients_rejected() {
+    let s = Setup::new();
+    let splits = make_split_n(&s, MAX_FEE_SPLIT_RECIPIENTS + 1);
+    assert_eq!(
+        s.client.try_set_fee_split(&s.admin, &splits),
+        Err(Ok(Error::TooManyFeeSplitRecipients))
+    );
 }
 
 #[test]

@@ -32,13 +32,34 @@ use super::*;
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
     token::StellarAssetClient,
-    Address, BytesN, Env, String, Vec,
+    Address, BytesN, Env, Map, String, Vec,
 };
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
 fn dummy_hash(env: &Env) -> BytesN<32> {
     BytesN::from_array(env, &[0u8; 32])
+}
+
+/// Build a fee-split `Map<Address, u32>` with `n` distinct recipients whose
+/// basis points sum to exactly 10_000, for measuring `distribute_fee`'s cost
+/// as a function of recipient count.
+fn fee_split_with_recipients(env: &Env, n: u32) -> Map<Address, u32> {
+    let mut m = Map::new(env);
+    let share = 10_000 / n;
+    let mut distributed: u32 = 0;
+    for i in 0..n {
+        // The last recipient absorbs the rounding remainder so the total is
+        // always exactly 10_000, matching `set_fee_split`'s validation.
+        let bps = if i == n - 1 {
+            10_000 - distributed
+        } else {
+            share
+        };
+        m.set(Address::generate(env), bps);
+        distributed += bps;
+    }
+    m
 }
 
 /// Captured resource numbers for a single entrypoint invocation.
@@ -160,6 +181,47 @@ impl BenchSetup {
             &1_000_000u128,
             &1_000,
         )
+    }
+
+    /// Register a token in factory storage as if `create_token` had run,
+    /// backed by a real SEP-41 asset contract registered directly via
+    /// `register_stellar_asset_contract_v2` rather than the factory's own
+    /// WASM-deploy path. Mirrors `test.rs`'s `seed_token` helper. Used by the
+    /// fee-split benchmarks below, which measure `distribute_fee`'s cost via
+    /// `mint_tokens` and only need a mintable token, not a full deploy.
+    fn seed_token(&self) -> Address {
+        let token_addr = self
+            .env
+            .register_stellar_asset_contract_v2(self.creator.clone())
+            .address();
+        self.env.as_contract(&self.contract_id, || {
+            let mut state: FactoryState =
+                self.env.storage().instance().get(&DataKey::State).unwrap();
+            state.token_count = state.token_count.checked_add(1).unwrap();
+            let index = state.token_count;
+            self.env.storage().instance().set(
+                &DataKey::TokenInfo(index),
+                &TokenInfo {
+                    name: self.str("BenchToken"),
+                    symbol: self.str("BNK"),
+                    decimals: 7,
+                    creator: self.creator.clone(),
+                    created_at: 0,
+                    burn_enabled: true,
+                    max_supply: None,
+                },
+            );
+            self.env.storage().instance().set(&DataKey::State, &state);
+            self.env
+                .storage()
+                .instance()
+                .set(&DataKey::TokenIndex(token_addr.clone()), &index);
+            self.env
+                .storage()
+                .instance()
+                .set(&(&token_addr, symbol_short!("owner")), &self.creator);
+        });
+        token_addr
     }
 
     /// Build a `Vec<BatchTokenParams>` of `n` entries.
@@ -385,6 +447,77 @@ fn bench_set_metadata() {
     assert!(r.cpu_insns > 0);
 }
 
+// ─── fee-split recipient scaling ───────────────────────────────────────────────
+//
+// `distribute_fee` iterates every configured fee-split recipient on each
+// `create_token` / `create_tokens_batch` / `mint_tokens` / `set_metadata`
+// call. `set_fee_split` validates that basis points sum to 10_000 but (prior
+// to `MAX_FEE_SPLIT_RECIPIENTS`) placed no bound on recipient *count*, so an
+// admin-configured split could make every fee-paying call arbitrarily
+// expensive. These benchmarks isolate that per-recipient cost by measuring
+// `mint_tokens` — the cheapest carrier entrypoint (see `bench_mint_tokens`
+// above) — across a range of split sizes up to the enforced
+// `MAX_FEE_SPLIT_RECIPIENTS` cap, so the growth curve reflects
+// `distribute_fee`'s loop and not entry-point-specific overhead.
+//
+// `MAX_FEE_SPLIT_RECIPIENTS` was derived by measuring recipient counts up to
+// 34 (the highest reachable before an unrelated testutils-only ceiling: the
+// SDK's auth-mock layer serializes the authorized-invocation tree to XDR
+// after every call under a separate, non-adjustable "shadow" CPU budget that
+// this repo doesn't control). That exploratory data showed ledger *writes*
+// growing at ~1.03/recipient and crossing 50% of the mainnet write limit at
+// n≈20 — see `MAX_FEE_SPLIT_RECIPIENTS`'s doc comment in `lib.rs` for the
+// full derivation. Only in-bounds points are kept here since `set_fee_split`
+// now rejects anything above the cap.
+fn run_fee_split_mint_bench(n: u32, label: &str) -> BenchResult {
+    let s = BenchSetup::new();
+    s.client()
+        .set_fee_split(&s.admin, &fee_split_with_recipients(&s.env, n));
+    let token_addr = s.seed_token();
+
+    let result = s
+        .client()
+        .try_mint_tokens(&token_addr, &s.creator, &s.creator, &500_000, &1_000);
+    assert!(result.is_ok(), "{label} failed: {result:?}");
+
+    let r = capture(&s.env, label);
+    r.print_json();
+    assert!(r.cpu_insns > 0);
+    r
+}
+
+/// Benchmark `mint_tokens` with a 1-recipient fee split.
+#[test]
+fn bench_fee_split_mint_1() {
+    run_fee_split_mint_bench(1, "fee_split_mint_1");
+}
+
+/// Benchmark `mint_tokens` with a 5-recipient fee split.
+#[test]
+fn bench_fee_split_mint_5() {
+    run_fee_split_mint_bench(5, "fee_split_mint_5");
+}
+
+/// Benchmark `mint_tokens` with a 10-recipient fee split.
+#[test]
+fn bench_fee_split_mint_10() {
+    run_fee_split_mint_bench(10, "fee_split_mint_10");
+}
+
+/// Benchmark `mint_tokens` with a 15-recipient fee split.
+#[test]
+fn bench_fee_split_mint_15() {
+    run_fee_split_mint_bench(15, "fee_split_mint_15");
+}
+
+/// Benchmark `mint_tokens` with a 20-recipient fee split — the chosen
+/// `MAX_FEE_SPLIT_RECIPIENTS` value. See `bench_fee_split_at_max_within_limits`
+/// below for the assertion that this stays within margin of mainnet limits.
+#[test]
+fn bench_fee_split_mint_20() {
+    run_fee_split_mint_bench(20, "fee_split_mint_20");
+}
+
 // ─── resource-limit sanity checks ─────────────────────────────────────────────
 
 /// Verify that a single `create_token` stays comfortably below Soroban
@@ -422,5 +555,61 @@ fn bench_create_token_within_limits() {
         res.mem_bytes < 20_971_520,
         "create_token memory ({} bytes) exceeds 50% of mainnet limit (20 MB)",
         res.mem_bytes
+    );
+}
+
+/// Verify that `distribute_fee`'s cost at `MAX_FEE_SPLIT_RECIPIENTS` (the
+/// maximum allowed `set_fee_split` size) stays comfortably within Soroban
+/// mainnet per-transaction resource limits. Unlike `bench_create_token_within_limits`
+/// above, the binding resource here is *ledger writes*, not CPU or memory —
+/// each non-zero-share recipient writes a new SEP-41 balance entry, so
+/// writes grow with recipient count while CPU/memory barely move (see the
+/// measurement table in `MAX_FEE_SPLIT_RECIPIENTS`'s doc comment in
+/// `lib.rs`). This is the test that keeps the constant honest: if someone
+/// raises `MAX_FEE_SPLIT_RECIPIENTS` without re-measuring, this fails once
+/// the write count crosses the asserted margin.
+///
+/// Mainnet limits (Protocol 21+):
+///   CPU instructions: 600 000 000
+///   Memory bytes:      41 943 040  (40 MB)
+///   Ledger reads:             100
+///   Ledger writes:             50
+#[test]
+fn bench_fee_split_at_max_within_limits() {
+    let s = BenchSetup::new();
+    s.client().set_fee_split(
+        &s.admin,
+        &fee_split_with_recipients(&s.env, MAX_FEE_SPLIT_RECIPIENTS),
+    );
+    let token_addr = s.seed_token();
+    s.client()
+        .mint_tokens(&token_addr, &s.creator, &s.creator, &500_000, &1_000);
+
+    let res = s.env.cost_estimate().resources();
+
+    // 50% of mainnet CPU limit — ample headroom in practice (~0.7% used).
+    assert!(
+        res.instructions < 300_000_000,
+        "fee split at max ({} recipients) CPU ({}) exceeds 50% of mainnet limit (300M)",
+        MAX_FEE_SPLIT_RECIPIENTS,
+        res.instructions
+    );
+    // 50% of mainnet mem limit — likewise ample headroom (~1.4% used).
+    assert!(
+        res.mem_bytes < 20_971_520,
+        "fee split at max ({} recipients) memory ({} bytes) exceeds 50% of mainnet limit (20 MB)",
+        MAX_FEE_SPLIT_RECIPIENTS,
+        res.mem_bytes
+    );
+    // The binding resource: 50% of mainnet's 50-write-entry limit. Measured
+    // at 24/50 (48%) — this is the constraint that actually determined
+    // MAX_FEE_SPLIT_RECIPIENTS's value.
+    assert!(
+        res.write_entries < 25,
+        "fee split at max ({} recipients) ledger writes ({}) exceeds 50% of the mainnet \
+         write-entry limit (25 of 50) — re-measure and reconsider MAX_FEE_SPLIT_RECIPIENTS \
+         before raising it",
+        MAX_FEE_SPLIT_RECIPIENTS,
+        res.write_entries
     );
 }
