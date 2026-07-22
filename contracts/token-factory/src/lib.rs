@@ -152,6 +152,31 @@ const MAX_TTL: u32 = 535_000;
 /// address.
 const MAX_TOKENS_BY_CREATOR_PAGE: u32 = 50;
 
+/// Maximum number of recipients allowed in a single fee split map.
+///
+/// ## Rationale
+/// `distribute_fee` loops over every recipient in the split map and makes one
+/// external `token::transfer` call per recipient.  Each cross-contract call
+/// consumes ledger CPU and I/O budget, and the map itself is stored as a
+/// Soroban `Map` entry whose encoded size grows with the number of keys.
+/// Unbounded recipient counts therefore create two distinct DoS surfaces:
+///
+/// 1. **Transaction budget exhaustion** — enough recipients can push a single
+///    `create_token` / `mint_tokens` / `set_metadata` call over Stellar's
+///    per-transaction instruction limit, making the factory unusable.
+/// 2. **Ledger entry size overflow** — a sufficiently large `Map` could
+///    exceed the ~64 KB ledger entry size cap and cause the `set_fee_split`
+///    call itself to fail at the host level rather than at the contract level.
+///
+/// The cap of 10 is conservative and gives the admin ample flexibility
+/// (typical treasury + referral + protocol fund structures need ≤ 5) while
+/// keeping `distribute_fee` well within budget on any supported network.
+///
+/// Enforcement is in `set_fee_split`: attempts to configure more than
+/// `MAX_FEE_SPLIT_RECIPIENTS` recipients are rejected with
+/// `Error::InvalidFeeSplit` before any storage write occurs.
+pub const MAX_FEE_SPLIT_RECIPIENTS: u32 = 10;
+
 #[contractimpl]
 impl TokenFactory {
     /// Initialize the factory. `fee_token` is the SEP-41 token used for all
@@ -917,6 +942,14 @@ impl TokenFactory {
         if splits.is_empty() {
             env.storage().instance().remove(&split_key);
             return Ok(());
+        }
+
+        // Guard: cap the number of recipients to prevent transaction-budget
+        // exhaustion and ledger-entry size overflow in `distribute_fee`.
+        // Exceeding the cap is rejected with `InvalidFeeSplit` so callers get
+        // a meaningful error rather than a silent host-level failure.
+        if splits.len() > MAX_FEE_SPLIT_RECIPIENTS {
+            return Err(Error::InvalidFeeSplit);
         }
 
         let mut total: u32 = 0;

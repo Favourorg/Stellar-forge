@@ -32,6 +32,10 @@
     "workbox-window": "^7.4.1"
   },
   "dependencies": {
+    "@commitlint/is-ignored": "^20.5.0",
+    "@commitlint/parse": "^20.5.0",
+    "@commitlint/rules": "^20.5.3",
+    "@commitlint/types": "^20.5.0",
     "@sentry/react": "^10.46.0"
   }
 }
