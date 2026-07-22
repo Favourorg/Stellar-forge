@@ -45,6 +45,7 @@ export interface FactoryState {
   baseFee: string // i128 from contract, represented as string for precision
   metadataFee: string // i128 from contract, represented as string for precision
   tokenCount: number // u32 from contract
+  whitelistEnabled: boolean // when true, only whitelisted addresses can create tokens
 }
 
 /**
@@ -86,6 +87,9 @@ export type ContractEventType =
   | 'pause'
   | 'unpause'
   | 'adm_upd'
+  | 'wl_add'
+  | 'wl_rm'
+  | 'wl_tog'
 
 export interface ContractEvent {
   id: string

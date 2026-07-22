@@ -1382,3 +1382,369 @@ fn test_migrate_preserves_state_fields() {
     assert_eq!(state.metadata_fee, 500);
     assert!(!state.paused);
 }
+
+// ── whitelist enforcement ─────────────────────────────────────────────────────
+
+/// Helper: enable whitelisting on the factory.
+fn enable_whitelist(s: &Setup) {
+    s.client.set_whitelist_enabled(&s.admin, &true);
+}
+
+/// Helper: add `addr` to the whitelist.
+fn whitelist_add(s: &Setup, addr: &Address) {
+    s.client.add_to_whitelist(&s.admin, addr);
+}
+
+#[test]
+fn test_whitelist_disabled_by_default() {
+    // Fresh factory must have whitelist_enabled = false so existing behaviour is unchanged.
+    let s = Setup::new();
+    assert!(!s.client.get_state().whitelist_enabled);
+}
+
+#[test]
+fn test_set_whitelist_enabled_toggles_flag() {
+    let s = Setup::new();
+    s.client.set_whitelist_enabled(&s.admin, &true);
+    assert!(s.client.get_state().whitelist_enabled);
+    s.client.set_whitelist_enabled(&s.admin, &false);
+    assert!(!s.client.get_state().whitelist_enabled);
+}
+
+#[test]
+fn test_set_whitelist_enabled_unauthorized() {
+    let s = Setup::new();
+    let stranger = Address::generate(&s.env);
+    assert_eq!(
+        s.client.try_set_whitelist_enabled(&stranger, &true),
+        Err(Ok(Error::Unauthorized))
+    );
+}
+
+/// With whitelisting disabled (default), any address can call create_token.
+/// This test verifies the baseline still holds after the feature is merged.
+#[test]
+fn test_create_token_allowed_when_whitelist_disabled() {
+    let s = Setup::new();
+    // whitelisting is off; caller NOT on the whitelist must still be blocked only
+    // by the fee guard — InsufficientFee, not NotWhitelisted.
+    let creator = Address::generate(&s.env);
+    let result = s.client.try_create_token(
+        &creator,
+        &s.salt(0),
+        &String::from_str(&s.env, "T"),
+        &String::from_str(&s.env, "T"),
+        &7,
+        &0_u128,
+        &1, // intentionally insufficient so the call fails predictably
+    );
+    assert_eq!(result, Err(Ok(Error::InsufficientFee)));
+}
+
+/// With whitelisting enabled, a non-whitelisted address receives NotWhitelisted.
+#[test]
+fn test_create_token_blocked_when_not_whitelisted() {
+    let s = Setup::new();
+    enable_whitelist(&s);
+
+    let creator = Address::generate(&s.env);
+    s.fund(&creator, 1_000);
+
+    let result = s.client.try_create_token(
+        &creator,
+        &s.salt(0),
+        &String::from_str(&s.env, "T"),
+        &String::from_str(&s.env, "T"),
+        &7,
+        &0_u128,
+        &1_000,
+    );
+    assert_eq!(result, Err(Ok(Error::NotWhitelisted)));
+}
+
+/// After adding a creator to the whitelist, the fee check (not NotWhitelisted)
+/// is the next gate — proving the whitelist check passed.
+#[test]
+fn test_create_token_whitelisted_creator_passes_whitelist_gate() {
+    let s = Setup::new();
+    enable_whitelist(&s);
+
+    let creator = Address::generate(&s.env);
+    whitelist_add(&s, &creator);
+
+    // Underfund so InsufficientFee (not NotWhitelisted) is the rejection reason.
+    let result = s.client.try_create_token(
+        &creator,
+        &s.salt(0),
+        &String::from_str(&s.env, "T"),
+        &String::from_str(&s.env, "T"),
+        &7,
+        &0_u128,
+        &1, // insufficient
+    );
+    // If this were NotWhitelisted the whitelist gate would have fired first;
+    // InsufficientFee means the creator cleared the whitelist gate.
+    assert_eq!(result, Err(Ok(Error::InsufficientFee)));
+}
+
+/// add → create (via fee path) → remove → create fails: the full lifecycle.
+/// Uses the insufficient-fee trick to confirm which gate fired.
+#[test]
+fn test_whitelist_add_remove_create_sequence() {
+    let s = Setup::new();
+    enable_whitelist(&s);
+    let creator = Address::generate(&s.env);
+
+    // Not whitelisted → NotWhitelisted.
+    assert_eq!(
+        s.client.try_create_token(
+            &creator,
+            &s.salt(0),
+            &String::from_str(&s.env, "T"),
+            &String::from_str(&s.env, "T"),
+            &7,
+            &0_u128,
+            &1_000,
+        ),
+        Err(Ok(Error::NotWhitelisted))
+    );
+
+    // Add to whitelist → passes whitelist gate (fails at fee because underfunded).
+    whitelist_add(&s, &creator);
+    assert_eq!(
+        s.client.try_create_token(
+            &creator,
+            &s.salt(0),
+            &String::from_str(&s.env, "T"),
+            &String::from_str(&s.env, "T"),
+            &7,
+            &0_u128,
+            &1, // insufficient on purpose
+        ),
+        Err(Ok(Error::InsufficientFee))
+    );
+
+    // Remove from whitelist → NotWhitelisted again.
+    s.client.remove_from_whitelist(&s.admin, &creator);
+    assert_eq!(
+        s.client.try_create_token(
+            &creator,
+            &s.salt(0),
+            &String::from_str(&s.env, "T"),
+            &String::from_str(&s.env, "T"),
+            &7,
+            &0_u128,
+            &1_000,
+        ),
+        Err(Ok(Error::NotWhitelisted))
+    );
+}
+
+/// Disabling whitelisting allows a previously un-whitelisted address to proceed.
+#[test]
+fn test_whitelist_disable_reopens_factory() {
+    let s = Setup::new();
+    enable_whitelist(&s);
+
+    let creator = Address::generate(&s.env);
+    s.fund(&creator, 1_000);
+
+    // Blocked while enabled.
+    assert_eq!(
+        s.client.try_create_token(
+            &creator,
+            &s.salt(0),
+            &String::from_str(&s.env, "T"),
+            &String::from_str(&s.env, "T"),
+            &7,
+            &0_u128,
+            &1_000,
+        ),
+        Err(Ok(Error::NotWhitelisted))
+    );
+
+    // Disable — same call now fails at fee, not whitelist.
+    s.client.set_whitelist_enabled(&s.admin, &false);
+    assert_eq!(
+        s.client.try_create_token(
+            &creator,
+            &s.salt(0),
+            &String::from_str(&s.env, "T"),
+            &String::from_str(&s.env, "T"),
+            &7,
+            &0_u128,
+            &1, // underfunded
+        ),
+        Err(Ok(Error::InsufficientFee))
+    );
+}
+
+// ── whitelist enforcement — batch path ───────────────────────────────────────
+
+/// With whitelisting enabled, a non-whitelisted address is blocked on batch too.
+#[test]
+fn test_batch_blocked_when_not_whitelisted() {
+    let s = Setup::new();
+    enable_whitelist(&s);
+
+    let creator = Address::generate(&s.env);
+    s.fund(&creator, 2_000);
+
+    let params = batch_vec(&s, &[batch_param(&s, 1, "TokenA", "TKA")]);
+    let result = s.client.try_create_tokens_batch(&creator, &params, &1_000);
+    assert_eq!(result, Err(Ok(Error::NotWhitelisted)));
+}
+
+/// A whitelisted creator clears the whitelist gate on batch (fails at next gate).
+#[test]
+fn test_batch_whitelisted_creator_passes_whitelist_gate() {
+    let s = Setup::new();
+    enable_whitelist(&s);
+
+    let creator = Address::generate(&s.env);
+    whitelist_add(&s, &creator);
+
+    let params = batch_vec(&s, &[batch_param(&s, 1, "TokenA", "TKA")]);
+    // Underfund so InsufficientFee (not NotWhitelisted) fires.
+    let result = s.client.try_create_tokens_batch(&creator, &params, &1);
+    assert_eq!(result, Err(Ok(Error::InsufficientFee)));
+}
+
+// ── whitelist events (behavioural smoke tests) ────────────────────────────────
+// Note: soroban-sdk 26.x does not expose env.events().all() in test mode
+// without a higher-level testutils harness.  We verify that each entrypoint
+// that emits an event completes successfully (i.e. does not panic or return
+// an error), which confirms the publish() call did not fail at runtime.
+
+#[test]
+fn test_add_to_whitelist_succeeds_and_persists() {
+    let s = Setup::new();
+    let addr = Address::generate(&s.env);
+    // Must complete without error (implicitly tests event publish path too).
+    s.client.add_to_whitelist(&s.admin, &addr);
+    assert!(s.client.is_whitelisted(&addr));
+}
+
+#[test]
+fn test_remove_from_whitelist_succeeds_and_clears() {
+    let s = Setup::new();
+    let addr = Address::generate(&s.env);
+    s.client.add_to_whitelist(&s.admin, &addr);
+    // Must complete without error.
+    s.client.remove_from_whitelist(&s.admin, &addr);
+    assert!(!s.client.is_whitelisted(&addr));
+}
+
+#[test]
+fn test_set_whitelist_enabled_succeeds_and_updates_state() {
+    let s = Setup::new();
+    // Must complete without error.
+    s.client.set_whitelist_enabled(&s.admin, &true);
+    assert!(s.client.get_state().whitelist_enabled);
+}
+
+#[test]
+fn test_add_to_whitelist_unauthorized() {
+    let s = Setup::new();
+    let stranger = Address::generate(&s.env);
+    let addr = Address::generate(&s.env);
+    assert_eq!(
+        s.client.try_add_to_whitelist(&stranger, &addr),
+        Err(Ok(Error::Unauthorized))
+    );
+}
+
+#[test]
+fn test_remove_from_whitelist_unauthorized() {
+    let s = Setup::new();
+    let stranger = Address::generate(&s.env);
+    let addr = Address::generate(&s.env);
+    assert_eq!(
+        s.client.try_remove_from_whitelist(&stranger, &addr),
+        Err(Ok(Error::Unauthorized))
+    );
+}
+
+#[test]
+fn test_is_whitelisted_returns_false_for_unknown() {
+    let s = Setup::new();
+    let addr = Address::generate(&s.env);
+    assert!(!s.client.is_whitelisted(&addr));
+}
+
+#[test]
+fn test_is_whitelisted_returns_true_after_add() {
+    let s = Setup::new();
+    let addr = Address::generate(&s.env);
+    s.client.add_to_whitelist(&s.admin, &addr);
+    assert!(s.client.is_whitelisted(&addr));
+}
+
+#[test]
+fn test_is_whitelisted_returns_false_after_remove() {
+    let s = Setup::new();
+    let addr = Address::generate(&s.env);
+    s.client.add_to_whitelist(&s.admin, &addr);
+    s.client.remove_from_whitelist(&s.admin, &addr);
+    assert!(!s.client.is_whitelisted(&addr));
+}
+
+// ── migrate to schema v2 ──────────────────────────────────────────────────────
+
+#[test]
+fn test_initialize_sets_whitelist_enabled_false() {
+    let s = Setup::new();
+    let state = s.client.get_state();
+    assert!(!state.whitelist_enabled, "fresh factory must have whitelist disabled");
+    assert_eq!(state.schema_version, CURRENT_SCHEMA_VERSION);
+}
+
+#[test]
+fn test_migrate_v1_to_v2_sets_whitelist_enabled_false() {
+    let s = Setup::new();
+    // Simulate a v1 deployment: set sv = 1 and schema_version = 1.
+    s.env.as_contract(&s.client.address, || {
+        let mut state: FactoryState = s.env.storage().instance().get(&DataKey::State).unwrap();
+        state.schema_version = 1;
+        state.whitelist_enabled = false; // as it would exist after v1 migration
+        s.env.storage().instance().set(&DataKey::State, &state);
+        s.env.storage().instance().set(&symbol_short!("sv"), &1u32);
+    });
+
+    s.client.migrate(&s.admin);
+
+    let state = s.client.get_state();
+    assert_eq!(state.schema_version, 2);
+    assert!(!state.whitelist_enabled);
+
+    s.env.as_contract(&s.client.address, || {
+        let sv: u32 = s
+            .env
+            .storage()
+            .instance()
+            .get(&symbol_short!("sv"))
+            .unwrap();
+        assert_eq!(sv, 2);
+    });
+}
+
+#[test]
+fn test_migrate_preserves_whitelist_enabled_flag() {
+    let s = Setup::new();
+    // Enable the flag, then migrate — it should be preserved.
+    s.client.set_whitelist_enabled(&s.admin, &true);
+    s.client.migrate(&s.admin);
+    // migrate re-loads and writes the flag; it should not overwrite a live value.
+    // (migrate v2 block sets whitelist_enabled = false when upgrading FROM v1 → v2.
+    //  When already on v2, the block is skipped entirely.)
+    assert!(s.client.get_state().whitelist_enabled);
+}
+
+#[test]
+fn test_migrate_v2_is_idempotent() {
+    let s = Setup::new();
+    s.client.migrate(&s.admin);
+    s.client.migrate(&s.admin);
+    assert_eq!(s.client.get_state().schema_version, CURRENT_SCHEMA_VERSION);
+    assert!(!s.client.get_state().whitelist_enabled);
+}

@@ -285,7 +285,7 @@ function scValToString(val: xdr.ScVal | undefined): string {
  * scripts/check-event-topic-drift.sh (CI).  If you add a new event to the
  * contract, add it here first — the CI script will catch any omission.
  *
- * Audit of all nine contract topics (lib.rs → frontend):
+ * Audit of all twelve contract topics (lib.rs → frontend):
  *   init      → 'init'      (factory init)
  *   created   → 'created'   (token deployed)
  *   meta      → 'meta'      (metadata URI set)
@@ -294,7 +294,10 @@ function scValToString(val: xdr.ScVal | undefined): string {
  *   fees      → 'fees'      (fees updated)
  *   pause     → 'pause'     (factory paused)
  *   unpause   → 'unpause'   (factory unpaused)
- *   adm_upd   → 'adm_upd'  (admin rotated)  ← was incorrectly 'admin_update'
+ *   adm_upd   → 'adm_upd'  (admin rotated)
+ *   wl_add    → 'wl_add'   (address added to whitelist)
+ *   wl_rm     → 'wl_rm'    (address removed from whitelist)
+ *   wl_tog    → 'wl_tog'   (whitelist enforcement toggled)
  */
 export const CONTRACT_TOPIC_MAP: Record<string, ContractEventType> = {
   init: 'init',
@@ -306,6 +309,9 @@ export const CONTRACT_TOPIC_MAP: Record<string, ContractEventType> = {
   pause: 'pause',
   unpause: 'unpause',
   adm_upd: 'adm_upd',
+  wl_add: 'wl_add',
+  wl_rm: 'wl_rm',
+  wl_tog: 'wl_tog',
 } as const
 
 /** Allow-list of recognised event types, derived from CONTRACT_TOPIC_MAP. */
@@ -359,6 +365,15 @@ export async function parseRpcEvent(raw: RpcEventResponse): Promise<ContractEven
       case 'adm_upd':
         data.currentAdmin = scValToString(items[0])
         data.newAdmin = scValToString(items[1])
+        break
+      case 'wl_add':
+        data.address = scValToString(items[0])
+        break
+      case 'wl_rm':
+        data.address = scValToString(items[0])
+        break
+      case 'wl_tog':
+        data.enabled = scValToString(items[0])
         break
     }
 
@@ -735,6 +750,7 @@ export class StellarService {
         baseFee: native.base_fee?.toString() ?? '0',
         metadataFee: native.metadata_fee?.toString() ?? '0',
         tokenCount: Number(native.token_count ?? 0),
+        whitelistEnabled: Boolean(native.whitelist_enabled ?? false),
       }
     } catch (err) {
       const appErr = toAppError(err)
@@ -805,6 +821,50 @@ export class StellarService {
         contractId: factoryContractId,
         functionName,
         params: { baseFee: params.baseFee, metadataFee: params.metadataFee },
+      })
+      throw new Error(appErr.message)
+    }
+  }
+
+  // ── setWhitelistEnabled ──────────────────────────────────────────────────────
+
+  /**
+   * Invoke `set_whitelist_enabled` on the factory contract.
+   * When `enabled` is true, only whitelisted addresses may call
+   * `create_token` / `create_tokens_batch`.
+   */
+  async setWhitelistEnabled(enabled: boolean): Promise<string> {
+    const functionName = 'setWhitelistEnabled'
+    try {
+      const contractId = STELLAR_CONFIG.factoryContractId
+      if (!contractId) throw new Error('Factory contract ID is not configured')
+
+      const sourceAddress = walletService.getConnectedAddress()
+      if (!sourceAddress) throw new Error('Wallet not connected')
+
+      const server = getRpcServer(this.network)
+      const contract = new Contract(contractId)
+
+      const tx = (await buildTxBuilder(server, sourceAddress, this.network))
+        .addOperation(
+          contract.call(
+            'set_whitelist_enabled',
+            new Address(sourceAddress).toScVal(),
+            nativeToScVal(enabled, { type: 'bool' }),
+          ),
+        )
+        .setTimeout(30)
+        .build()
+
+      return await simulateAndSubmit(server, tx, this.network)
+    } catch (err) {
+      const appErr = toAppError(err)
+      const factoryContractId = STELLAR_CONFIG.factoryContractId ?? 'unknown'
+      captureContractError(err instanceof Error ? err : new Error(String(err)), {
+        network: this.network,
+        contractId: factoryContractId,
+        functionName,
+        params: { enabled },
       })
       throw new Error(appErr.message)
     }

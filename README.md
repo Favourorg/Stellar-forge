@@ -785,6 +785,7 @@ The factory contract supports in-place WASM upgrades without redeploying or migr
 | Version | Change |
 |---------|--------|
 | 1 | Initial versioned schema — added `schema_version` field to `FactoryState` |
+| 2 | Added `whitelist_enabled: bool` to `FactoryState`; new `set_whitelist_enabled` entrypoint; `create_token` and `create_tokens_batch` enforce the whitelist gate when enabled |
 
 ### Adding a new migration (version N → N+1)
 

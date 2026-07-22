@@ -170,6 +170,27 @@ Replace the factory code in place while preserving state.
 
 Incrementally upgrades state between schema versions. Idempotent.
 
+### `add_to_whitelist(admin, address)` / `remove_from_whitelist(admin, address)`
+
+Add or remove an address from the factory whitelist. Emits `wl_add` / `wl_rm` events. Only the factory admin may call these.
+
+### `set_whitelist_enabled(admin, enabled)`
+
+Toggle whitelist enforcement on or off. When `enabled = true`, only addresses that have been added to the whitelist via `add_to_whitelist` may call `create_token` or `create_tokens_batch` — attempts from non-whitelisted addresses return `Error::NotWhitelisted` (code 18). Emits a `wl_tog` event.
+
+When `enabled = false` (the default after `initialize` and after `migrate`), the factory is open to all creators and the whitelist contents are ignored.
+
+**Decision: mint_tokens and set_metadata are not gated.**  
+These operations are only available to existing token creators (the `owner` of a deployed token contract), so they already passed the whitelist gate at creation time. Gating them again would lock out operators who created tokens before whitelisting was enabled.
+
+### `is_whitelisted(address) → bool`
+
+Read-only: returns `true` if `address` is on the whitelist.
+
+| Param | Type | Description |
+|---|---|---|
+| `address` | `Address` | Address to query. |
+
 ## Errors
 
 | Code | Symbol | When |
@@ -191,6 +212,7 @@ Incrementally upgrades state between schema versions. Idempotent.
 | 15 | `InvalidDecimals` | decimals outside `[0, 18]` |
 | 16 | `MaxSupplyExceeded` | mint would exceed cap |
 | 17 | `InvalidFeeSplit` | `set_fee_split` map bps do not sum to 10_000 |
+| 18 | `NotWhitelisted` | creator is not on the whitelist when enforcement is enabled |
 
 ## Events
 
@@ -207,6 +229,9 @@ The contract emits Soroban events on a `(factory, action)` topic. The frontend p
 | `pause` | `(admin)` | `pause` |
 | `unpause` | `(admin)` | `unpause` |
 | `adm_upd` | `(current_admin, new_admin)` | `update_admin` |
+| `wl_add` | `(address)` | `add_to_whitelist` |
+| `wl_rm` | `(address)` | `remove_from_whitelist` |
+| `wl_tog` | `(enabled)` | `set_whitelist_enabled` |
 
 ## Batch creation UI
 

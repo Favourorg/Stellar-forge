@@ -54,7 +54,7 @@ pub struct TokenInfo {
 
 /// Current schema version written by `initialize` and bumped by `migrate`.
 /// Increment this constant whenever `FactoryState` gains new fields.
-pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 
 #[contracttype]
 #[derive(Clone)]
@@ -72,6 +72,9 @@ pub struct FactoryState {
     /// Schema version of this state struct. Used by `migrate` to apply
     /// incremental upgrades without data loss.
     pub schema_version: u32,
+    /// When true, only addresses on the whitelist may call `create_token` or
+    /// `create_tokens_batch`.
+    pub whitelist_enabled: bool,
 }
 
 #[contracterror]
@@ -96,6 +99,8 @@ pub enum Error {
     MaxSupplyExceeded = 16,
     /// Fee split basis points do not sum to 10_000
     InvalidFeeSplit = 17,
+    /// Caller is not on the whitelist when whitelist enforcement is enabled
+    NotWhitelisted = 18,
 }
 
 #[contract]
@@ -137,6 +142,7 @@ impl TokenFactory {
             base_fee,
             metadata_fee,
             token_count: 0,
+            whitelist_enabled: false,
             schema_version: CURRENT_SCHEMA_VERSION,
         };
 
@@ -223,6 +229,10 @@ impl TokenFactory {
         env.storage()
             .instance()
             .set(&Self::whitelist_key(&address), &true);
+        env.events().publish(
+            (symbol_short!("factory"), symbol_short!("wl_add")),
+            (address,),
+        );
         Ok(())
     }
 
@@ -235,6 +245,10 @@ impl TokenFactory {
         env.storage()
             .instance()
             .remove(&Self::whitelist_key(&address));
+        env.events().publish(
+            (symbol_short!("factory"), symbol_short!("wl_rm")),
+            (address,),
+        );
         Ok(())
     }
 
@@ -243,6 +257,21 @@ impl TokenFactory {
             .instance()
             .get(&Self::whitelist_key(&address))
             .unwrap_or(false)
+    }
+
+    pub fn set_whitelist_enabled(env: Env, admin: Address, enabled: bool) -> Result<(), Error> {
+        admin.require_auth();
+        let mut state = Self::load_state(&env)?;
+        if state.admin != admin {
+            return Err(Error::Unauthorized);
+        }
+        state.whitelist_enabled = enabled;
+        Self::save_state(&env, &state);
+        env.events().publish(
+            (symbol_short!("factory"), symbol_short!("wl_tog")),
+            (enabled,),
+        );
+        Ok(())
     }
 
     fn require_not_paused(env: &Env) -> Result<(), Error> {
@@ -319,6 +348,15 @@ impl TokenFactory {
         if fee_payment < state.base_fee {
             state.locked = false;
             return Err(Error::InsufficientFee);
+        }
+        // Whitelist gate: when enabled, only whitelisted addresses may create tokens.
+        if state.whitelist_enabled {
+            let wl_key = Self::whitelist_key(&creator);
+            let is_wl: bool = env.storage().instance().get(&wl_key).unwrap_or(false);
+            if !is_wl {
+                state.locked = false;
+                return Err(Error::NotWhitelisted);
+            }
         }
         // initial_supply is u128 but token::mint accepts i128.
         // Values > i128::MAX silently wrap via `as i128`; reject them early.
@@ -523,6 +561,14 @@ impl TokenFactory {
             .ok_or(Error::ArithmeticOverflow)?;
         if fee_payment < total_fee {
             return Err(Error::InsufficientFee);
+        }
+        // Whitelist gate: when enabled, only whitelisted addresses may create tokens.
+        if state.whitelist_enabled {
+            let wl_key = Self::whitelist_key(&creator);
+            let is_wl: bool = env.storage().instance().get(&wl_key).unwrap_or(false);
+            if !is_wl {
+                return Err(Error::NotWhitelisted);
+            }
         }
 
         state.locked = true;
@@ -856,15 +902,22 @@ impl TokenFactory {
             return Err(Error::Unauthorized);
         }
         let sv_key = symbol_short!("sv");
-        let on_chain_version: u32 = env.storage().instance().get(&sv_key).unwrap_or(0);
-        if on_chain_version < CURRENT_SCHEMA_VERSION {
+        let mut on_chain_version: u32 = env.storage().instance().get(&sv_key).unwrap_or(0);
+        if on_chain_version < 1 {
             // Version 1: ensure schema_version field is set
-            let mut s = state;
-            s.schema_version = CURRENT_SCHEMA_VERSION;
+            let mut s = state.clone();
+            s.schema_version = 1;
             Self::save_state(&env, &s);
-            env.storage()
-                .instance()
-                .set(&sv_key, &CURRENT_SCHEMA_VERSION);
+            env.storage().instance().set(&sv_key, &1u32);
+            on_chain_version = 1;
+        }
+        if on_chain_version < 2 {
+            // Version 2: add whitelist_enabled field (defaults to false)
+            let mut s = Self::load_state(&env)?;
+            s.whitelist_enabled = false;
+            s.schema_version = 2;
+            Self::save_state(&env, &s);
+            env.storage().instance().set(&sv_key, &2u32);
         }
         Ok(())
     }
