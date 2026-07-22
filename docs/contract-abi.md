@@ -115,6 +115,21 @@ If you need to deploy more than 20 tokens, split them into multiple sequential `
 
 Mint `amount` of `token_address` to `to`. Rejects when a `max_supply` cap would be exceeded (`Error::MaxSupplyExceeded`).
 
+#### Supply cap accounting
+
+`max_supply` (set per-token via `create_tokens_batch`'s `BatchTokenParams.max_supply`) is enforced against a running counter stored under the instance key `(token_address, "supply")`, not against the token's live balance. Every successful `mint_tokens` call adds `amount` to this counter and rejects the call if the result would exceed the cap.
+
+**What counts toward the cap:** the token's `initial_supply` (minted at creation, before the token even has a `TokenInfo` entry to check against) **plus** every amount minted afterward via `mint_tokens`. As of the fix for issue #1006, `deploy_one` seeds the counter with `initial_supply` at creation time whenever `max_supply` is set, so a token created with `initial_supply == max_supply` can never be minted again — any `mint_tokens` call on it fails with `MaxSupplyExceeded`.
+
+`burn` does **not** decrement this counter — burning tokens frees up balance for the holder but does not restore headroom under the cap. The cap therefore bounds _cumulative_ mints (initial + all `mint_tokens` calls), not net circulating supply.
+
+**Back-fill for tokens created before this fix:** capped tokens deployed by a factory binary older than this fix have an under-seeded (or entirely absent) supply counter — `mint_tokens` would have read it as `0` regardless of `initial_supply`, letting the cap be bypassed. The factory has no on-chain record of a pre-fix token's true `initial_supply` to recover it automatically (`TokenInfo` never stored it, and standard SEP-41 tokens don't expose a `total_supply` query), so this cannot be fixed by `migrate()` alone. Operators must:
+
+1. Reconstruct the token's true cumulative minted amount off-chain — the most reliable source is summing every `mint` event the token contract itself has emitted since deployment (queryable via RPC/Horizon `get_events`, independent of what the factory stored).
+2. Call `backfill_capped_supply(admin, token_address, verified_supply)` once per affected token with that reconstructed value.
+
+`backfill_capped_supply` is admin-only, requires the token to have `max_supply` configured, rejects a `verified_supply` outside `[0, max_supply]`, and can only be applied once per token (subsequent calls fail with `Error::AlreadyBackfilled`) — it cannot be used as a repeated backdoor to rewrite tracked supply.
+
 ### `burn(token_address, from, amount)`
 
 Burn `amount` of `token_address` from `from`'s balance. Honors `burn_enabled`; rejects when disabled.
@@ -223,10 +238,34 @@ Replace the factory code in place while preserving state.
 
 ### `migrate(admin)`
 
-Incrementally upgrades state between schema versions. Idempotent.
+Incrementally upgrades state between schema versions. Idempotent. As of schema version 2, this only bumps the version marker for the issue #1006 max-supply fix — it does not automatically back-fill any capped token's supply counter (see `backfill_capped_supply` below and "Supply cap accounting" above).
+
+### `backfill_capped_supply(admin, token_address, verified_supply)`
+
+One-time back-fill of the tracked-supply counter for a capped token created before the issue #1006 fix. See "Supply cap accounting" above for the full procedure. Admin-only; fails with `Error::TokenNotFound` if the token doesn't exist, `Error::InvalidParameters` if the token has no `max_supply` or `verified_supply` is outside `[0, max_supply]`, and `Error::AlreadyBackfilled` if already applied to this token.
 
 ## Errors
 
+| Code | Symbol                     | When                                                    |
+| ---- | -------------------------- | ------------------------------------------------------- |
+| 1    | `InsufficientFee`          | `fee_payment < required_fee`                            |
+| 2    | `Unauthorized`             | caller is not allowed for this operation                |
+| 3    | `InvalidParameters`        | argument out of range or malformed                      |
+| 4    | `TokenNotFound`            | unknown token index or address                          |
+| 5    | `MetadataAlreadySet`       | `set_metadata` called twice                             |
+| 6    | `AlreadyInitialized`       | double-initialize attempt                               |
+| 7    | `BurnAmountExceedsBalance` | `burn` > balance                                        |
+| 8    | `BurnNotEnabled`           | burning on a token that has been disabled               |
+| 9    | `InvalidBurnAmount`        | zero or negative burn                                   |
+| 10   | `ContractPaused`           | operation blocked because factory is paused             |
+| 11   | `Reentrancy`               | concurrent reentrant call detected                      |
+| 12   | `ArithmeticOverflow`       | checked-op failed                                       |
+| 13   | `StateNotFound`            | factory not yet initialized                             |
+| 14   | `InvalidTokenParams`       | name/symbol validation failed during token creation     |
+| 15   | `InvalidDecimals`          | decimals outside `[0, 18]`                              |
+| 16   | `MaxSupplyExceeded`        | mint would exceed cap                                   |
+| 17   | `InvalidFeeSplit`          | `set_fee_split` map bps do not sum to 10_000            |
+| 18   | `AlreadyBackfilled`        | `backfill_capped_supply` already applied for this token |
 | Code | Symbol | When |
 |---|---|---|
 | 1 | `InsufficientFee` | `fee_payment < required_fee` |
@@ -254,6 +293,7 @@ The contract emits Soroban events on a `(factory, action)` topic. The frontend p
 
 | Action    | Payload                                  | Trigger                                |
 | --------- | ---------------------------------------- | -------------------------------------- |
+| `init`    | `(admin)`                                | `initialize`                           |
 | `init`    | `(admin)`                                | `__constructor`                        |
 | `created` | `(token_address, creator, name, symbol)` | `create_token` / `create_tokens_batch` |
 | `meta`    | `(token_address, metadata_uri)`          | `set_metadata`                         |

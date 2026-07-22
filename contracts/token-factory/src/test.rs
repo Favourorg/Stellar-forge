@@ -2255,7 +2255,12 @@ fn test_migrate_upgrades_pre_versioned_state() {
 
     s.client.migrate(&s.admin);
 
-    assert_eq!(s.client.get_state().schema_version, 1);
+    // A single `migrate` call walks through every pending step, so a
+    // contract starting at sv = 0 lands directly on CURRENT_SCHEMA_VERSION.
+    assert_eq!(
+        s.client.get_state().schema_version,
+        CURRENT_SCHEMA_VERSION
+    );
     s.env.as_contract(&s.client.address, || {
         let sv: u32 = s
             .env
@@ -2263,7 +2268,7 @@ fn test_migrate_upgrades_pre_versioned_state() {
             .instance()
             .get(&symbol_short!("sv"))
             .unwrap();
-        assert_eq!(sv, 1);
+        assert_eq!(sv, CURRENT_SCHEMA_VERSION);
     });
 }
 
@@ -2280,72 +2285,12 @@ fn test_migrate_preserves_state_fields() {
     assert!(!state.paused);
 }
 
-// ── Issue #919: synthetic multi-step migration tests ──────────────────────────
+// ── Issue #1006: real version-2 migration (max-supply accounting fix) ─────────
 //
-// These tests prove that the `migrate` framework composes correctly across
-// more than one version transition.  Because CURRENT_SCHEMA_VERSION is 1 in
-// production, we cannot add a real version-2 schema change here without
-// shipping incomplete work.  Instead we simulate the 1→2 step entirely
-// inside `#[cfg(test)]`-guarded helpers:
-//
-//  1. A constant `SYNTHETIC_V2: u32 = 2` stands in for a future version.
-//  2. A helper `apply_synthetic_v2_migration` replicates what a real migrate()
-//     step would do: it reads on_chain_version, applies changes when
-//     on_chain_version < 2, bumps on_chain_version to 2, and writes it back.
-//     It also writes a marker key "v2ok" = true so tests can assert the step ran.
-//  3. The three tests below call both the real migrate() and the synthetic
-//     helper in sequence, then assert the combined end-state is correct.
-//
-// This scaffolding is INTENTIONALLY not a real schema change.  Delete or
-// replace it when a genuine version-2 migration lands.
-
-#[cfg(test)]
-const SYNTHETIC_V2: u32 = 2;
-
-/// Simulate the body of what a `migrate` step for version 2 would do.
-///
-/// A real version-2 step inside `migrate` in lib.rs would look like:
-///
-/// ```
-/// if on_chain_version < 2 {
-///     // … apply changes to FactoryState, write new storage keys, etc. …
-///     on_chain_version = 2;
-///     env.storage().instance().set(&sv_key, &on_chain_version);
-/// }
-/// ```
-///
-/// Here we replicate that logic outside the contract by directly manipulating
-/// storage through `env.as_contract`, so the test does not require a redeployment.
-#[cfg(test)]
-fn apply_synthetic_v2_migration(s: &Setup) {
-    s.env.as_contract(&s.client.address, || {
-        let sv_key = symbol_short!("sv");
-        let on_chain_version: u32 = s
-            .env
-            .storage()
-            .instance()
-            .get(&sv_key)
-            .unwrap_or(0);
-
-        // Only apply if we are still below version 2 — mirrors the `if` guard.
-        if on_chain_version < SYNTHETIC_V2 {
-            // Synthetic "schema change": write a marker key that tests can assert.
-            // A real step would instead mutate FactoryState fields, add new
-            // storage keys, or migrate existing values.
-            s.env
-                .storage()
-                .instance()
-                .set(&symbol_short!("v2ok"), &true);
-
-            // Bump on_chain_version — this is the critical step that prevents
-            // the same block from running again on a subsequent migrate() call.
-            s.env
-                .storage()
-                .instance()
-                .set(&sv_key, &SYNTHETIC_V2);
-        }
-    });
-}
+// `CURRENT_SCHEMA_VERSION` is now 2. These tests exercise the real `migrate`
+// v2 step (superseding the synthetic scaffolding this section used to carry
+// while version 2 was still hypothetical) and the `backfill_capped_supply`
+// entrypoint it documents.
 
 /// Helper: read the "sv" storage key directly from contract storage.
 #[cfg(test)]
@@ -2359,42 +2304,13 @@ fn read_sv(s: &Setup) -> u32 {
     })
 }
 
-/// Helper: read the synthetic v2 marker key from contract storage.
-#[cfg(test)]
-fn read_v2ok(s: &Setup) -> bool {
-    s.env.as_contract(&s.client.address, || {
-        s.env
-            .storage()
-            .instance()
-            .get(&symbol_short!("v2ok"))
-            .unwrap_or(false)
-    })
-}
-
-/// Issue #919 — Task 2 + 3: seed at version 0, assert migrate walks 0→1→2.
-///
-/// This is the most important test: it verifies that when a contract is two
-/// versions behind (sv = 0), a single `migrate` + synthetic-v2 call sequence
-/// correctly walks through both steps, ending at sv = 2 with every step's
-/// side-effects applied.
-///
-/// Step-by-step:
-///   1. Seed sv = 0 (pre-versioned deployment).
-///   2. Call real `migrate()` → applies 0→1 step, sv becomes 1.
-///   3. Call synthetic v2 helper → applies 1→2 step, sv becomes 2, v2ok = true.
-///   4. Assert final sv == 2, schema_version == 1 (real field), v2ok == true.
-///
-/// The key invariant: the 0→1 step must NOT have prevented the 1→2 step from
-/// running.  If `on_chain_version` were not updated between steps (the bug the
-/// issue describes), the synthetic helper would see sv = 0 after migrate()
-/// returned (because migrate() would have set the field in state but sv_key
-/// might not have been flushed), or the helper's guard would be off.  The test
-/// catching sv == 2 AND v2ok == true together proves both steps ran.
+/// A contract starting two versions behind (sv = 0) must walk through both
+/// the 0→1 and 1→2 steps in a single `migrate` call, landing directly on
+/// `CURRENT_SCHEMA_VERSION`.
 #[test]
-fn test_migrate_v2_from_version_0_walks_both_steps() {
+fn test_migrate_from_version_0_walks_all_steps() {
     let s = Setup::new();
 
-    // Seed pre-versioned state: sv = 0, schema_version = 0.
     s.env.as_contract(&s.client.address, || {
         let mut state: FactoryState = s.env.storage().instance().get(&DataKey::State).unwrap();
         state.schema_version = 0;
@@ -2403,130 +2319,144 @@ fn test_migrate_v2_from_version_0_walks_both_steps() {
     });
     assert_eq!(read_sv(&s), 0, "precondition: sv must be 0 before migrate");
 
-    // Step 1: real migrate() — applies 0→1.
     s.client.migrate(&s.admin);
-    assert_eq!(read_sv(&s), 1, "after real migrate: sv must be 1");
+
+    assert_eq!(read_sv(&s), CURRENT_SCHEMA_VERSION);
     assert_eq!(
         s.client.get_state().schema_version,
-        1,
-        "after real migrate: schema_version field must be 1"
-    );
-
-    // Step 2: synthetic 1→2 migration.
-    apply_synthetic_v2_migration(&s);
-    assert_eq!(read_sv(&s), SYNTHETIC_V2, "after v2 step: sv must be 2");
-    assert!(
-        read_v2ok(&s),
-        "after v2 step: v2ok marker must be set (proves the 1→2 step ran)"
-    );
-
-    // Core state fields must be intact throughout.
-    let state = s.client.get_state();
-    assert_eq!(state.admin, s.admin, "admin must be preserved after 0→1→2");
-    assert_eq!(
-        state.treasury, s.treasury,
-        "treasury must be preserved after 0→1→2"
-    );
-    assert_eq!(
-        state.base_fee, 1_000,
-        "base_fee must be preserved after 0→1→2"
+        CURRENT_SCHEMA_VERSION
     );
 }
 
-/// Issue #919 — Task 4: seed at version 1, assert only the 1→2 step runs.
-///
-/// Verifies that when a contract is already at version 1 (the 0→1 step was
-/// applied in a prior upgrade cycle), calling migrate() is a no-op for the
-/// 0→1 block, and only the 1→2 synthetic step runs.
-///
-/// This guards against the "re-runs earlier steps" failure mode: if the
-/// `if on_chain_version < 1` guard were broken, running migrate() on an
-/// already-versioned contract would overwrite state unnecessarily.
+/// A contract already at version 1 must only run the 1→2 step — the 0→1
+/// block must not re-run or otherwise disturb state.
 #[test]
-fn test_migrate_v2_from_version_1_skips_v1_step() {
+fn test_migrate_from_version_1_only_runs_v2_step() {
     let s = Setup::new();
 
-    // Fresh Setup already has sv = 1 (set by initialize).
-    assert_eq!(read_sv(&s), 1, "precondition: sv must be 1 after initialize");
+    s.env.as_contract(&s.client.address, || {
+        let mut state: FactoryState = s.env.storage().instance().get(&DataKey::State).unwrap();
+        state.schema_version = 1;
+        s.env.storage().instance().set(&DataKey::State, &state);
+        s.env.storage().instance().set(&symbol_short!("sv"), &1u32);
+    });
 
-    // Calling migrate() on an already-at-v1 contract must be a no-op.
     s.client.migrate(&s.admin);
-    assert_eq!(
-        read_sv(&s),
-        1,
-        "migrate on v1 state must not bump sv beyond 1"
-    );
-    assert!(
-        !read_v2ok(&s),
-        "v2ok must not be set before the synthetic v2 step runs"
-    );
 
-    // Now apply the synthetic 1→2 step.
-    apply_synthetic_v2_migration(&s);
-    assert_eq!(
-        read_sv(&s),
-        SYNTHETIC_V2,
-        "after v2 step: sv must be 2"
-    );
-    assert!(
-        read_v2ok(&s),
-        "v2ok must be set after the synthetic v2 step"
-    );
-
-    // Core state fields must be intact.
-    let state = s.client.get_state();
-    assert_eq!(state.admin, s.admin);
-    assert_eq!(state.treasury, s.treasury);
-    assert_eq!(state.base_fee, 1_000);
+    assert_eq!(read_sv(&s), 2);
+    assert_eq!(s.client.get_state().schema_version, 2);
 }
 
-/// Issue #919 — Task 5: migrate is idempotent at version 2.
-///
-/// Calling migrate() and the synthetic v2 helper a second time after the
-/// contract is already at sv = 2 must be a complete no-op — no state changes,
-/// no duplicate marker writes, no errors.
-///
-/// This is the multi-step analogue of the existing `test_migrate_is_idempotent`
-/// test that only covers v1.
+/// Calling `migrate` again once already at `CURRENT_SCHEMA_VERSION` must be a
+/// complete no-op.
 #[test]
-fn test_migrate_v2_idempotent_at_version_2() {
+fn test_migrate_v2_idempotent_at_current_version() {
     let s = Setup::new();
 
-    // Bring contract to v2.
-    s.client.migrate(&s.admin); // no-op for v1 (already there), no-op for v2
-    apply_synthetic_v2_migration(&s); // applies 1→2
-
-    assert_eq!(read_sv(&s), SYNTHETIC_V2, "precondition: sv must be 2");
-    assert!(read_v2ok(&s), "precondition: v2ok must be set");
-
-    // Snapshot state before second run.
+    s.client.migrate(&s.admin);
     let state_before = s.client.get_state();
 
-    // Second invocation — everything must be idempotent.
     s.client.migrate(&s.admin);
-    apply_synthetic_v2_migration(&s);
-
-    assert_eq!(
-        read_sv(&s),
-        SYNTHETIC_V2,
-        "sv must still be 2 after second migration run"
-    );
-    assert!(
-        read_v2ok(&s),
-        "v2ok must still be set after second migration run"
-    );
-
     let state_after = s.client.get_state();
-    assert_eq!(
-        state_after.schema_version, state_before.schema_version,
-        "schema_version must be unchanged after idempotent re-run"
-    );
-    assert_eq!(
-        state_after.admin, state_before.admin,
-        "admin must be unchanged after idempotent re-run"
-    );
-    assert_eq!(
-        state_after.base_fee, state_before.base_fee,
-        "base_fee must be unchanged after idempotent re-run"
-    );
+
+    assert_eq!(read_sv(&s), CURRENT_SCHEMA_VERSION);
+    assert_eq!(state_after.schema_version, state_before.schema_version);
+    assert_eq!(state_after.admin, state_before.admin);
+    assert_eq!(state_after.base_fee, state_before.base_fee);
+}
+
+// ── backfill_capped_supply ──────────────────────────────────────────────────
+
+#[test]
+fn test_backfill_capped_supply_seeds_untracked_cap() {
+    let s = Setup::new();
+    let admin = Address::generate(&s.env);
+    // `seed_token` simulates a pre-fix capped token: `max_supply` is set but
+    // no `supply` key was ever written, exactly as `deploy_one` left it
+    // before the issue #1006 fix.
+    let token_addr = seed_token(&s, &admin, true, Some(1_000));
+
+    s.client
+        .backfill_capped_supply(&s.admin, &token_addr, &1_000);
+
+    // A backfilled token at its cap must reject any further mint.
+    s.fund(&admin, 1_000);
+    let recipient = Address::generate(&s.env);
+    let result = s
+        .client
+        .try_mint_tokens(&token_addr, &admin, &recipient, &1, &1_000);
+    assert_eq!(result, Err(Ok(Error::MaxSupplyExceeded)));
+}
+
+#[test]
+fn test_backfill_capped_supply_allows_headroom_mint() {
+    let s = Setup::new();
+    let admin = Address::generate(&s.env);
+    let token_addr = seed_token(&s, &admin, true, Some(1_000));
+
+    // initial_supply = cap - 10, reconstructed off-chain.
+    s.client
+        .backfill_capped_supply(&s.admin, &token_addr, &990);
+
+    s.fund(&admin, 2_000);
+    let recipient = Address::generate(&s.env);
+    // Exactly the remaining headroom succeeds.
+    s.client
+        .mint_tokens(&token_addr, &admin, &recipient, &10, &1_000);
+    // One more must fail.
+    let result = s
+        .client
+        .try_mint_tokens(&token_addr, &admin, &recipient, &1, &1_000);
+    assert_eq!(result, Err(Ok(Error::MaxSupplyExceeded)));
+}
+
+#[test]
+fn test_backfill_capped_supply_unauthorized() {
+    let s = Setup::new();
+    let admin = Address::generate(&s.env);
+    let token_addr = seed_token(&s, &admin, true, Some(1_000));
+    let stranger = Address::generate(&s.env);
+
+    let result = s
+        .client
+        .try_backfill_capped_supply(&stranger, &token_addr, &500);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+}
+
+#[test]
+fn test_backfill_capped_supply_rejects_token_without_cap() {
+    let s = Setup::new();
+    let admin = Address::generate(&s.env);
+    let token_addr = seed_token(&s, &admin, true, None);
+
+    let result = s
+        .client
+        .try_backfill_capped_supply(&s.admin, &token_addr, &500);
+    assert_eq!(result, Err(Ok(Error::InvalidParameters)));
+}
+
+#[test]
+fn test_backfill_capped_supply_rejects_value_above_cap() {
+    let s = Setup::new();
+    let admin = Address::generate(&s.env);
+    let token_addr = seed_token(&s, &admin, true, Some(1_000));
+
+    let result = s
+        .client
+        .try_backfill_capped_supply(&s.admin, &token_addr, &1_001);
+    assert_eq!(result, Err(Ok(Error::InvalidParameters)));
+}
+
+#[test]
+fn test_backfill_capped_supply_cannot_be_applied_twice() {
+    let s = Setup::new();
+    let admin = Address::generate(&s.env);
+    let token_addr = seed_token(&s, &admin, true, Some(1_000));
+
+    s.client
+        .backfill_capped_supply(&s.admin, &token_addr, &500);
+    let result = s
+        .client
+        .try_backfill_capped_supply(&s.admin, &token_addr, &600);
+    assert_eq!(result, Err(Ok(Error::AlreadyBackfilled)));
 }

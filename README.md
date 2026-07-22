@@ -948,9 +948,10 @@ The factory contract supports in-place WASM upgrades without redeploying or migr
 
 `FactoryState` carries a `schema_version: u32` field. The constant `CURRENT_SCHEMA_VERSION` in `lib.rs` is the source of truth. `__constructor` stamps the current version on every fresh deployment. `migrate` reads the on-chain version from a standalone `"sv"` storage key and applies each pending upgrade step in order, making it safe to call multiple times (idempotent).
 
-| Version | Change                                                                    |
-| ------- | ------------------------------------------------------------------------- |
-| 1       | Initial versioned schema — added `schema_version` field to `FactoryState` |
+| Version | Change                                                                                                                                                                                                                                                                                                                                  |
+| ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1       | Initial versioned schema — added `schema_version` field to `FactoryState`                                                                                                                                                                                                                                                               |
+| 2       | Max-supply accounting fix (issue #1006) — `deploy_one` now seeds the per-token supply counter with `initial_supply`; version bump only, no `FactoryState` field changes. Pre-fix capped tokens must be back-filled individually via `backfill_capped_supply` (see [docs/contract-abi.md](./docs/contract-abi.md#supply-cap-accounting)) |
 
 ### Adding a new migration (version N → N+1)
 

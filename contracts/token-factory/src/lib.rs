@@ -54,7 +54,7 @@ pub struct TokenInfo {
 
 /// Current schema version written by `initialize` and bumped by `migrate`.
 /// Increment this constant whenever `FactoryState` gains new fields.
-pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 
 #[contracttype]
 #[derive(Clone)]
@@ -138,6 +138,8 @@ pub enum Error {
     MaxSupplyExceeded = 16,
     /// Fee split basis points do not sum to 10_000
     InvalidFeeSplit = 17,
+    /// `backfill_capped_supply` already applied for this token
+    AlreadyBackfilled = 18,
     /// Fee split recipient count exceeds `MAX_FEE_SPLIT_RECIPIENTS`
     TooManyFeeSplitRecipients = 18,
 }
@@ -557,6 +559,17 @@ impl TokenFactory {
 
         if p.initial_supply > 0 {
             token::StellarAssetClient::new(env, &token_address).mint(creator, &p.initial_supply);
+        }
+
+        // Seed the tracked-supply counter with `initial_supply` so `mint_tokens`'s
+        // cap check accounts for tokens already minted at creation time.
+        // Without this, a capped token created with `initial_supply == max_supply`
+        // could still be minted for another full `max_supply`, since the counter
+        // (which `mint_tokens` reads via `.unwrap_or(0)`) would otherwise start
+        // at zero regardless of how much was minted here (issue #1006).
+        if p.max_supply.is_some() {
+            let supply_key = (&token_address, symbol_short!("supply"));
+            env.storage().instance().set(&supply_key, &p.initial_supply);
         }
 
         state.token_count = state
@@ -1078,6 +1091,31 @@ impl TokenFactory {
             env.storage().instance().set(&sv_key, &on_chain_version);
         }
 
+        if on_chain_version < 2 {
+            // Version 2: fixes the max-supply accounting bug (issue #1006) where
+            // `deploy_one` never seeded the tracked-supply counter with
+            // `initial_supply`, letting a capped token be minted past its
+            // advertised cap. This step only bumps the version marker — it does
+            // NOT loop over every stored `TokenInfo`, because `token_count` is
+            // unbounded and rewriting every entry inside a single `migrate` call
+            // could exceed the transaction's instruction budget.
+            //
+            // Tokens created before this fix that have `max_supply` configured
+            // still have an under-seeded (or absent) supply counter. There is no
+            // on-chain record of their true `initial_supply` to recover it
+            // automatically. Operators must back-fill each affected token
+            // individually via `backfill_capped_supply`, supplying a
+            // `verified_supply` reconstructed off-chain (e.g. by summing every
+            // `mint` event the token contract itself has emitted since
+            // deployment). See docs/contract-abi.md ("Supply cap accounting")
+            // for the full back-fill procedure and its limitations.
+            let mut s = Self::load_state(&env)?;
+            s.schema_version = 2;
+            Self::save_state(&env, &s);
+            on_chain_version = 2;
+            env.storage().instance().set(&sv_key, &on_chain_version);
+        }
+
         // Each future migration step follows the same pattern:
         //
         //   if on_chain_version < N {
@@ -1091,6 +1129,64 @@ impl TokenFactory {
         // step in a single `migrate` call, arriving at CURRENT_SCHEMA_VERSION.
 
         let _ = on_chain_version; // suppress unused-variable warning when no further steps exist
+        Ok(())
+    }
+
+    /// One-time back-fill of the tracked-supply counter for a capped token
+    /// created before `deploy_one` began seeding it with `initial_supply`
+    /// (issue #1006). See docs/contract-abi.md for the full procedure.
+    ///
+    /// `verified_supply` must be independently reconstructed off-chain — the
+    /// factory has no on-chain record of a pre-fix token's true initial
+    /// supply. A reliable source is the sum of every `mint` event the token
+    /// contract itself has emitted since deployment (queryable via RPC /
+    /// Horizon even though the factory never stored it).
+    ///
+    /// Guards: admin-only; the token must exist and have `max_supply`
+    /// configured; `verified_supply` must fit within the cap; and this may
+    /// only be applied once per token, so it cannot be used as a repeated
+    /// backdoor to rewrite tracked supply after the fact.
+    pub fn backfill_capped_supply(
+        env: Env,
+        admin: Address,
+        token_address: Address,
+        verified_supply: i128,
+    ) -> Result<(), Error> {
+        admin.require_auth();
+        let state = Self::load_state(&env)?;
+        if state.admin != admin {
+            return Err(Error::Unauthorized);
+        }
+
+        let index: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TokenIndex(token_address.clone()))
+            .ok_or(Error::TokenNotFound)?;
+        let token_info: TokenInfo = env
+            .storage()
+            .instance()
+            .get(&DataKey::TokenInfo(index))
+            .ok_or(Error::TokenNotFound)?;
+        let cap = token_info.max_supply.ok_or(Error::InvalidParameters)?;
+
+        if verified_supply < 0 || verified_supply > cap {
+            return Err(Error::InvalidParameters);
+        }
+
+        let backfill_marker = (&token_address, symbol_short!("bkfld"));
+        if env.storage().instance().has(&backfill_marker) {
+            return Err(Error::AlreadyBackfilled);
+        }
+
+        let supply_key = (&token_address, symbol_short!("supply"));
+        let current: i128 = env.storage().instance().get(&supply_key).unwrap_or(0i128);
+        if verified_supply > current {
+            env.storage().instance().set(&supply_key, &verified_supply);
+        }
+        env.storage().instance().set(&backfill_marker, &true);
+        env.storage().instance().extend_ttl(MIN_TTL, MAX_TTL);
+
         Ok(())
     }
 
