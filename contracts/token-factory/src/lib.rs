@@ -138,6 +138,8 @@ pub enum Error {
     MaxSupplyExceeded = 16,
     /// Fee split basis points do not sum to 10_000
     InvalidFeeSplit = 17,
+    /// Fee split recipient count exceeds `MAX_FEE_SPLIT_RECIPIENTS`
+    TooManyFeeSplitRecipients = 18,
 }
 
 #[contract]
@@ -151,6 +153,25 @@ const MAX_TTL: u32 = 535_000;
 /// has registered many tokens, which is the problem this cap was added to
 /// address.
 const MAX_TOKENS_BY_CREATOR_PAGE: u32 = 50;
+/// Maximum number of recipients allowed in a `set_fee_split` map.
+///
+/// `distribute_fee` transfers a share to every configured recipient on each
+/// `create_token` / `create_tokens_batch` / `mint_tokens` / `set_metadata`
+/// call, so an unbounded recipient count makes every fee-paying call
+/// arbitrarily expensive for the caller and risks exceeding Soroban's
+/// per-transaction resource limits.
+///
+/// Empirically measured (`bench_fee_split_mint_*` in `bench.rs`): ledger
+/// *writes* — not CPU or memory — is the binding resource, since each
+/// non-zero-share recipient writes a new SEP-41 balance entry. Cost grows at
+/// ~1.03 writes per recipient; at 20 recipients that's 24 of the mainnet
+/// per-transaction write-entry limit of 50 (48%), leaving a 52% margin.
+/// CPU/memory stay under 1.5% of their respective mainnet limits at this
+/// size, even before accounting for the native-test-host underestimate
+/// (~30x CPU, ~5x memory) documented in `docs/contract-abi.md`. See
+/// `bench_fee_split_mint_20_within_limits` for the assertion that enforces
+/// this margin going forward.
+const MAX_FEE_SPLIT_RECIPIENTS: u32 = 20;
 
 #[contractimpl]
 impl TokenFactory {
@@ -917,6 +938,12 @@ impl TokenFactory {
         if splits.is_empty() {
             env.storage().instance().remove(&split_key);
             return Ok(());
+        }
+
+        // Fail fast on an oversized map before paying for the summation loop
+        // below — see `MAX_FEE_SPLIT_RECIPIENTS` for why this bound exists.
+        if splits.len() > MAX_FEE_SPLIT_RECIPIENTS {
+            return Err(Error::TooManyFeeSplitRecipients);
         }
 
         let mut total: u32 = 0;
