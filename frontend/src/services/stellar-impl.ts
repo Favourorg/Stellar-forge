@@ -328,7 +328,7 @@ async function callViewReadonly(
 
 // ── Raw RPC types ─────────────────────────────────────────────────────────────
 
-interface RpcEventResponse {
+export interface RpcEventResponse {
   id: string
   type: string
   ledger: number
@@ -382,24 +382,54 @@ function scValToString(val: xdr.ScVal | undefined): string {
 
 // ── Event parsing ─────────────────────────────────────────────────────────────
 
-const EVENT_TOPICS: ContractEventType[] = [
-  'init',
-  'created',
-  'meta',
-  'mint',
-  'burn',
-  'fees',
-  'pause',
-  'unpause',
-  'admin_update',
-]
+/**
+ * Single source of truth that maps every contract symbol_short! topic value to
+ * its ContractEventType.  The allow-list and the parser both derive from this
+ * table, so they can never drift apart.
+ *
+ * Contract topics are verified against lib.rs symbol_short! calls by
+ * scripts/check-event-topic-drift.sh (CI).  If you add a new event to the
+ * contract, add it here first — the CI script will catch any omission.
+ *
+ * Audit of all twelve contract topics (lib.rs → frontend):
+ *   init      → 'init'      (factory init)
+ *   created   → 'created'   (token deployed)
+ *   meta      → 'meta'      (metadata URI set)
+ *   mint      → 'mint'      (tokens minted)
+ *   burn      → 'burn'      (tokens burned)
+ *   fees      → 'fees'      (fees updated)
+ *   pause     → 'pause'     (factory paused)
+ *   unpause   → 'unpause'   (factory unpaused)
+ *   adm_upd   → 'adm_upd'  (admin rotated)  ← was incorrectly 'admin_update'
+ *   wl_add    → 'wl_add'   (address added to whitelist)
+ *   wl_rm     → 'wl_rm'    (address removed from whitelist)
+ *   wl_tog    → 'wl_tog'   (whitelist enforcement toggled)
+ */
+export const CONTRACT_TOPIC_MAP: Record<string, ContractEventType> = {
+  init: 'init',
+  created: 'created',
+  meta: 'meta',
+  mint: 'mint',
+  burn: 'burn',
+  fees: 'fees',
+  pause: 'pause',
+  unpause: 'unpause',
+  adm_upd: 'adm_upd',
+  wl_add: 'wl_add',
+  wl_rm: 'wl_rm',
+  wl_tog: 'wl_tog',
+} as const
 
-async function parseRpcEvent(raw: RpcEventResponse): Promise<ContractEvent | null> {
+/** Allow-list of recognised event types, derived from CONTRACT_TOPIC_MAP. */
+const EVENT_TOPICS = new Set<string>(Object.keys(CONTRACT_TOPIC_MAP))
+
+export async function parseRpcEvent(raw: RpcEventResponse): Promise<ContractEvent | null> {
   try {
     if (!raw.topic?.length || raw.topic.length < 2) return null
     const topicVal = xdr.ScVal.fromXDR(raw.topic[1]!, 'base64') // second topic is the action
-    const eventType = scValToString(topicVal) as ContractEventType
-    if (!EVENT_TOPICS.includes(eventType)) return null
+    const rawTopic = scValToString(topicVal)
+    if (!EVENT_TOPICS.has(rawTopic)) return null
+    const eventType = CONTRACT_TOPIC_MAP[rawTopic]!
 
     const items: xdr.ScVal[] = xdr.ScVal.fromXDR(raw.value, 'base64').vec() ?? []
     const data: Record<string, string> = {}
@@ -438,9 +468,18 @@ async function parseRpcEvent(raw: RpcEventResponse): Promise<ContractEvent | nul
       case 'unpause':
         data.admin = scValToString(items[0])
         break
-      case 'admin_update':
+      case 'adm_upd':
         data.currentAdmin = scValToString(items[0])
         data.newAdmin = scValToString(items[1])
+        break
+      case 'wl_add':
+        data.address = scValToString(items[0])
+        break
+      case 'wl_rm':
+        data.address = scValToString(items[0])
+        break
+      case 'wl_tog':
+        data.enabled = scValToString(items[0])
         break
     }
 
@@ -817,6 +856,7 @@ export class StellarService {
         baseFee: native.base_fee?.toString() ?? '0',
         metadataFee: native.metadata_fee?.toString() ?? '0',
         tokenCount: Number(native.token_count ?? 0),
+        whitelistEnabled: Boolean(native.whitelist_enabled ?? false),
         // scValToNative turns BytesN<32> into a Buffer/Uint8Array — normalise
         // to lowercase hex so it is directly comparable to VITE_TOKEN_WASM_HASH.
         tokenWasmHash: native.token_wasm_hash
@@ -894,6 +934,50 @@ export class StellarService {
         contractId: factoryContractId,
         functionName,
         params: { baseFee: params.baseFee, metadataFee: params.metadataFee },
+      })
+      throw new Error(appErr.message)
+    }
+  }
+
+  // ── setWhitelistEnabled ──────────────────────────────────────────────────────
+
+  /**
+   * Invoke `set_whitelist_enabled` on the factory contract.
+   * When `enabled` is true, only whitelisted addresses may call
+   * `create_token` / `create_tokens_batch`.
+   */
+  async setWhitelistEnabled(enabled: boolean): Promise<string> {
+    const functionName = 'setWhitelistEnabled'
+    try {
+      const contractId = STELLAR_CONFIG.factoryContractId
+      if (!contractId) throw new Error('Factory contract ID is not configured')
+
+      const sourceAddress = walletService.getConnectedAddress()
+      if (!sourceAddress) throw new Error('Wallet not connected')
+
+      const server = getRpcServer(this.network)
+      const contract = new Contract(contractId)
+
+      const tx = (await buildTxBuilder(server, sourceAddress, this.network))
+        .addOperation(
+          contract.call(
+            'set_whitelist_enabled',
+            new Address(sourceAddress).toScVal(),
+            nativeToScVal(enabled, { type: 'bool' }),
+          ),
+        )
+        .setTimeout(30)
+        .build()
+
+      return await simulateAndSubmit(server, tx, this.network)
+    } catch (err) {
+      const appErr = toAppError(err)
+      const factoryContractId = STELLAR_CONFIG.factoryContractId ?? 'unknown'
+      captureContractError(err instanceof Error ? err : new Error(String(err)), {
+        network: this.network,
+        contractId: factoryContractId,
+        functionName,
+        params: { enabled },
       })
       throw new Error(appErr.message)
     }

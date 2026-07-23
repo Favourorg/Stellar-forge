@@ -135,6 +135,9 @@ pub struct FactoryState {
     /// Schema version of this state struct. Used by `migrate` to apply
     /// incremental upgrades without data loss.
     pub schema_version: u32,
+    /// When true, only addresses on the whitelist may call `create_token` or
+    /// `create_tokens_batch`.
+    pub whitelist_enabled: bool,
 }
 
 #[contracterror]
@@ -159,10 +162,13 @@ pub enum Error {
     MaxSupplyExceeded = 16,
     /// Fee split basis points do not sum to 10_000
     InvalidFeeSplit = 17,
-    /// `backfill_capped_supply` already applied for this token
-    AlreadyBackfilled = 18,
     /// Fee split recipient count exceeds `MAX_FEE_SPLIT_RECIPIENTS`
     TooManyFeeSplitRecipients = 19,
+    TooManyFeeSplitRecipients = 18,
+    /// `backfill_capped_supply` already applied for this token
+    AlreadyBackfilled = 19,
+    /// Caller is not on the whitelist when whitelist enforcement is enabled
+    NotWhitelisted = 20,
 }
 
 #[contract]
@@ -261,6 +267,7 @@ impl TokenFactory {
             base_fee,
             metadata_fee,
             token_count: 0,
+            whitelist_enabled: false,
             schema_version: CURRENT_SCHEMA_VERSION,
         };
 
@@ -479,6 +486,13 @@ impl TokenFactory {
             return Err(Error::Unauthorized);
         }
         Self::set_persistent(&env, &Self::whitelist_key(&address), &true);
+        env.storage()
+            .instance()
+            .set(&Self::whitelist_key(&address), &true);
+        env.events().publish(
+            (symbol_short!("factory"), symbol_short!("wl_add")),
+            (address,),
+        );
         Ok(())
     }
 
@@ -493,11 +507,33 @@ impl TokenFactory {
         // Also clear a pre-migration copy, if any, so a stale `instance`
         // entry can't resurrect the whitelisting after removal.
         env.storage().instance().remove(&key);
+        env.storage()
+            .instance()
+            .remove(&Self::whitelist_key(&address));
+        env.events().publish(
+            (symbol_short!("factory"), symbol_short!("wl_rm")),
+            (address,),
+        );
         Ok(())
     }
 
     pub fn is_whitelisted(env: Env, address: Address) -> bool {
         Self::read_addr_keyed(&env, &Self::whitelist_key(&address)).unwrap_or(false)
+    }
+
+    pub fn set_whitelist_enabled(env: Env, admin: Address, enabled: bool) -> Result<(), Error> {
+        admin.require_auth();
+        let mut state = Self::load_state(&env)?;
+        if state.admin != admin {
+            return Err(Error::Unauthorized);
+        }
+        state.whitelist_enabled = enabled;
+        Self::save_state(&env, &state);
+        env.events().publish(
+            (symbol_short!("factory"), symbol_short!("wl_tog")),
+            (enabled,),
+        );
+        Ok(())
     }
 
     fn require_not_paused(env: &Env) -> Result<(), Error> {
@@ -574,6 +610,15 @@ impl TokenFactory {
         if fee_payment < state.base_fee {
             state.locked = false;
             return Err(Error::InsufficientFee);
+        }
+        // Whitelist gate: when enabled, only whitelisted addresses may create tokens.
+        if state.whitelist_enabled {
+            let wl_key = Self::whitelist_key(&creator);
+            let is_wl: bool = env.storage().instance().get(&wl_key).unwrap_or(false);
+            if !is_wl {
+                state.locked = false;
+                return Err(Error::NotWhitelisted);
+            }
         }
         // initial_supply is u128 but token::mint accepts i128.
         // Values > i128::MAX silently wrap via `as i128`; reject them early.
@@ -779,6 +824,14 @@ impl TokenFactory {
             .ok_or(Error::ArithmeticOverflow)?;
         if fee_payment < total_fee {
             return Err(Error::InsufficientFee);
+        }
+        // Whitelist gate: when enabled, only whitelisted addresses may create tokens.
+        if state.whitelist_enabled {
+            let wl_key = Self::whitelist_key(&creator);
+            let is_wl: bool = env.storage().instance().get(&wl_key).unwrap_or(false);
+            if !is_wl {
+                return Err(Error::NotWhitelisted);
+            }
         }
 
         state.locked = true;
@@ -1091,6 +1144,10 @@ impl TokenFactory {
         // below — see `MAX_FEE_SPLIT_RECIPIENTS` for why this bound exists.
         // Guards against transaction-budget exhaustion and ledger-entry size
         // overflow in `distribute_fee`.
+        // Guard: cap the number of recipients to prevent transaction-budget
+        // exhaustion and ledger-entry size overflow in `distribute_fee`.
+        // Exceeding the cap is rejected with `TooManyFeeSplitRecipients` so
+        // callers get a meaningful error rather than a silent host-level failure.
         if splits.len() > MAX_FEE_SPLIT_RECIPIENTS {
             return Err(Error::TooManyFeeSplitRecipients);
         }
@@ -1260,6 +1317,15 @@ impl TokenFactory {
                 on_chain_version = 3;
                 env.storage().instance().set(&sv_key, &on_chain_version);
             }
+            // Version 3: add the `whitelist_enabled` field, defaulting to
+            // `false` so existing deployments keep their open behaviour until an
+            // admin explicitly enables enforcement via `set_whitelist_enabled`.
+            let mut s = Self::load_state(&env)?;
+            s.whitelist_enabled = false;
+            s.schema_version = 3;
+            Self::save_state(&env, &s);
+            on_chain_version = 3;
+            env.storage().instance().set(&sv_key, &on_chain_version);
         }
 
         // Each future migration step follows the same pattern:
@@ -1404,6 +1470,10 @@ impl TokenFactory {
     /// addresses.
     pub fn get_token_info_by_address(env: Env, token_address: Address) -> Result<TokenInfo, Error> {
         let index: u32 = Self::read_addr_keyed(&env, &DataKey::TokenIndex(token_address))
+        let index: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TokenIndex(token_address))
             .ok_or(Error::TokenNotFound)?;
         Self::read_addr_keyed(&env, &DataKey::TokenInfo(index)).ok_or(Error::TokenNotFound)
     }

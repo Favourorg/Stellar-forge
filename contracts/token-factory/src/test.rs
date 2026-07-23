@@ -1931,11 +1931,10 @@ fn test_fee_split_zero_share_recipient_skipped_remainder_to_treasury() {
 /// the sum of all recipient balance deltas plus any treasury remainder equals
 /// `fee_payment` exactly — no stroop is leaked or double-counted.
 ///
-/// The split is intentionally uneven: one recipient gets 1_000 bps and nine
-/// recipients get 1_000 bps each (10 × 1_000 = 10_000), making this a clean
-/// split.  We then verify the sum invariant with a fee that is NOT evenly
-/// divisible by 10 (fee = 10_001) to expose any rounding-accumulation bug in
-/// the loop.
+/// The split is intentionally even: every one of `MAX_FEE_SPLIT_RECIPIENTS`
+/// recipients gets the same `10_000 / n` bps, making this a clean split.  We
+/// then verify the sum invariant with a fee that is NOT evenly divisible by `n`
+/// (fee = 10_001) to expose any rounding-accumulation bug in the loop.
 ///
 /// Checks:
 /// 1. Exactly `MAX_FEE_SPLIT_RECIPIENTS` recipients can be configured
@@ -1947,10 +1946,14 @@ fn test_fee_split_max_recipients_conservation() {
     let s = Setup::new();
 
     // Build MAX_FEE_SPLIT_RECIPIENTS recipients, each with equal bps.
-    // 10_000 bps / 10 recipients = 1_000 bps each — exact.
+    // This test assumes 10_000 divides evenly by the cap so the split is exact.
     let n = super::MAX_FEE_SPLIT_RECIPIENTS;
-    assert_eq!(n, 10, "test assumes MAX_FEE_SPLIT_RECIPIENTS == 10");
-    let bps_each: u32 = 10_000 / n; // = 1_000
+    assert_eq!(
+        10_000 % n,
+        0,
+        "test assumes 10_000 is divisible by the recipient cap"
+    );
+    let bps_each: u32 = 10_000 / n;
 
     let mut recipients: soroban_sdk::Vec<Address> = soroban_sdk::vec![&s.env];
     let mut splits_map = Map::new(&s.env);
@@ -2040,6 +2043,9 @@ fn test_set_fee_split_too_many_recipients_rejected() {
         "configuring more than MAX_FEE_SPLIT_RECIPIENTS recipients must be rejected"
     );
 }
+// Cap enforcement (configuring more than `MAX_FEE_SPLIT_RECIPIENTS` recipients
+// is rejected with `TooManyFeeSplitRecipients`) is covered cap-agnostically by
+// `test_set_fee_split_over_max_recipients_rejected` above.
 
 // ── batch token creation ──────────────────────────────────────────────────────
 
@@ -2498,12 +2504,383 @@ fn test_migrate_preserves_state_fields() {
     assert!(!state.paused);
 }
 
-// ── Issue #1006: real version-2 migration (max-supply accounting fix) ─────────
+// ── whitelist enforcement ─────────────────────────────────────────────────────
+
+/// Helper: enable whitelisting on the factory.
+fn enable_whitelist(s: &Setup) {
+    s.client.set_whitelist_enabled(&s.admin, &true);
+}
+
+/// Helper: add `addr` to the whitelist.
+fn whitelist_add(s: &Setup, addr: &Address) {
+    s.client.add_to_whitelist(&s.admin, addr);
+}
+
+#[test]
+fn test_whitelist_disabled_by_default() {
+    // Fresh factory must have whitelist_enabled = false so existing behaviour is unchanged.
+    let s = Setup::new();
+    assert!(!s.client.get_state().whitelist_enabled);
+}
+
+#[test]
+fn test_set_whitelist_enabled_toggles_flag() {
+    let s = Setup::new();
+    s.client.set_whitelist_enabled(&s.admin, &true);
+    assert!(s.client.get_state().whitelist_enabled);
+    s.client.set_whitelist_enabled(&s.admin, &false);
+    assert!(!s.client.get_state().whitelist_enabled);
+}
+
+#[test]
+fn test_set_whitelist_enabled_unauthorized() {
+    let s = Setup::new();
+    let stranger = Address::generate(&s.env);
+    assert_eq!(
+        s.client.try_set_whitelist_enabled(&stranger, &true),
+        Err(Ok(Error::Unauthorized))
+    );
+}
+
+/// With whitelisting disabled (default), any address can call create_token.
+/// This test verifies the baseline still holds after the feature is merged.
+#[test]
+fn test_create_token_allowed_when_whitelist_disabled() {
+    let s = Setup::new();
+    // whitelisting is off; caller NOT on the whitelist must still be blocked only
+    // by the fee guard — InsufficientFee, not NotWhitelisted.
+    let creator = Address::generate(&s.env);
+    let result = s.client.try_create_token(
+        &creator,
+        &s.salt(0),
+        &String::from_str(&s.env, "T"),
+        &String::from_str(&s.env, "T"),
+        &7,
+        &0_u128,
+        &1, // intentionally insufficient so the call fails predictably
+    );
+    assert_eq!(result, Err(Ok(Error::InsufficientFee)));
+}
+
+/// With whitelisting enabled, a non-whitelisted address receives NotWhitelisted.
+#[test]
+fn test_create_token_blocked_when_not_whitelisted() {
+    let s = Setup::new();
+    enable_whitelist(&s);
+
+    let creator = Address::generate(&s.env);
+    s.fund(&creator, 1_000);
+
+    let result = s.client.try_create_token(
+        &creator,
+        &s.salt(0),
+        &String::from_str(&s.env, "T"),
+        &String::from_str(&s.env, "T"),
+        &7,
+        &0_u128,
+        &1_000,
+    );
+    assert_eq!(result, Err(Ok(Error::NotWhitelisted)));
+}
+
+/// After adding a creator to the whitelist, the fee check (not NotWhitelisted)
+/// is the next gate — proving the whitelist check passed.
+#[test]
+fn test_create_token_whitelisted_creator_passes_whitelist_gate() {
+    let s = Setup::new();
+    enable_whitelist(&s);
+
+    let creator = Address::generate(&s.env);
+    whitelist_add(&s, &creator);
+
+    // Underfund so InsufficientFee (not NotWhitelisted) is the rejection reason.
+    let result = s.client.try_create_token(
+        &creator,
+        &s.salt(0),
+        &String::from_str(&s.env, "T"),
+        &String::from_str(&s.env, "T"),
+        &7,
+        &0_u128,
+        &1, // insufficient
+    );
+    // If this were NotWhitelisted the whitelist gate would have fired first;
+    // InsufficientFee means the creator cleared the whitelist gate.
+    assert_eq!(result, Err(Ok(Error::InsufficientFee)));
+}
+
+/// add → create (via fee path) → remove → create fails: the full lifecycle.
+/// Uses the insufficient-fee trick to confirm which gate fired.
+#[test]
+fn test_whitelist_add_remove_create_sequence() {
+    let s = Setup::new();
+    enable_whitelist(&s);
+    let creator = Address::generate(&s.env);
+
+    // Not whitelisted → NotWhitelisted.
+    assert_eq!(
+        s.client.try_create_token(
+            &creator,
+            &s.salt(0),
+            &String::from_str(&s.env, "T"),
+            &String::from_str(&s.env, "T"),
+            &7,
+            &0_u128,
+            &1_000,
+        ),
+        Err(Ok(Error::NotWhitelisted))
+    );
+
+    // Add to whitelist → passes whitelist gate (fails at fee because underfunded).
+    whitelist_add(&s, &creator);
+    assert_eq!(
+        s.client.try_create_token(
+            &creator,
+            &s.salt(0),
+            &String::from_str(&s.env, "T"),
+            &String::from_str(&s.env, "T"),
+            &7,
+            &0_u128,
+            &1, // insufficient on purpose
+        ),
+        Err(Ok(Error::InsufficientFee))
+    );
+
+    // Remove from whitelist → NotWhitelisted again.
+    s.client.remove_from_whitelist(&s.admin, &creator);
+    assert_eq!(
+        s.client.try_create_token(
+            &creator,
+            &s.salt(0),
+            &String::from_str(&s.env, "T"),
+            &String::from_str(&s.env, "T"),
+            &7,
+            &0_u128,
+            &1_000,
+        ),
+        Err(Ok(Error::NotWhitelisted))
+    );
+}
+
+/// Disabling whitelisting allows a previously un-whitelisted address to proceed.
+#[test]
+fn test_whitelist_disable_reopens_factory() {
+    let s = Setup::new();
+    enable_whitelist(&s);
+
+    let creator = Address::generate(&s.env);
+    s.fund(&creator, 1_000);
+
+    // Blocked while enabled.
+    assert_eq!(
+        s.client.try_create_token(
+            &creator,
+            &s.salt(0),
+            &String::from_str(&s.env, "T"),
+            &String::from_str(&s.env, "T"),
+            &7,
+            &0_u128,
+            &1_000,
+        ),
+        Err(Ok(Error::NotWhitelisted))
+    );
+
+    // Disable — same call now fails at fee, not whitelist.
+    s.client.set_whitelist_enabled(&s.admin, &false);
+    assert_eq!(
+        s.client.try_create_token(
+            &creator,
+            &s.salt(0),
+            &String::from_str(&s.env, "T"),
+            &String::from_str(&s.env, "T"),
+            &7,
+            &0_u128,
+            &1, // underfunded
+        ),
+        Err(Ok(Error::InsufficientFee))
+    );
+}
+
+// ── whitelist enforcement — batch path ───────────────────────────────────────
+
+/// With whitelisting enabled, a non-whitelisted address is blocked on batch too.
+#[test]
+fn test_batch_blocked_when_not_whitelisted() {
+    let s = Setup::new();
+    enable_whitelist(&s);
+
+    let creator = Address::generate(&s.env);
+    s.fund(&creator, 2_000);
+
+    let params = batch_vec(&s, &[batch_param(&s, 1, "TokenA", "TKA")]);
+    let result = s.client.try_create_tokens_batch(&creator, &params, &1_000);
+    assert_eq!(result, Err(Ok(Error::NotWhitelisted)));
+}
+
+/// A whitelisted creator clears the whitelist gate on batch (fails at next gate).
+#[test]
+fn test_batch_whitelisted_creator_passes_whitelist_gate() {
+    let s = Setup::new();
+    enable_whitelist(&s);
+
+    let creator = Address::generate(&s.env);
+    whitelist_add(&s, &creator);
+
+    let params = batch_vec(&s, &[batch_param(&s, 1, "TokenA", "TKA")]);
+    // Underfund so InsufficientFee (not NotWhitelisted) fires.
+    let result = s.client.try_create_tokens_batch(&creator, &params, &1);
+    assert_eq!(result, Err(Ok(Error::InsufficientFee)));
+}
+
+// ── whitelist events (behavioural smoke tests) ────────────────────────────────
+// Note: soroban-sdk 26.x does not expose env.events().all() in test mode
+// without a higher-level testutils harness.  We verify that each entrypoint
+// that emits an event completes successfully (i.e. does not panic or return
+// an error), which confirms the publish() call did not fail at runtime.
+
+#[test]
+fn test_add_to_whitelist_succeeds_and_persists() {
+    let s = Setup::new();
+    let addr = Address::generate(&s.env);
+    // Must complete without error (implicitly tests event publish path too).
+    s.client.add_to_whitelist(&s.admin, &addr);
+    assert!(s.client.is_whitelisted(&addr));
+}
+
+#[test]
+fn test_remove_from_whitelist_succeeds_and_clears() {
+    let s = Setup::new();
+    let addr = Address::generate(&s.env);
+    s.client.add_to_whitelist(&s.admin, &addr);
+    // Must complete without error.
+    s.client.remove_from_whitelist(&s.admin, &addr);
+    assert!(!s.client.is_whitelisted(&addr));
+}
+
+#[test]
+fn test_set_whitelist_enabled_succeeds_and_updates_state() {
+    let s = Setup::new();
+    // Must complete without error.
+    s.client.set_whitelist_enabled(&s.admin, &true);
+    assert!(s.client.get_state().whitelist_enabled);
+}
+
+#[test]
+fn test_add_to_whitelist_unauthorized() {
+    let s = Setup::new();
+    let stranger = Address::generate(&s.env);
+    let addr = Address::generate(&s.env);
+    assert_eq!(
+        s.client.try_add_to_whitelist(&stranger, &addr),
+        Err(Ok(Error::Unauthorized))
+    );
+}
+
+#[test]
+fn test_remove_from_whitelist_unauthorized() {
+    let s = Setup::new();
+    let stranger = Address::generate(&s.env);
+    let addr = Address::generate(&s.env);
+    assert_eq!(
+        s.client.try_remove_from_whitelist(&stranger, &addr),
+        Err(Ok(Error::Unauthorized))
+    );
+}
+
+#[test]
+fn test_is_whitelisted_returns_false_for_unknown() {
+    let s = Setup::new();
+    let addr = Address::generate(&s.env);
+    assert!(!s.client.is_whitelisted(&addr));
+}
+
+#[test]
+fn test_is_whitelisted_returns_true_after_add() {
+    let s = Setup::new();
+    let addr = Address::generate(&s.env);
+    s.client.add_to_whitelist(&s.admin, &addr);
+    assert!(s.client.is_whitelisted(&addr));
+}
+
+#[test]
+fn test_is_whitelisted_returns_false_after_remove() {
+    let s = Setup::new();
+    let addr = Address::generate(&s.env);
+    s.client.add_to_whitelist(&s.admin, &addr);
+    s.client.remove_from_whitelist(&s.admin, &addr);
+    assert!(!s.client.is_whitelisted(&addr));
+}
+
+// ── migrate: whitelist step (schema v3) ───────────────────────────────────────
+
+#[test]
+fn test_initialize_sets_whitelist_enabled_false() {
+    let s = Setup::new();
+    let state = s.client.get_state();
+    assert!(
+        !state.whitelist_enabled,
+        "fresh factory must have whitelist disabled"
+    );
+    assert_eq!(state.schema_version, CURRENT_SCHEMA_VERSION);
+}
+
+#[test]
+fn test_migrate_v1_to_v3_sets_whitelist_enabled_false() {
+    let s = Setup::new();
+    // Simulate a v1 deployment: set sv = 1 and schema_version = 1.
+    s.env.as_contract(&s.client.address, || {
+        let mut state: FactoryState = s.env.storage().instance().get(&DataKey::State).unwrap();
+        state.schema_version = 1;
+        state.whitelist_enabled = false; // as it would exist after v1 migration
+        s.env.storage().instance().set(&DataKey::State, &state);
+        s.env.storage().instance().set(&symbol_short!("sv"), &1u32);
+    });
+
+    s.client.migrate(&s.admin);
+
+    // Migrating from v1 walks the v2 (max-supply) and v3 (whitelist) steps,
+    // landing on CURRENT_SCHEMA_VERSION with whitelist_enabled defaulted false.
+    let state = s.client.get_state();
+    assert_eq!(state.schema_version, CURRENT_SCHEMA_VERSION);
+    assert!(!state.whitelist_enabled);
+
+    s.env.as_contract(&s.client.address, || {
+        let sv: u32 = s
+            .env
+            .storage()
+            .instance()
+            .get(&symbol_short!("sv"))
+            .unwrap();
+        assert_eq!(sv, CURRENT_SCHEMA_VERSION);
+    });
+}
+
+#[test]
+fn test_migrate_preserves_whitelist_enabled_flag() {
+    let s = Setup::new();
+    // Enable the flag, then migrate — it should be preserved.
+    s.client.set_whitelist_enabled(&s.admin, &true);
+    s.client.migrate(&s.admin);
+    // migrate re-loads and writes the flag; it should not overwrite a live value.
+    // (The v3 block sets whitelist_enabled = false only when upgrading FROM an
+    //  earlier version. When already on the current version the block is skipped.)
+    assert!(s.client.get_state().whitelist_enabled);
+}
+
+#[test]
+fn test_migrate_whitelist_step_is_idempotent() {
+    let s = Setup::new();
+    s.client.migrate(&s.admin);
+    s.client.migrate(&s.admin);
+    assert_eq!(s.client.get_state().schema_version, CURRENT_SCHEMA_VERSION);
+    assert!(!s.client.get_state().whitelist_enabled);
+}
+
+// ── Issue #1006: version-2 migration (max-supply accounting fix) ──────────────
 //
-// `CURRENT_SCHEMA_VERSION` is now 2. These tests exercise the real `migrate`
-// v2 step (superseding the synthetic scaffolding this section used to carry
-// while version 2 was still hypothetical) and the `backfill_capped_supply`
-// entrypoint it documents.
+// These tests exercise the real `migrate` v2 step (the max-supply accounting
+// fix) and the `backfill_capped_supply` entrypoint it documents. Because the
+// whitelist step above bumped `CURRENT_SCHEMA_VERSION` to 3, a contract that
+// starts behind walks the v2 step and then the v3 step in a single call.
 
 /// Helper: read the "sv" storage key directly from contract storage.
 #[cfg(test)]
@@ -2517,9 +2894,8 @@ fn read_sv(s: &Setup) -> u32 {
     })
 }
 
-/// A contract starting two versions behind (sv = 0) must walk through both
-/// the 0→1 and 1→2 steps in a single `migrate` call, landing directly on
-/// `CURRENT_SCHEMA_VERSION`.
+/// A contract starting behind (sv = 0) must walk through every pending step in a
+/// single `migrate` call, landing directly on `CURRENT_SCHEMA_VERSION`.
 #[test]
 fn test_migrate_from_version_0_walks_all_steps() {
     let s = Setup::new();
@@ -2542,8 +2918,10 @@ fn test_migrate_from_version_0_walks_all_steps() {
 /// 0→1 block must not re-run or otherwise disturb state. With no tokens
 /// created (`token_count == 0`), the 2→3 step's chunked walk completes in
 /// this same call, landing on `CURRENT_SCHEMA_VERSION`.
+/// A contract already at version 1 must run the remaining steps (v2 then v3) —
+/// the 0→1 block must not re-run or otherwise disturb state.
 #[test]
-fn test_migrate_from_version_1_only_runs_v2_step() {
+fn test_migrate_from_version_1_walks_remaining_steps() {
     let s = Setup::new();
 
     s.env.as_contract(&s.client.address, || {

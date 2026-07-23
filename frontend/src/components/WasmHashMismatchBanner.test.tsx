@@ -36,6 +36,7 @@ const baseState: FactoryState = {
   metadataFee: '5000000',
   tokenCount: 3,
   paused: false,
+  whitelistEnabled: false,
 }
 
 const mockState = (state: FactoryState | null, overrides = {}) => {

@@ -286,6 +286,27 @@ Incrementally upgrades state between schema versions. Idempotent — safe to cal
 
 One-time back-fill of the tracked-supply counter for a capped token created before the issue #1006 fix. See "Supply cap accounting" above for the full procedure. Admin-only; fails with `Error::TokenNotFound` if the token doesn't exist, `Error::InvalidParameters` if the token has no `max_supply` or `verified_supply` is outside `[0, max_supply]`, and `Error::AlreadyBackfilled` if already applied to this token.
 
+### `add_to_whitelist(admin, address)` / `remove_from_whitelist(admin, address)`
+
+Add or remove an address from the factory whitelist. Emits `wl_add` / `wl_rm` events. Only the factory admin may call these.
+
+### `set_whitelist_enabled(admin, enabled)`
+
+Toggle whitelist enforcement on or off. When `enabled = true`, only addresses that have been added to the whitelist via `add_to_whitelist` may call `create_token` or `create_tokens_batch` — attempts from non-whitelisted addresses return `Error::NotWhitelisted` (code 18). Emits a `wl_tog` event.
+
+When `enabled = false` (the default after `initialize` and after `migrate`), the factory is open to all creators and the whitelist contents are ignored.
+
+**Decision: mint_tokens and set_metadata are not gated.**  
+These operations are only available to existing token creators (the `owner` of a deployed token contract), so they already passed the whitelist gate at creation time. Gating them again would lock out operators who created tokens before whitelisting was enabled.
+
+### `is_whitelisted(address) → bool`
+
+Read-only: returns `true` if `address` is on the whitelist.
+
+| Param | Type | Description |
+|---|---|---|
+| `address` | `Address` | Address to query. |
+
 ## Errors
 
 | Code | Symbol                      | When                                                                         |
@@ -309,6 +330,48 @@ One-time back-fill of the tracked-supply counter for a capped token created befo
 | 17   | `InvalidFeeSplit`           | `set_fee_split` map bps do not sum to 10_000                                 |
 | 18   | `AlreadyBackfilled`         | `backfill_capped_supply` already applied for this token                      |
 | 19   | `TooManyFeeSplitRecipients` | `set_fee_split` map has more than `MAX_FEE_SPLIT_RECIPIENTS` (10) recipients |
+| Code | Symbol                     | When                                                    |
+| ---- | -------------------------- | ------------------------------------------------------- |
+| 1    | `InsufficientFee`          | `fee_payment < required_fee`                            |
+| 2    | `Unauthorized`             | caller is not allowed for this operation                |
+| 3    | `InvalidParameters`        | argument out of range or malformed                      |
+| 4    | `TokenNotFound`            | unknown token index or address                          |
+| 5    | `MetadataAlreadySet`       | `set_metadata` called twice                             |
+| 6    | `AlreadyInitialized`       | double-initialize attempt                               |
+| 7    | `BurnAmountExceedsBalance` | `burn` > balance                                        |
+| 8    | `BurnNotEnabled`           | burning on a token that has been disabled               |
+| 9    | `InvalidBurnAmount`        | zero or negative burn                                   |
+| 10   | `ContractPaused`           | operation blocked because factory is paused             |
+| 11   | `Reentrancy`               | concurrent reentrant call detected                      |
+| 12   | `ArithmeticOverflow`       | checked-op failed                                       |
+| 13   | `StateNotFound`            | factory not yet initialized                             |
+| 14   | `InvalidTokenParams`       | name/symbol validation failed during token creation     |
+| 15   | `InvalidDecimals`          | decimals outside `[0, 18]`                              |
+| 16   | `MaxSupplyExceeded`        | mint would exceed cap                                   |
+| 17   | `InvalidFeeSplit`          | `set_fee_split` map bps do not sum to 10_000            |
+| 18   | `AlreadyBackfilled`        | `backfill_capped_supply` already applied for this token |
+| Code | Symbol | When |
+|---|---|---|
+| 1 | `InsufficientFee` | `fee_payment < required_fee` |
+| 2 | `Unauthorized` | caller is not allowed for this operation |
+| 3 | `InvalidParameters` | argument out of range or malformed |
+| 4 | `TokenNotFound` | unknown token index or address |
+| 5 | `MetadataAlreadySet` | `set_metadata` called twice |
+| 6 | `AlreadyInitialized` | double-initialize attempt |
+| 7 | `BurnAmountExceedsBalance` | `burn` > balance |
+| 8 | `BurnNotEnabled` | burning on a token that has been disabled |
+| 9 | `InvalidBurnAmount` | zero or negative burn |
+| 10 | `ContractPaused` | operation blocked because factory is paused |
+| 11 | `Reentrancy` | concurrent reentrant call detected |
+| 12 | `ArithmeticOverflow` | checked-op failed |
+| 13 | `StateNotFound` | factory not yet initialized |
+| 14 | `InvalidTokenParams` | name/symbol validation failed during token creation |
+| 15 | `InvalidDecimals` | decimals outside `[0, 18]` |
+| 16 | `MaxSupplyExceeded` | mint would exceed cap |
+| 17 | `InvalidFeeSplit` | `set_fee_split` map bps do not sum to 10_000 |
+| 18 | `TooManyFeeSplitRecipients` | `set_fee_split` map has more than `MAX_FEE_SPLIT_RECIPIENTS` (20) recipients |
+| 19 | `AlreadyBackfilled` | `backfill_capped_supply` already applied for this token |
+| 20 | `NotWhitelisted` | creator is not on the whitelist when enforcement is enabled |
 
 ## Events
 
@@ -326,6 +389,9 @@ The contract emits Soroban events on a `(factory, action)` topic. The frontend p
 | `pause`   | `(admin)`                                | `pause`                                |
 | `unpause` | `(admin)`                                | `unpause`                              |
 | `adm_upd` | `(current_admin, new_admin)`             | `update_admin`                         |
+| `wl_add`  | `(address)`                              | `add_to_whitelist`                     |
+| `wl_rm`   | `(address)`                              | `remove_from_whitelist`                |
+| `wl_tog`  | `(enabled)`                              | `set_whitelist_enabled`                |
 
 ## Batch creation UI
 
