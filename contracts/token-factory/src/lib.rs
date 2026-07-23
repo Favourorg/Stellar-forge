@@ -163,7 +163,6 @@ pub enum Error {
     /// Fee split basis points do not sum to 10_000
     InvalidFeeSplit = 17,
     /// Fee split recipient count exceeds `MAX_FEE_SPLIT_RECIPIENTS`
-    TooManyFeeSplitRecipients = 19,
     TooManyFeeSplitRecipients = 18,
     /// `backfill_capped_supply` already applied for this token
     AlreadyBackfilled = 19,
@@ -1470,10 +1469,6 @@ impl TokenFactory {
     /// addresses.
     pub fn get_token_info_by_address(env: Env, token_address: Address) -> Result<TokenInfo, Error> {
         let index: u32 = Self::read_addr_keyed(&env, &DataKey::TokenIndex(token_address))
-        let index: u32 = env
-            .storage()
-            .instance()
-            .get(&DataKey::TokenIndex(token_address))
             .ok_or(Error::TokenNotFound)?;
         Self::read_addr_keyed(&env, &DataKey::TokenInfo(index)).ok_or(Error::TokenNotFound)
     }

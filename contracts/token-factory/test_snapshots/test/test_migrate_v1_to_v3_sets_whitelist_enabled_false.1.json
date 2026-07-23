@@ -190,6 +190,14 @@
                   "storage": [
                     {
                       "key": {
+                        "symbol": "mig3cur"
+                      },
+                      "val": {
+                        "u32": 0
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "sv"
                       },
                       "val": {
