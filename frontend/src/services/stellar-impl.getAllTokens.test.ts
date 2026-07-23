@@ -18,6 +18,7 @@ const factoryState = (tokenCount: number): FactoryState => ({
   baseFee: '0',
   metadataFee: '0',
   tokenCount,
+  whitelistEnabled: false,
 })
 
 /** A deterministic TokenInfo keyed by its 1-based contract index. */
