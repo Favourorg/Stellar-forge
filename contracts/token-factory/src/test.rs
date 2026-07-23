@@ -1175,7 +1175,10 @@ fn test_get_token_info_by_address_returns_authoritative_identity() {
         max_supply: Some(1_000_000),
     };
     s.env.as_contract(&s.client.address, || {
-        s.env.storage().instance().set(&DataKey::TokenInfo(7), &info);
+        s.env
+            .storage()
+            .instance()
+            .set(&DataKey::TokenInfo(7), &info);
         s.env
             .storage()
             .instance()
@@ -1732,7 +1735,11 @@ fn test_fee_split_max_recipients_conservation() {
     // Build MAX_FEE_SPLIT_RECIPIENTS recipients, each with equal bps.
     // This test assumes 10_000 divides evenly by the cap so the split is exact.
     let n = super::MAX_FEE_SPLIT_RECIPIENTS;
-    assert_eq!(10_000 % n, 0, "test assumes 10_000 is divisible by the recipient cap");
+    assert_eq!(
+        10_000 % n,
+        0,
+        "test assumes 10_000 is divisible by the recipient cap"
+    );
     let bps_each: u32 = 10_000 / n;
 
     let mut recipients: soroban_sdk::Vec<Address> = soroban_sdk::vec![&s.env];
@@ -2219,10 +2226,7 @@ fn test_migrate_upgrades_pre_versioned_state() {
 
     // A single `migrate` call walks through every pending step, so a
     // contract starting at sv = 0 lands directly on CURRENT_SCHEMA_VERSION.
-    assert_eq!(
-        s.client.get_state().schema_version,
-        CURRENT_SCHEMA_VERSION
-    );
+    assert_eq!(s.client.get_state().schema_version, CURRENT_SCHEMA_VERSION);
     s.env.as_contract(&s.client.address, || {
         let sv: u32 = s
             .env
@@ -2559,7 +2563,10 @@ fn test_is_whitelisted_returns_false_after_remove() {
 fn test_initialize_sets_whitelist_enabled_false() {
     let s = Setup::new();
     let state = s.client.get_state();
-    assert!(!state.whitelist_enabled, "fresh factory must have whitelist disabled");
+    assert!(
+        !state.whitelist_enabled,
+        "fresh factory must have whitelist disabled"
+    );
     assert_eq!(state.schema_version, CURRENT_SCHEMA_VERSION);
 }
 
@@ -2651,10 +2658,7 @@ fn test_migrate_from_version_0_walks_all_steps() {
     s.client.migrate(&s.admin);
 
     assert_eq!(read_sv(&s), CURRENT_SCHEMA_VERSION);
-    assert_eq!(
-        s.client.get_state().schema_version,
-        CURRENT_SCHEMA_VERSION
-    );
+    assert_eq!(s.client.get_state().schema_version, CURRENT_SCHEMA_VERSION);
 }
 
 /// A contract already at version 1 must run the remaining steps (v2 then v3) —
@@ -2724,8 +2728,7 @@ fn test_backfill_capped_supply_allows_headroom_mint() {
     let token_addr = seed_token(&s, &admin, true, Some(1_000));
 
     // initial_supply = cap - 10, reconstructed off-chain.
-    s.client
-        .backfill_capped_supply(&s.admin, &token_addr, &990);
+    s.client.backfill_capped_supply(&s.admin, &token_addr, &990);
 
     s.fund(&admin, 2_000);
     let recipient = Address::generate(&s.env);
@@ -2782,8 +2785,7 @@ fn test_backfill_capped_supply_cannot_be_applied_twice() {
     let admin = Address::generate(&s.env);
     let token_addr = seed_token(&s, &admin, true, Some(1_000));
 
-    s.client
-        .backfill_capped_supply(&s.admin, &token_addr, &500);
+    s.client.backfill_capped_supply(&s.admin, &token_addr, &500);
     let result = s
         .client
         .try_backfill_capped_supply(&s.admin, &token_addr, &600);

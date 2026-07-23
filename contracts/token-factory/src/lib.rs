@@ -1298,10 +1298,7 @@ impl TokenFactory {
     /// data, which cannot be trusted for tokens created outside the RPC's
     /// event-retention window. Returns `TokenNotFound` for unregistered
     /// addresses.
-    pub fn get_token_info_by_address(
-        env: Env,
-        token_address: Address,
-    ) -> Result<TokenInfo, Error> {
+    pub fn get_token_info_by_address(env: Env, token_address: Address) -> Result<TokenInfo, Error> {
         let index: u32 = env
             .storage()
             .instance()
