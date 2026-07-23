@@ -10,7 +10,7 @@
 
 use soroban_sdk::{
     contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, token, vec,
-    Address, BytesN, Env, Map, String, Vec,
+    Address, BytesN, Env, IntoVal, Map, String, TryFromVal, Val, Vec,
 };
 
 /// Minimal interface for initializing a deployed SEP-41 token contract.
@@ -23,10 +23,31 @@ pub trait TokenInit {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DataKey {
     State,
+    /// Per-token metadata record, keyed by 1-based creation index. Lives in
+    /// `persistent` storage (see "Storage architecture" below).
     TokenInfo(u32),
-    CreatorTokens(Address),
+    /// A page of up to `MAX_TOKENS_BY_CREATOR_PAGE` token indices belonging
+    /// to `creator`. Pages are append-only and never rewritten once full, so
+    /// no single persistent entry grows without bound as a creator
+    /// registers more tokens.
+    CreatorTokens(Address, u32),
+    /// Total number of tokens registered to `creator`. Determines which
+    /// page a new index is appended to and lets readers compute page
+    /// boundaries without loading every page.
+    CreatorTokenCount(Address),
     TokenIndex(Address),
     Metadata(Address),
+}
+
+/// Legacy (pre-schema-v3) `DataKey::CreatorTokens` shape: a single
+/// unbounded `Vec<u32>` per creator stored in `instance` storage. Kept only
+/// so `migrate`/lazy migration can still read data written before the
+/// paginated-persistent-storage migration (issue #1007). Do not write new
+/// data under this key — use `DataKey::CreatorTokens(Address, u32)`.
+#[contracttype]
+#[derive(Clone)]
+enum LegacyDataKey {
+    CreatorTokens(Address),
 }
 
 #[contracttype]
@@ -142,6 +163,7 @@ pub enum Error {
     /// Fee split basis points do not sum to 10_000
     InvalidFeeSplit = 17,
     /// Fee split recipient count exceeds `MAX_FEE_SPLIT_RECIPIENTS`
+    TooManyFeeSplitRecipients = 19,
     TooManyFeeSplitRecipients = 18,
     /// `backfill_capped_supply` already applied for this token
     AlreadyBackfilled = 19,
@@ -160,25 +182,37 @@ const MAX_TTL: u32 = 535_000;
 /// has registered many tokens, which is the problem this cap was added to
 /// address.
 const MAX_TOKENS_BY_CREATOR_PAGE: u32 = 50;
-/// Maximum number of recipients allowed in a `set_fee_split` map.
+/// Number of `TokenInfo` entries the schema-v3 `migrate` step moves from
+/// `instance` to `persistent` storage per call. Bounded so a factory with a
+/// large `token_count` can still complete its migration by calling
+/// `migrate` repeatedly instead of exceeding a single invocation's resource
+/// budget.
+const MIGRATE_TOKEN_INFO_CHUNK: u32 = 20;
+
+/// Maximum number of recipients allowed in a single fee split map.
 ///
-/// `distribute_fee` transfers a share to every configured recipient on each
-/// `create_token` / `create_tokens_batch` / `mint_tokens` / `set_metadata`
-/// call, so an unbounded recipient count makes every fee-paying call
-/// arbitrarily expensive for the caller and risks exceeding Soroban's
-/// per-transaction resource limits.
+/// ## Rationale
+/// `distribute_fee` loops over every recipient in the split map and makes one
+/// external `token::transfer` call per recipient.  Each cross-contract call
+/// consumes ledger CPU and I/O budget, and the map itself is stored as a
+/// Soroban `Map` entry whose encoded size grows with the number of keys.
+/// Unbounded recipient counts therefore create two distinct DoS surfaces:
 ///
-/// Empirically measured (`bench_fee_split_mint_*` in `bench.rs`): ledger
-/// *writes* — not CPU or memory — is the binding resource, since each
-/// non-zero-share recipient writes a new SEP-41 balance entry. Cost grows at
-/// ~1.03 writes per recipient; at 20 recipients that's 24 of the mainnet
-/// per-transaction write-entry limit of 50 (48%), leaving a 52% margin.
-/// CPU/memory stay under 1.5% of their respective mainnet limits at this
-/// size, even before accounting for the native-test-host underestimate
-/// (~30x CPU, ~5x memory) documented in `docs/contract-abi.md`. See
-/// `bench_fee_split_mint_20_within_limits` for the assertion that enforces
-/// this margin going forward.
-const MAX_FEE_SPLIT_RECIPIENTS: u32 = 20;
+/// 1. **Transaction budget exhaustion** — enough recipients can push a single
+///    `create_token` / `mint_tokens` / `set_metadata` call over Stellar's
+///    per-transaction instruction limit, making the factory unusable.
+/// 2. **Ledger entry size overflow** — a sufficiently large `Map` could
+///    exceed the ~64 KB ledger entry size cap and cause the `set_fee_split`
+///    call itself to fail at the host level rather than at the contract level.
+///
+/// The cap of 10 is conservative and gives the admin ample flexibility
+/// (typical treasury + referral + protocol fund structures need ≤ 5) while
+/// keeping `distribute_fee` well within budget on any supported network.
+///
+/// Enforcement is in `set_fee_split`: attempts to configure more than
+/// `MAX_FEE_SPLIT_RECIPIENTS` recipients are rejected with
+/// `Error::TooManyFeeSplitRecipients` before any storage write occurs.
+pub const MAX_FEE_SPLIT_RECIPIENTS: u32 = 10;
 
 #[contractimpl]
 impl TokenFactory {
@@ -303,8 +337,142 @@ impl TokenFactory {
         Ok(())
     }
 
-    fn extend_token_ttl(env: &Env, _token_address: &Address, _index: u32) {
-        env.storage().instance().extend_ttl(MIN_TTL, MAX_TTL);
+    // ─── persistent-storage helpers (issue #1007) ──────────────────────────
+    //
+    // All per-token and per-creator bookkeeping lives in `persistent`
+    // storage rather than `instance` storage, so its size and TTL are
+    // tracked per-entry instead of as one ever-growing ledger entry shared
+    // with the contract instance itself. Every read/write goes through the
+    // helpers below so the TTL of the specific key touched is always
+    // extended on access ("Implement extend_ttl correctly per persistent
+    // key on access").
+    //
+    // Two lookup helpers exist because entries written by factory binaries
+    // predating this migration still live in `instance` storage:
+    //
+    // - `read_addr_keyed` is for pure view entrypoints: persistent first,
+    //   falling back to the legacy `instance` copy if present, but never
+    //   writing storage. Keeps read-only calls free of a write footprint.
+    // - `migrate_addr_keyed` is for mutating entrypoints, which already pay
+    //   for a write: it performs the same fallback lookup, but if the value
+    //   is only found in legacy `instance` storage it copies it into
+    //   `persistent` storage (extending its TTL) and removes the `instance`
+    //   copy, so the next access — from either helper — is O(1) against the
+    //   persistent entry alone.
+    //
+    // `TokenInfo` is additionally migrated in bulk by `migrate`'s schema-v3
+    // step (see below), since its key space (`1..=token_count`) is fully
+    // enumerable; `migrate_addr_keyed` remains a safety net for any indices
+    // that step hasn't reached yet.
+
+    fn set_persistent<K, V>(env: &Env, key: &K, val: &V)
+    where
+        K: IntoVal<Env, Val>,
+        V: IntoVal<Env, Val>,
+    {
+        env.storage().persistent().set(key, val);
+        env.storage().persistent().extend_ttl(key, MIN_TTL, MAX_TTL);
+    }
+
+    fn read_addr_keyed<K, V>(env: &Env, key: &K) -> Option<V>
+    where
+        K: IntoVal<Env, Val>,
+        V: TryFromVal<Env, Val>,
+    {
+        if let Some(v) = env.storage().persistent().get(key) {
+            return Some(v);
+        }
+        env.storage().instance().get(key)
+    }
+
+    fn migrate_addr_keyed<K, V>(env: &Env, key: &K) -> Option<V>
+    where
+        K: IntoVal<Env, Val>,
+        V: TryFromVal<Env, Val> + IntoVal<Env, Val>,
+    {
+        if let Some(v) = env.storage().persistent().get::<K, V>(key) {
+            env.storage().persistent().extend_ttl(key, MIN_TTL, MAX_TTL);
+            return Some(v);
+        }
+        let legacy: Option<V> = env.storage().instance().get(key);
+        if let Some(v) = legacy {
+            Self::set_persistent(env, key, &v);
+            env.storage().instance().remove(key);
+            return Some(v);
+        }
+        None
+    }
+
+    /// Append `index` to `creator`'s paginated token list, lazily migrating
+    /// their legacy monolithic `instance` list (if any) into persistent
+    /// pages first. Lazy per-creator migration here — rather than an
+    /// explicit bulk step in `migrate` — is necessary because creator
+    /// addresses aren't enumerable from factory state; the only points a
+    /// given creator's data is ever touched are token-creation calls like
+    /// this one.
+    fn append_creator_token(env: &Env, creator: &Address, index: u32) -> Result<(), Error> {
+        let count_key = DataKey::CreatorTokenCount(creator.clone());
+        let mut count: u32 = match env.storage().persistent().get(&count_key) {
+            Some(c) => {
+                env.storage()
+                    .persistent()
+                    .extend_ttl(&count_key, MIN_TTL, MAX_TTL);
+                c
+            }
+            None => {
+                // Not migrated yet — pull the whole legacy list (if any) into
+                // page 0..N up front so subsequent appends only ever touch
+                // the current tail page.
+                let legacy_key = LegacyDataKey::CreatorTokens(creator.clone());
+                let legacy: Vec<u32> = env
+                    .storage()
+                    .instance()
+                    .get(&legacy_key)
+                    .unwrap_or_else(|| vec![env]);
+                env.storage().instance().remove(&legacy_key);
+
+                let mut migrated: u32 = 0;
+                let mut bucket: Vec<u32> = vec![env];
+                for tok_index in legacy.iter() {
+                    bucket.push_back(tok_index);
+                    migrated = migrated.checked_add(1).ok_or(Error::ArithmeticOverflow)?;
+                    if migrated % MAX_TOKENS_BY_CREATOR_PAGE == 0 {
+                        let page = (migrated / MAX_TOKENS_BY_CREATOR_PAGE)
+                            .checked_sub(1)
+                            .ok_or(Error::ArithmeticOverflow)?;
+                        Self::set_persistent(
+                            env,
+                            &DataKey::CreatorTokens(creator.clone(), page),
+                            &bucket,
+                        );
+                        bucket = vec![env];
+                    }
+                }
+                if !bucket.is_empty() {
+                    let page = migrated / MAX_TOKENS_BY_CREATOR_PAGE;
+                    Self::set_persistent(
+                        env,
+                        &DataKey::CreatorTokens(creator.clone(), page),
+                        &bucket,
+                    );
+                }
+                migrated
+            }
+        };
+
+        let page = count / MAX_TOKENS_BY_CREATOR_PAGE;
+        let page_key = DataKey::CreatorTokens(creator.clone(), page);
+        let mut bucket: Vec<u32> = env
+            .storage()
+            .persistent()
+            .get(&page_key)
+            .unwrap_or_else(|| vec![env]);
+        bucket.push_back(index);
+        Self::set_persistent(env, &page_key, &bucket);
+
+        count = count.checked_add(1).ok_or(Error::ArithmeticOverflow)?;
+        Self::set_persistent(env, &count_key, &count);
+        Ok(())
     }
 
     fn whitelist_key(address: &Address) -> (soroban_sdk::Symbol, Address) {
@@ -317,6 +485,7 @@ impl TokenFactory {
         if state.admin != admin {
             return Err(Error::Unauthorized);
         }
+        Self::set_persistent(&env, &Self::whitelist_key(&address), &true);
         env.storage()
             .instance()
             .set(&Self::whitelist_key(&address), &true);
@@ -333,6 +502,11 @@ impl TokenFactory {
         if state.admin != admin {
             return Err(Error::Unauthorized);
         }
+        let key = Self::whitelist_key(&address);
+        env.storage().persistent().remove(&key);
+        // Also clear a pre-migration copy, if any, so a stale `instance`
+        // entry can't resurrect the whitelisting after removal.
+        env.storage().instance().remove(&key);
         env.storage()
             .instance()
             .remove(&Self::whitelist_key(&address));
@@ -344,10 +518,7 @@ impl TokenFactory {
     }
 
     pub fn is_whitelisted(env: Env, address: Address) -> bool {
-        env.storage()
-            .instance()
-            .get(&Self::whitelist_key(&address))
-            .unwrap_or(false)
+        Self::read_addr_keyed(&env, &Self::whitelist_key(&address)).unwrap_or(false)
     }
 
     pub fn set_whitelist_enabled(env: Env, admin: Address, enabled: bool) -> Result<(), Error> {
@@ -493,7 +664,8 @@ impl TokenFactory {
 
         let token_name = name.clone();
         let token_symbol = symbol.clone();
-        env.storage().instance().set(
+        Self::set_persistent(
+            env,
             &DataKey::TokenInfo(index),
             &TokenInfo {
                 name,
@@ -506,23 +678,10 @@ impl TokenFactory {
             },
         );
 
-        let creator_key = DataKey::CreatorTokens(creator.clone());
-        let mut list: Vec<u32> = env
-            .storage()
-            .instance()
-            .get(&creator_key)
-            .unwrap_or_else(|| vec![env]);
-        list.push_back(index);
-        env.storage().instance().set(&creator_key, &list);
+        Self::append_creator_token(env, &creator, index)?;
 
-        env.storage()
-            .instance()
-            .set(&DataKey::TokenIndex(token_address.clone()), &index);
-        env.storage()
-            .instance()
-            .set(&(&token_address, symbol_short!("owner")), &creator);
-
-        Self::extend_token_ttl(env, &token_address, index);
+        Self::set_persistent(env, &DataKey::TokenIndex(token_address.clone()), &index);
+        Self::set_persistent(env, &(&token_address, symbol_short!("owner")), &creator);
 
         env.events().publish(
             (symbol_short!("factory"), symbol_short!("created")),
@@ -582,7 +741,7 @@ impl TokenFactory {
         // at zero regardless of how much was minted here (issue #1006).
         if p.max_supply.is_some() {
             let supply_key = (&token_address, symbol_short!("supply"));
-            env.storage().instance().set(&supply_key, &p.initial_supply);
+            Self::set_persistent(env, &supply_key, &p.initial_supply);
         }
 
         state.token_count = state
@@ -593,7 +752,8 @@ impl TokenFactory {
 
         let token_name = p.name.clone();
         let token_symbol = p.symbol.clone();
-        env.storage().instance().set(
+        Self::set_persistent(
+            env,
             &DataKey::TokenInfo(index),
             &TokenInfo {
                 name: p.name,
@@ -606,22 +766,10 @@ impl TokenFactory {
             },
         );
 
-        let creator_key = DataKey::CreatorTokens(creator.clone());
-        let mut list: Vec<u32> = env
-            .storage()
-            .instance()
-            .get(&creator_key)
-            .unwrap_or_else(|| vec![env]);
-        list.push_back(index);
-        env.storage().instance().set(&creator_key, &list);
+        Self::append_creator_token(env, creator, index)?;
 
-        env.storage()
-            .instance()
-            .set(&DataKey::TokenIndex(token_address.clone()), &index);
-        env.storage()
-            .instance()
-            .set(&(&token_address, symbol_short!("owner")), creator);
-        Self::extend_token_ttl(env, &token_address, index);
+        Self::set_persistent(env, &DataKey::TokenIndex(token_address.clone()), &index);
+        Self::set_persistent(env, &(&token_address, symbol_short!("owner")), creator);
 
         env.events().publish(
             (symbol_short!("factory"), symbol_short!("created")),
@@ -724,21 +872,17 @@ impl TokenFactory {
             return Err(Error::InsufficientFee);
         }
 
-        let creator: Address = env
-            .storage()
-            .instance()
-            .get(&(&token_address, symbol_short!("owner")))
-            .ok_or(Error::TokenNotFound)?;
+        let creator: Address =
+            Self::migrate_addr_keyed(&env, &(&token_address, symbol_short!("owner")))
+                .ok_or(Error::TokenNotFound)?;
 
         if creator != admin {
             return Err(Error::Unauthorized);
         }
 
-        if env
-            .storage()
-            .instance()
-            .has(&DataKey::Metadata(token_address.clone()))
-        {
+        let existing: Option<String> =
+            Self::migrate_addr_keyed(&env, &DataKey::Metadata(token_address.clone()));
+        if existing.is_some() {
             return Err(Error::MetadataAlreadySet);
         }
 
@@ -748,10 +892,11 @@ impl TokenFactory {
         // Transfer fee from admin to treasury using the dedicated fee_token
         Self::distribute_fee(&env, &state, &admin, fee_payment)?;
 
-        env.storage()
-            .instance()
-            .set(&DataKey::Metadata(token_address.clone()), &metadata_uri);
-        env.storage().instance().extend_ttl(MIN_TTL, MAX_TTL);
+        Self::set_persistent(
+            &env,
+            &DataKey::Metadata(token_address.clone()),
+            &metadata_uri,
+        );
 
         state.locked = false;
         Self::save_state(&env, &state);
@@ -789,24 +934,17 @@ impl TokenFactory {
         }
 
         // Fetch token index and verify creator authorization
-        let index: u32 = env
-            .storage()
-            .instance()
-            .get(&DataKey::TokenIndex(token_address.clone()))
-            .ok_or(Error::TokenNotFound)?;
+        let index: u32 =
+            Self::migrate_addr_keyed(&env, &DataKey::TokenIndex(token_address.clone()))
+                .ok_or(Error::TokenNotFound)?;
 
-        let token_info: TokenInfo = env
-            .storage()
-            .instance()
-            .get(&DataKey::TokenInfo(index))
+        let token_info: TokenInfo = Self::migrate_addr_keyed(&env, &DataKey::TokenInfo(index))
             .ok_or(Error::TokenNotFound)?;
 
         // Verify admin is the token creator using direct mapping
-        let creator: Address = env
-            .storage()
-            .instance()
-            .get(&(&token_address, symbol_short!("owner")))
-            .ok_or(Error::TokenNotFound)?;
+        let creator: Address =
+            Self::migrate_addr_keyed(&env, &(&token_address, symbol_short!("owner")))
+                .ok_or(Error::TokenNotFound)?;
 
         if creator != admin {
             return Err(Error::Unauthorized);
@@ -814,14 +952,14 @@ impl TokenFactory {
 
         if let Some(cap) = token_info.max_supply {
             let supply_key = (&token_address, symbol_short!("supply"));
-            let current: i128 = env.storage().instance().get(&supply_key).unwrap_or(0i128);
+            let current: i128 = Self::migrate_addr_keyed(&env, &supply_key).unwrap_or(0i128);
             let new_total = current
                 .checked_add(amount)
                 .ok_or(Error::ArithmeticOverflow)?;
             if new_total > cap {
                 return Err(Error::MaxSupplyExceeded);
             }
-            env.storage().instance().set(&supply_key, &new_total);
+            Self::set_persistent(&env, &supply_key, &new_total);
         }
 
         state.locked = true;
@@ -860,15 +998,10 @@ impl TokenFactory {
             return Err(Error::BurnAmountExceedsBalance);
         }
 
-        if let Some(index) = env
-            .storage()
-            .instance()
-            .get::<_, u32>(&DataKey::TokenIndex(token_address.clone()))
+        if let Some(index) =
+            Self::migrate_addr_keyed::<_, u32>(&env, &DataKey::TokenIndex(token_address.clone()))
         {
-            let info: TokenInfo = env
-                .storage()
-                .instance()
-                .get(&DataKey::TokenInfo(index))
+            let info: TokenInfo = Self::migrate_addr_keyed(&env, &DataKey::TokenInfo(index))
                 .ok_or(Error::TokenNotFound)?;
             if !info.burn_enabled {
                 return Err(Error::Unauthorized);
@@ -924,26 +1057,19 @@ impl TokenFactory {
             return Err(Error::Reentrancy);
         }
 
-        let creator: Address = env
-            .storage()
-            .instance()
-            .get(&(&token_address, symbol_short!("owner")))
-            .ok_or(Error::TokenNotFound)?;
+        let creator: Address =
+            Self::migrate_addr_keyed(&env, &(&token_address, symbol_short!("owner")))
+                .ok_or(Error::TokenNotFound)?;
 
         if creator != admin {
             return Err(Error::Unauthorized);
         }
 
-        let index: u32 = env
-            .storage()
-            .instance()
-            .get(&DataKey::TokenIndex(token_address.clone()))
-            .ok_or(Error::TokenNotFound)?;
+        let index: u32 =
+            Self::migrate_addr_keyed(&env, &DataKey::TokenIndex(token_address.clone()))
+                .ok_or(Error::TokenNotFound)?;
 
-        let mut info: TokenInfo = env
-            .storage()
-            .instance()
-            .get(&DataKey::TokenInfo(index))
+        let mut info: TokenInfo = Self::migrate_addr_keyed(&env, &DataKey::TokenInfo(index))
             .ok_or(Error::TokenNotFound)?;
 
         // set_burn_enabled does not make any external cross-contract calls, so
@@ -956,10 +1082,7 @@ impl TokenFactory {
         Self::save_state(&env, &state);
 
         info.burn_enabled = enabled;
-        env.storage()
-            .instance()
-            .set(&DataKey::TokenInfo(index), &info);
-        env.storage().instance().extend_ttl(MIN_TTL, MAX_TTL);
+        Self::set_persistent(&env, &DataKey::TokenInfo(index), &info);
 
         state.locked = false;
         Self::save_state(&env, &state);
@@ -1011,6 +1134,8 @@ impl TokenFactory {
 
         // Fail fast on an oversized map before paying for the summation loop
         // below — see `MAX_FEE_SPLIT_RECIPIENTS` for why this bound exists.
+        // Guards against transaction-budget exhaustion and ledger-entry size
+        // overflow in `distribute_fee`.
         // Guard: cap the number of recipients to prevent transaction-budget
         // exhaustion and ledger-entry size overflow in `distribute_fee`.
         // Exceeding the cap is rejected with `TooManyFeeSplitRecipients` so
@@ -1136,6 +1261,54 @@ impl TokenFactory {
         }
 
         if on_chain_version < 3 {
+            // Version 3 (issue #1007): move per-token bookkeeping —
+            // `TokenInfo`, `TokenIndex`, `Metadata`, the per-token `owner`
+            // and `supply` keys, and creator token lists — out of the
+            // single `instance` ledger entry into `persistent` storage, so
+            // the instance entry no longer grows without bound as tokens
+            // accumulate.
+            //
+            // `TokenInfo`'s key space (`1..=token_count`) is the only part
+            // that's cheaply enumerable, so this step walks it in
+            // `MIGRATE_TOKEN_INFO_CHUNK`-sized slices per call via a cursor
+            // stored under `"mig3cur"`, making the walk resumable if
+            // `token_count` is too large to finish in one invocation's
+            // resource budget. The on-chain schema version (and
+            // `FactoryState.schema_version`) only advance to 3 once the
+            // cursor has caught up to `token_count`.
+            //
+            // Every other migrated key (`TokenIndex`, `Metadata`, `owner`,
+            // `supply`) is address-keyed rather than index-keyed, so it
+            // can't be enumerated here; those are migrated lazily on first
+            // access by `migrate_addr_keyed` (see its doc comment above),
+            // and `CreatorTokens` lists are migrated lazily per-creator by
+            // `append_creator_token`. Both are idempotent and safe to run
+            // whether or not this step has completed.
+            let cursor_key = symbol_short!("mig3cur");
+            let cursor: u32 = env.storage().instance().get(&cursor_key).unwrap_or(0);
+            let target = core::cmp::min(
+                cursor.saturating_add(MIGRATE_TOKEN_INFO_CHUNK),
+                state.token_count,
+            );
+
+            let mut idx = cursor.saturating_add(1);
+            while idx <= target {
+                let key = DataKey::TokenInfo(idx);
+                if let Some(info) = env.storage().instance().get::<_, TokenInfo>(&key) {
+                    Self::set_persistent(&env, &key, &info);
+                    env.storage().instance().remove(&key);
+                }
+                idx = idx.saturating_add(1);
+            }
+            env.storage().instance().set(&cursor_key, &target);
+
+            if target >= state.token_count {
+                let mut s = Self::load_state(&env)?;
+                s.schema_version = 3;
+                Self::save_state(&env, &s);
+                on_chain_version = 3;
+                env.storage().instance().set(&sv_key, &on_chain_version);
+            }
             // Version 3: add the `whitelist_enabled` field, defaulting to
             // `false` so existing deployments keep their open behaviour until an
             // admin explicitly enables enforcement via `set_whitelist_enabled`.
@@ -1189,15 +1362,10 @@ impl TokenFactory {
             return Err(Error::Unauthorized);
         }
 
-        let index: u32 = env
-            .storage()
-            .instance()
-            .get(&DataKey::TokenIndex(token_address.clone()))
-            .ok_or(Error::TokenNotFound)?;
-        let token_info: TokenInfo = env
-            .storage()
-            .instance()
-            .get(&DataKey::TokenInfo(index))
+        let index: u32 =
+            Self::migrate_addr_keyed(&env, &DataKey::TokenIndex(token_address.clone()))
+                .ok_or(Error::TokenNotFound)?;
+        let token_info: TokenInfo = Self::migrate_addr_keyed(&env, &DataKey::TokenInfo(index))
             .ok_or(Error::TokenNotFound)?;
         let cap = token_info.max_supply.ok_or(Error::InvalidParameters)?;
 
@@ -1206,17 +1374,17 @@ impl TokenFactory {
         }
 
         let backfill_marker = (&token_address, symbol_short!("bkfld"));
-        if env.storage().instance().has(&backfill_marker) {
+        let already: Option<bool> = Self::migrate_addr_keyed(&env, &backfill_marker);
+        if already.unwrap_or(false) {
             return Err(Error::AlreadyBackfilled);
         }
 
         let supply_key = (&token_address, symbol_short!("supply"));
-        let current: i128 = env.storage().instance().get(&supply_key).unwrap_or(0i128);
+        let current: i128 = Self::migrate_addr_keyed(&env, &supply_key).unwrap_or(0i128);
         if verified_supply > current {
-            env.storage().instance().set(&supply_key, &verified_supply);
+            Self::set_persistent(&env, &supply_key, &verified_supply);
         }
-        env.storage().instance().set(&backfill_marker, &true);
-        env.storage().instance().extend_ttl(MIN_TTL, MAX_TTL);
+        Self::set_persistent(&env, &backfill_marker, &true);
 
         Ok(())
     }
@@ -1266,10 +1434,7 @@ impl TokenFactory {
     }
 
     pub fn get_token_info(env: Env, index: u32) -> Result<TokenInfo, Error> {
-        env.storage()
-            .instance()
-            .get(&DataKey::TokenInfo(index))
-            .ok_or(Error::TokenNotFound)
+        Self::read_addr_keyed(&env, &DataKey::TokenInfo(index)).ok_or(Error::TokenNotFound)
     }
 
     /// Resolve a token's storage index from its contract address.
@@ -1284,10 +1449,7 @@ impl TokenFactory {
     /// event stream — which only reflects a bounded RPC retention window and
     /// silently truncates once history exceeds one page.
     pub fn get_token_index(env: Env, token_address: Address) -> Result<u32, Error> {
-        env.storage()
-            .instance()
-            .get(&DataKey::TokenIndex(token_address))
-            .ok_or(Error::TokenNotFound)
+        Self::read_addr_keyed(&env, &DataKey::TokenIndex(token_address)).ok_or(Error::TokenNotFound)
     }
 
     /// Return a token's full `TokenInfo` addressed by its contract address.
@@ -1299,15 +1461,13 @@ impl TokenFactory {
     /// event-retention window. Returns `TokenNotFound` for unregistered
     /// addresses.
     pub fn get_token_info_by_address(env: Env, token_address: Address) -> Result<TokenInfo, Error> {
+        let index: u32 = Self::read_addr_keyed(&env, &DataKey::TokenIndex(token_address))
         let index: u32 = env
             .storage()
             .instance()
             .get(&DataKey::TokenIndex(token_address))
             .ok_or(Error::TokenNotFound)?;
-        env.storage()
-            .instance()
-            .get(&DataKey::TokenInfo(index))
-            .ok_or(Error::TokenNotFound)
+        Self::read_addr_keyed(&env, &DataKey::TokenInfo(index)).ok_or(Error::TokenNotFound)
     }
 
     /// Return the metadata URI set for a token, or `None` if none was set.
@@ -1318,9 +1478,7 @@ impl TokenFactory {
     /// events, which are subject to the same retention truncation as every
     /// other event.
     pub fn get_metadata(env: Env, token_address: Address) -> Option<String> {
-        env.storage()
-            .instance()
-            .get(&DataKey::Metadata(token_address))
+        Self::read_addr_keyed(&env, &DataKey::Metadata(token_address))
     }
 
     /// Return a paginated slice of token indices for `creator`.
@@ -1345,13 +1503,6 @@ impl TokenFactory {
     /// - `offset >= total` → empty `Vec` (past-the-end iteration).
     /// - `creator` has no stored entries → empty `Vec`.
     pub fn get_tokens_by_creator(env: Env, creator: Address, offset: u32, limit: u32) -> Vec<u32> {
-        let key = DataKey::CreatorTokens(creator);
-        let list: Vec<u32> = env
-            .storage()
-            .instance()
-            .get(&key)
-            .unwrap_or_else(|| vec![&env]);
-
         if limit == 0 {
             return vec![&env];
         }
@@ -1364,7 +1515,8 @@ impl TokenFactory {
             limit
         };
 
-        let total = list.len();
+        let total: u32 =
+            Self::read_addr_keyed(&env, &DataKey::CreatorTokenCount(creator.clone())).unwrap_or(0);
         if offset >= total {
             return vec![&env];
         }
@@ -1373,23 +1525,33 @@ impl TokenFactory {
         // when callers pass `offset = u32::MAX - small`; cap at `total`.
         let end = core::cmp::min(offset.saturating_add(effective_limit), total);
 
-        let mut page: Vec<u32> = vec![&env];
+        // Token indices are stored in fixed-size pages of
+        // `MAX_TOKENS_BY_CREATOR_PAGE` entries (`DataKey::CreatorTokens(creator,
+        // page)`), so a requested range can span at most two pages. Walk pages
+        // in order, reading each one at most once.
+        let mut page_out: Vec<u32> = vec![&env];
         let mut i: u32 = offset;
-        // `Vec::try_get` returns `Result<Option<u32>, ConversionError>`.
-        // Using `Vec::get` instead would panic on bounds and (via its
-        // internal unwrap) trigger the workspace's denied
-        // `clippy::expect_used` / `clippy::panic` lints. Treating any
-        // conversion error or missing entry as end-of-iteration matches the
-        // storage invariant: a creator's `Vec<u32>` has no holes.
         while i < end {
-            if let Ok(Some(val)) = list.try_get(i) {
-                page.push_back(val);
-                i = i.saturating_add(1);
-            } else {
-                break;
+            let page_no = i / MAX_TOKENS_BY_CREATOR_PAGE;
+            let bucket: Vec<u32> =
+                Self::read_addr_keyed(&env, &DataKey::CreatorTokens(creator.clone(), page_no))
+                    .unwrap_or_else(|| vec![&env]);
+            let local = i % MAX_TOKENS_BY_CREATOR_PAGE;
+            // `Vec::try_get` returns `Result<Option<u32>, ConversionError>`.
+            // Using `Vec::get` instead would panic on bounds and (via its
+            // internal unwrap) trigger the workspace's denied
+            // `clippy::expect_used` / `clippy::panic` lints. Treating any
+            // conversion error or missing entry as end-of-iteration matches
+            // the storage invariant: a page has no holes.
+            match bucket.try_get(local) {
+                Ok(Some(val)) => {
+                    page_out.push_back(val);
+                    i = i.saturating_add(1);
+                }
+                _ => break,
             }
         }
-        page
+        page_out
     }
 }
 

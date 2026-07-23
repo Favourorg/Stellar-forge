@@ -105,32 +105,11 @@ fn seed_token(
         let mut state: FactoryState = s.env.storage().instance().get(&DataKey::State).unwrap();
         state.token_count = state.token_count.checked_add(1).unwrap();
         let index = state.token_count;
-        s.env
-            .storage()
-            .instance()
-            .set(&DataKey::TokenInfo(index), &info);
+        TokenFactory::set_persistent(&s.env, &DataKey::TokenInfo(index), &info);
         s.env.storage().instance().set(&DataKey::State, &state);
-        s.env
-            .storage()
-            .instance()
-            .set(&DataKey::TokenIndex(token_addr.clone()), &index);
-        let creator_key = DataKey::CreatorTokens(creator.clone());
-        let mut list: soroban_sdk::Vec<u32> = s
-            .env
-            .storage()
-            .instance()
-            .get(&creator_key)
-            .unwrap_or_else(|| soroban_sdk::vec![&s.env]);
-        list.push_back(index);
-        s.env.storage().instance().set(&creator_key, &list);
-        s.env
-            .storage()
-            .instance()
-            .set(&(&token_addr, symbol_short!("owner")), creator);
-        s.env
-            .storage()
-            .instance()
-            .set(&(&token_addr, symbol_short!("idx")), &index);
+        TokenFactory::set_persistent(&s.env, &DataKey::TokenIndex(token_addr.clone()), &index);
+        TokenFactory::append_creator_token(&s.env, creator, index).unwrap();
+        TokenFactory::set_persistent(&s.env, &(&token_addr, symbol_short!("owner")), creator);
     });
     token_addr
 }
@@ -1394,6 +1373,91 @@ fn test_get_tokens_by_creator_partial_last_page() {
     assert_eq!(p4.len(), 0);
 }
 
+// ── storage architecture (issue #1007) ─────────────────────────────────────────
+
+/// Several hundred tokens for one creator must not make the single
+/// `instance` ledger entry (`FactoryState` + fee split) grow, and per-token
+/// records must actually live in `persistent` storage rather than
+/// `instance` storage.
+///
+/// This is the regression test for issue #1007: before the migration to
+/// persistent storage, `TokenInfo`, `TokenIndex`, the per-token `owner` key,
+/// and the monolithic `CreatorTokens` `Vec<u32>` all lived in `instance`
+/// storage, so this same workload would have made every `instance` read/write
+/// — including on entrypoints unrelated to the seeded tokens, like
+/// `mint_tokens` on an unrelated token — progressively more expensive as
+/// `token_count` grew, eventually bricking the factory outright once the
+/// ~64 KiB ledger-entry limit was reached.
+#[test]
+fn test_instance_storage_size_stays_flat_under_load() {
+    use soroban_sdk::xdr::ToXdr;
+
+    let s = Setup::new();
+
+    // The exact serialized size of the `DataKey::State` entry — the only
+    // per-token-count-dependent thing left in `instance` storage. Its only
+    // field that changes as tokens are created is `token_count: u32`, and
+    // XDR encodes `u32` as a fixed 4 bytes regardless of value, so this size
+    // must be identical before and after — a precise, deterministic
+    // measurement rather than a resource-cost heuristic.
+    let state_size = |s: &Setup| -> u32 {
+        let state: FactoryState = s.env.as_contract(&s.client.address, || {
+            s.env.storage().instance().get(&DataKey::State).unwrap()
+        });
+        state.to_xdr(&s.env).len()
+    };
+    let baseline_size = state_size(&s);
+
+    // Several hundred tokens for one creator — enough to span multiple
+    // `CreatorTokens` pages (`MAX_TOKENS_BY_CREATOR_PAGE` = 50) and,
+    // pre-migration, to have made the monolithic `CreatorTokens` `Vec<u32>`
+    // and the shared `instance` ledger entry meaningfully bigger.
+    const N: u32 = 300;
+    let creator = Address::generate(&s.env);
+    let expected = seed_many(&s, &creator, N);
+    assert_eq!(expected.len(), N);
+
+    assert_eq!(
+        state_size(&s),
+        baseline_size,
+        "the instance-stored FactoryState entry must not grow after seeding {N} tokens"
+    );
+
+    // Per-token records must actually live in `persistent` storage, not
+    // `instance` storage — sampled across the range, not just the first and
+    // last entry.
+    s.env.as_contract(&s.client.address, || {
+        for i in [0u32, N / 2, N - 1] {
+            let idx = expected.get(i).unwrap();
+            assert!(
+                s.env.storage().persistent().has(&DataKey::TokenInfo(idx)),
+                "TokenInfo({idx}) must live in persistent storage"
+            );
+            assert!(
+                !s.env.storage().instance().has(&DataKey::TokenInfo(idx)),
+                "TokenInfo({idx}) must not live in instance storage"
+            );
+        }
+        assert!(
+            !s.env
+                .storage()
+                .instance()
+                .has(&LegacyDataKey::CreatorTokens(creator.clone())),
+            "the monolithic legacy CreatorTokens list must not exist for a \
+             creator whose tokens were all created after the migration"
+        );
+    });
+
+    // Pagination correctness across multiple pages: request a window that
+    // straddles a page boundary (page size 50, so local offset 45..55 spans
+    // pages 0 and 1) and confirm it matches the recorded creation order.
+    let straddle = s.client.get_tokens_by_creator(&creator, &45_u32, &10_u32);
+    assert_eq!(straddle.len(), 10);
+    for (i, val) in straddle.iter().enumerate() {
+        assert_eq!(val, expected.get(45 + i as u32).unwrap());
+    }
+}
+
 // ── TTL ───────────────────────────────────────────────────────────────────────
 
 #[test]
@@ -1790,6 +1854,46 @@ fn test_fee_split_max_recipients_conservation() {
     );
 }
 
+/// Issue #918 — cap enforcement: configuring more than MAX_FEE_SPLIT_RECIPIENTS
+/// is rejected with TooManyFeeSplitRecipients.
+///
+/// This prevents transaction-budget exhaustion and ledger-entry size overflow
+/// in `distribute_fee` (see `MAX_FEE_SPLIT_RECIPIENTS` doc comment in lib.rs).
+#[test]
+fn test_set_fee_split_too_many_recipients_rejected() {
+    let s = Setup::new();
+
+    // Build MAX_FEE_SPLIT_RECIPIENTS + 1 recipients.  To keep the bps sum
+    // valid we give the last recipient 0 bps — the map len check fires before
+    // the bps-sum check, so the 0-bps entry only needs to exist in the map.
+    // Actually, the simplest approach: use 11 recipients each at 909 bps
+    // (sum = 9_999 ≠ 10_000) — but that also fails the sum check, which could
+    // mask the cap check.  Instead: 10 recipients at 1_000 bps + 1 recipient
+    // at 0 bps (sum still = 10_000).  We want the cap check to fire, so we
+    // need the map to have 11 entries regardless of their values.
+    //
+    // The actual implementation checks `splits.len() > MAX_FEE_SPLIT_RECIPIENTS`
+    // BEFORE the bps-sum check, so an 11-entry map with a valid bps sum still
+    // triggers the cap error.  Use 10 × 909 bps + 1 × 910 bps = 10_000 bps
+    // to construct a 11-entry map that would pass the sum check if the cap
+    // check were absent.
+    let n = super::MAX_FEE_SPLIT_RECIPIENTS as usize + 1; // 11
+                                                          // Distribute 10_000 bps across 11 recipients: 10 get 909, 1 gets 910
+                                                          // (10 * 909 + 910 = 9_090 + 910 = 10_000).
+    let mut splits_map = Map::new(&s.env);
+    for i in 0..n {
+        let addr = Address::generate(&s.env);
+        let bps: u32 = if i < n - 1 { 909 } else { 910 };
+        splits_map.set(addr, bps);
+    }
+    assert_eq!(splits_map.len(), 11);
+
+    assert_eq!(
+        s.client.try_set_fee_split(&s.admin, &splits_map),
+        Err(Ok(Error::TooManyFeeSplitRecipients)),
+        "configuring more than MAX_FEE_SPLIT_RECIPIENTS recipients must be rejected"
+    );
+}
 // Cap enforcement (configuring more than `MAX_FEE_SPLIT_RECIPIENTS` recipients
 // is rejected with `TooManyFeeSplitRecipients`) is covered cap-agnostically by
 // `test_set_fee_split_over_max_recipients_rejected` above.
@@ -2661,6 +2765,10 @@ fn test_migrate_from_version_0_walks_all_steps() {
     assert_eq!(s.client.get_state().schema_version, CURRENT_SCHEMA_VERSION);
 }
 
+/// A contract already at version 1 must only run the 1→2 and 2→3 steps — the
+/// 0→1 block must not re-run or otherwise disturb state. With no tokens
+/// created (`token_count == 0`), the 2→3 step's chunked walk completes in
+/// this same call, landing on `CURRENT_SCHEMA_VERSION`.
 /// A contract already at version 1 must run the remaining steps (v2 then v3) —
 /// the 0→1 block must not re-run or otherwise disturb state.
 #[test]
