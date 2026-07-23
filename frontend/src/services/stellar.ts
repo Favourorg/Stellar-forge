@@ -82,14 +82,19 @@ export class StellarService {
     return impl.updateFees(params)
   }
 
+  async setWhitelistEnabled(enabled: boolean) {
+    const impl = await this.getImpl()
+    return impl.setWhitelistEnabled(enabled)
+  }
+
   async getContractEvents(contractId: string, limit?: number, cursor?: string) {
     const impl = await this.getImpl()
     return impl.getContractEvents(contractId, limit, cursor)
   }
 
-  async getAllTokens() {
+  async getAllTokens(offset?: number, limit?: number) {
     const impl = await this.getImpl()
-    return impl.getAllTokens()
+    return impl.getAllTokens(offset, limit)
   }
 
   async getTokensByCreator(creator: string, offset: number, limit: number) {
@@ -102,9 +107,14 @@ export class StellarService {
     return impl.getTokenInfoByAddress(tokenAddress)
   }
 
-  async getTokenEvents(tokenAddress: string, limit?: number, cursor?: string) {
+  async resolveTokenInfoByAddress(tokenAddress: string) {
     const impl = await this.getImpl()
-    return impl.getTokenEvents(tokenAddress, limit, cursor)
+    return impl.resolveTokenInfoByAddress(tokenAddress)
+  }
+
+  async getTokenEvents(tokenAddress: string) {
+    const impl = await this.getImpl()
+    return impl.getTokenEvents(tokenAddress)
   }
 }
 

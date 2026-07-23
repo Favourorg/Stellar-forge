@@ -3,6 +3,7 @@ import { Button, ConfirmModal, InsufficientBalanceWarning, ProgressIndicator } f
 import type { ProgressStep } from './UI'
 import { Input } from './UI/Input'
 import { isValidImageFile } from '../utils/validation'
+import { MAX_METADATA_DESCRIPTION_LENGTH } from '../services/ipfs'
 import { useToast } from '../context/ToastContext'
 import { useStellarContext } from '../context/StellarContext'
 import { useBalanceCheck } from '../hooks/useBalanceCheck'
@@ -109,6 +110,13 @@ export const MetadataForm: React.FC<MetadataFormProps> = ({ initialTokenAddress 
     }
     if (!tokenAddress.trim()) {
       addToast('Please enter a token address', 'error')
+      return
+    }
+    if (description.length > MAX_METADATA_DESCRIPTION_LENGTH) {
+      addToast(
+        `Description must be ${MAX_METADATA_DESCRIPTION_LENGTH} characters or fewer`,
+        'error',
+      )
       return
     }
     requireTos(() => setPendingConfirm(true))
@@ -331,6 +339,7 @@ export const MetadataForm: React.FC<MetadataFormProps> = ({ initialTokenAddress 
             onChange={(e) => setDescription(e.target.value)}
             placeholder="Describe your token…"
             rows={3}
+            maxLength={MAX_METADATA_DESCRIPTION_LENGTH}
             className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md
               focus:outline-none focus:ring-2 focus:ring-blue-500
               dark:bg-gray-700 dark:text-white text-sm resize-none"

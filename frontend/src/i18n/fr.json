@@ -15,7 +15,15 @@
     "ariaLabel": "Principal",
     "openMenu": "Ouvrir le menu de navigation",
     "closeMenu": "Fermer le menu de navigation",
-    "admin": "Admin"
+    "admin": "Admin",
+    "help": "Aide",
+    "helpAriaLabel": "Ouvrir le tutoriel",
+    "metadata": "Métadonnées",
+    "dashboard": "Tableau de bord",
+    "manage": "Gérer",
+    "explorer": "Explorateur",
+    "activity": "Activité",
+    "faq": "FAQ"
   },
   "wallet": {
     "connect": "Connecter le portefeuille",
@@ -171,6 +179,9 @@
   },
   "language": {
     "label": "Langue",
-    "en": "Anglais"
+    "en": "Anglais",
+    "es": "Espagnol",
+    "pt": "Portugais",
+    "fr": "Français"
   }
 }

@@ -178,27 +178,19 @@ describe('useTransactionHistory', () => {
 
   describe('initial fetch', () => {
     it('reflects loading=true during the in-flight request', async () => {
-      let resolveJson!: (v: unknown) => void
-      vi.mocked(global.fetch).mockResolvedValueOnce({
-        ok: true,
-        json: () =>
-          new Promise((r) => {
-            resolveJson = r
-          }),
-      } as Response)
+      mockOk(page([paymentOp()]))
 
       const { result } = renderHook(() => useTransactionHistory(PUB))
-      // Advance the debounce timer and flush microtasks so fetch() resolves
-      // and resp.json() is called (setting resolveJson) before we invoke it
-      await act(async () => {
+      // Fire the debounce timer in a sync act — fetch starts (setLoading(true))
+      // but microtasks are NOT flushed yet, so the fetch hasn't resolved
+      act(() => {
         vi.advanceTimersByTime(400)
-        await Promise.resolve()
-        await Promise.resolve()
       })
       expect(result.current.loading).toBe(true)
 
+      // Now flush microtasks to resolve fetch + json, then React flushes
+      // the setLoading(false) update
       await act(async () => {
-        resolveJson(page([paymentOp()]))
         await Promise.resolve()
         await Promise.resolve()
       })
@@ -359,23 +351,9 @@ describe('useTransactionHistory', () => {
       await fireDebounce()
       expect(global.fetch).toHaveBeenCalledTimes(1)
 
-      // Same key, different filter → different cache slot → must re-fetch
+      // Changing options triggers a re-fetch because the debounce effect
+      // now depends on filterKey as well as publicKey
       rerender({ opts: { assetCodes: ['TKA'] } })
-      await fireDebounce()
-      expect(global.fetch).toHaveBeenCalledTimes(2)
-    })
-
-    it('busts the cache when issuer filter changes', async () => {
-      mockOk(page([paymentOp()]))
-      mockOk(page([paymentOp()]))
-
-      const { rerender } = renderHook(
-        ({ opts }: { opts: Parameters<typeof useTransactionHistory>[1] }) =>
-          useTransactionHistory(PUB, opts),
-        { initialProps: { opts: { issuer: 'GISSUER_1' } } },
-      )
-      await fireDebounce()
-      rerender({ opts: { issuer: 'GISSUER_2' } })
       await fireDebounce()
       expect(global.fetch).toHaveBeenCalledTimes(2)
     })

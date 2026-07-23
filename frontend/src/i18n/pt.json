@@ -15,8 +15,15 @@
     "ariaLabel": "Principal",
     "openMenu": "Abrir menu de navegação",
     "closeMenu": "Fechar menu de navegação",
+    "admin": "Administração",
     "help": "Ajuda",
-    "helpAriaLabel": "Abrir tutorial"
+    "helpAriaLabel": "Abrir tutorial",
+    "metadata": "Metadados",
+    "dashboard": "Painel",
+    "manage": "Gerenciar",
+    "explorer": "Explorador",
+    "activity": "Atividade",
+    "faq": "Perguntas Frequentes"
   },
   "wallet": {
     "connect": "Conectar Carteira",
@@ -56,7 +63,21 @@
     "deployError": "Ocorreu um erro durante a implantação",
     "invalidName": "Nome de token inválido",
     "invalidSymbol": "Símbolo de token inválido",
-    "invalidDecimals": "Decimais devem estar entre 0 e 18"
+    "invalidDecimals": "Decimais devem estar entre 0 e 18",
+    "nameLabel": "Nome do Token",
+    "namePlaceholder": "Meu Token",
+    "symbolLabel": "Símbolo do Token",
+    "symbolPlaceholder": "MTK",
+    "decimalsLabel": "Decimais",
+    "initialSupplyLabel": "Suprimento Inicial",
+    "estimatedFee": "Taxa Estimada",
+    "feeDescription": "Taxa para criação de token no Stellar",
+    "network": "Rede",
+    "connectWalletFirst": "Conecte sua carteira para implantar um token",
+    "walletNotConnected": "A carteira não está conectada",
+    "validationFailed": "Corrija os erros no formulário",
+    "submitError": "Falha ao enviar formulário",
+    "deployedSuccessfully": "implantado com sucesso!"
   },
   "mintForm": {
     "tokenAddress": "Endereço do Token",
@@ -160,6 +181,7 @@
     "label": "Idioma",
     "en": "Inglês",
     "es": "Espanhol",
-    "pt": "Português"
+    "pt": "Português",
+    "fr": "Francês"
   }
 }

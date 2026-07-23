@@ -13,6 +13,12 @@ export default [
   jsxA11y.flatConfigs.recommended,
   reactHooks.configs.flat.recommended,
   {
+    files: ['scripts/*.mjs'],
+    languageOptions: {
+      globals: { ...globals.node },
+    },
+  },
+  {
     languageOptions: {
       globals: { ...globals.browser, ...globals.es2020 },
     },

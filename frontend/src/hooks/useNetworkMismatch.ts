@@ -12,7 +12,19 @@ export interface NetworkMismatchState {
   refresh: () => void
 }
 
-const POLL_INTERVAL_MS = 5_000
+// @stellar/freighter-api has no event/subscription mechanism for network
+// changes — the only thing close, WatchWalletChanges, is itself a poller
+// under the hood (fetchInfo on a setTimeout loop, default 3s). So this UI
+// state is inherently poll-based and can be stale by up to one interval.
+//
+// 2s (down from 5s) is a stopgap that shrinks the *visible* staleness
+// window for the banner, traded against 2.5x more requestNetworkDetails()
+// calls to the extension. It is NOT what prevents a stale-network
+// transaction from being signed — that gate is a synchronous, un-cached
+// getNetworkDetails() check in WalletService.signTransaction (wallet.ts),
+// which runs fresh immediately before every sign call regardless of this
+// poll's cadence. See #927.
+const POLL_INTERVAL_MS = 2_000
 
 export function useNetworkMismatch(network: Network): NetworkMismatchState {
   const [freighterNetwork, setFreighterNetwork] = useState<string | null>(null)
