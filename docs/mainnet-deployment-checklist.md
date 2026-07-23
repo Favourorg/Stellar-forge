@@ -38,6 +38,11 @@ Every mainnet deployment **must** be accompanied by a signed, annotated git tag 
 - [ ] Confirm Content Security Policy headers allow only the required Stellar, Pinata, and application origins.
 - [ ] Review deployment hosting settings, environment variables, redirects, and security headers before publishing.
 
+## Deployment
+
+- [ ] Deploy and initialize the factory **atomically** — `initialize` runs as the contract's `__constructor`, so `scripts/deploy-contract.sh` (or an equivalent `stellar contract deploy --wasm ... -- --admin ... --treasury ... --fee_token ... --token_wasm_hash ... --base_fee ... --metadata_fee ...` invocation) deploys and initializes in a single transaction. Never deploy the WASM and initialize it as two separate transactions — that reopens a front-running window where an attacker's `initialize` call could win the race and seize the admin role (see the [Token Factory front-running writeup](https://github.com/Favourorg/Stellar-forge/issues/1005)).
+- [ ] Immediately after deployment, run `stellar contract invoke --id <contract-id> --network mainnet -- get_state` and confirm the returned `admin` field is **exactly** the intended admin address before publishing the contract ID anywhere (frontend `.env`, docs, service-worker cache key, announcements). `scripts/deploy-contract.sh` performs this check automatically and aborts if it fails.
+
 ## Release Validation
 
 - [ ] Run a complete smoke test on testnet using the same deployment steps planned for mainnet.

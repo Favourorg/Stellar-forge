@@ -22,6 +22,37 @@ export interface UploadMetadataOptions {
   onRetry?: (attempt: number, delayMs: number) => void
 }
 
+/**
+ * Caps on free-text metadata fields, enforced on the READ path.
+ *
+ * Metadata is pinned by whoever created the token and can be written straight
+ * to IPFS without going through our upload form, so any write-side limit is
+ * advisory only — these are the numbers that actually hold. Without them a
+ * creator can pin a multi-megabyte `description` that every visitor to that
+ * token's page then renders: enough to stall the tab during reconciliation, or
+ * to push phishing content below the fold of a legitimate-looking page.
+ *
+ * Documented for third-party integrators in docs/metadata-format.md.
+ */
+export const MAX_METADATA_NAME_LENGTH = 128
+export const MAX_METADATA_DESCRIPTION_LENGTH = 2_000
+
+/**
+ * Hard ceiling on the raw JSON we will even parse. Truncating after parse still
+ * means holding (and JSON-parsing) the whole payload, so a 50MB pin would burn
+ * memory and main-thread time before any cap applied.
+ */
+const MAX_METADATA_BYTES = 100 * 1024
+
+/** Clamp a string to `max` characters, appending an ellipsis when shortened. */
+function clamp(value: string, max: number): string {
+  // Count by code points so a truncation can't split a surrogate pair and
+  // leave a lone half behind.
+  const points = [...value]
+  if (points.length <= max) return value
+  return points.slice(0, max).join('') + '…'
+}
+
 function isTokenMetadata(value: unknown): value is TokenMetadata {
   if (typeof value !== 'object' || value === null) return false
   const obj = value as Record<string, unknown>
@@ -113,9 +144,23 @@ export class IPFSService {
       )
     }
 
+    // Read as text first so an oversized pin is rejected before JSON.parse has
+    // to walk it. response.json() would parse the whole payload no matter how
+    // large, which is the cost we are trying to avoid.
+    let raw: string
+    try {
+      raw = await response.text()
+    } catch {
+      throw new IPFSUploadError('Network error while reading metadata from the IPFS gateway.')
+    }
+
+    if (raw.length > MAX_METADATA_BYTES) {
+      throw new IPFSUploadError('Metadata document is too large to display.')
+    }
+
     let parsed: unknown
     try {
-      parsed = await response.json()
+      parsed = JSON.parse(raw)
     } catch {
       throw new IPFSUploadError('Metadata response is not valid JSON.')
     }
@@ -126,7 +171,14 @@ export class IPFSService {
       )
     }
 
-    return { name: parsed.name, description: parsed.description, image: parsed.image }
+    // Clamp rather than reject: an over-long description is a bad token, not a
+    // broken one, and refusing the whole document would leave the page with no
+    // name or image either. Callers therefore always receive bounded strings.
+    return {
+      name: clamp(parsed.name, MAX_METADATA_NAME_LENGTH),
+      description: clamp(parsed.description, MAX_METADATA_DESCRIPTION_LENGTH),
+      image: parsed.image,
+    }
   }
 
   // ── Private helpers ──────────────────────────────────────────────────────────

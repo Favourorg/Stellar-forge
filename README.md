@@ -32,7 +32,7 @@ The `token-factory` Soroban contract (`contracts/token-factory/src/lib.rs`) is d
 1. Holds a `token_wasm_hash`: the hash of a separately-deployed, audited SEP-41 token contract WASM.
 2. On `create_token`, uses Soroban's deterministic deployer (`env.deployer().with_address(creator, salt)`) to instantiate a **new, independent contract instance** of that WASM, owned at an address derived from `(creator, salt)`.
 3. Initializes the new token contract with the requested `name`, `symbol`, and `decimals`, and optionally mints the caller an `initial_supply`.
-4. Records bookkeeping for the new token in its own storage: a `TokenInfo` record (name, symbol, decimals, creator, timestamp, burn flag, optional max supply), a reverse `token_address → index` lookup, and an append-only `creator → [indices]` list for "my tokens" queries.
+4. Records bookkeeping for the new token in `persistent` storage (see [Storage architecture](./docs/contract-abi.md#storage-architecture)): a `TokenInfo` record (name, symbol, decimals, creator, timestamp, burn flag, optional max supply), a reverse `token_address → index` lookup, and a paginated `creator → [indices]` list for "my tokens" queries.
 
 Every token deployed this way is a fully standalone contract on the ledger — it can be transferred, held, and queried through the standard SEP-41 interface by any Stellar wallet or tool, independent of StellarForge.
 
@@ -239,7 +239,7 @@ The authoritative, field-by-field reference — including parameter tables, ever
 
 ### Initialization
 
-- `initialize(admin, treasury, fee_token, token_wasm_hash, base_fee, metadata_fee)`: One-time factory setup. Fails with `AlreadyInitialized` on retry.
+- `__constructor(admin, treasury, fee_token, token_wasm_hash, base_fee, metadata_fee)`: One-time factory setup, run atomically as part of contract deployment. Fails with `AlreadyInitialized` on retry.
 
 ### Token Lifecycle
 
@@ -354,24 +354,9 @@ stellar contract optimize \
 
 The optimized WASM will be at `../../target/wasm32-unknown-unknown/release/token_factory.optimized.wasm`.
 
-#### Step 3: Deploy the Factory Contract
+#### Step 3: Upload Token Contract WASM
 
-```bash
-# Deploy to testnet
-stellar contract deploy \
-  --wasm ../../target/wasm32-unknown-unknown/release/token_factory.optimized.wasm \
-  --source deployer \
-  --network testnet
-
-# Save the contract ID (starts with C...)
-# Example output: CXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-```
-
-**Save this contract ID** - you'll need it for initialization and frontend configuration.
-
-#### Step 4: Upload Token Contract WASM
-
-The factory needs the token contract WASM hash to deploy tokens.
+The factory needs the token contract WASM hash _before_ it's deployed, since that hash is now one of its constructor arguments (see Step 4).
 
 ```bash
 # First, build the standard Stellar token contract
@@ -398,33 +383,51 @@ stellar contract install \
   --network testnet
 ```
 
-#### Step 5: Initialize the Factory
+#### Step 4: Deploy and Initialize the Factory (atomically)
+
+`initialize` is the contract's `__constructor`, so deployment and initialization happen in a **single transaction** — there is no separate `invoke` step, and therefore no window where an attacker could race the deployer's own initialization with their own and seize the admin role (see [issue #1005](https://github.com/Favourorg/Stellar-forge/issues/1005) and [`docs/contract-abi.md`](./docs/contract-abi.md)). Constructor arguments go after `--`, the same as any other `stellar contract deploy` invocation with a constructor.
 
 ```bash
 # Get your admin address (same as deployer for simplicity)
 ADMIN_ADDRESS=$(stellar keys address deployer)
 
-# Initialize the contract
+# Deploy and initialize in one atomic call
+stellar contract deploy \
+  --wasm ../../target/wasm32-unknown-unknown/release/token_factory.optimized.wasm \
+  --source deployer \
+  --network testnet \
+  -- \
+  --admin $ADMIN_ADDRESS \
+  --treasury $ADMIN_ADDRESS \
+  --fee_token <NATIVE_XLM_CONTRACT_ADDRESS> \
+  --token_wasm_hash <TOKEN_WASM_HASH_FROM_STEP_3> \
+  --base_fee 100000000 \
+  --metadata_fee 50000000
+
+# Save the contract ID (starts with C...)
+# Example output: CXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+```
+
+**Save this contract ID** - you'll need it for frontend configuration.
+
+Before using this contract ID anywhere (frontend `.env`, docs, announcements), verify the on-chain admin matches:
+
+```bash
 stellar contract invoke \
   --id <FACTORY_CONTRACT_ID> \
   --source deployer \
   --network testnet \
   -- \
-  initialize \
-  --admin $ADMIN_ADDRESS \
-  --treasury $ADMIN_ADDRESS \
-  --fee_token <NATIVE_XLM_CONTRACT_ADDRESS> \
-  --token_wasm_hash <TOKEN_WASM_HASH_FROM_STEP_4> \
-  --base_fee 100000000 \
-  --metadata_fee 50000000
+  get_state
+# Confirm the "admin" field equals $ADMIN_ADDRESS before proceeding.
 ```
 
 **Parameters explained:**
 
-- `admin`: Address that can update fees, pause the factory, manage the whitelist and fee split, rotate the admin, and upgrade the contract
+- `admin`: Address that can update fees, pause the factory, manage the whitelist and fee split, rotate the admin, and upgrade the contract. Must authorize this deployment (`require_auth`).
 - `treasury`: Default address that receives fees from token creation (overridden per-recipient if a fee split is configured)
 - `fee_token`: Contract address for the SEP-41 token used to pay all fees (use native XLM contract: `CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC`)
-- `token_wasm_hash`: The WASM hash uploaded in Step 4 — every token the factory deploys is an instance of this code
+- `token_wasm_hash`: The WASM hash uploaded in Step 3 — every token the factory deploys is an instance of this code
 - `base_fee`: Fee for `create_token` / `mint_tokens` / each token in `create_tokens_batch` (in stroops, 1 XLM = 10,000,000 stroops)
 - `metadata_fee`: Fee for `set_metadata`
 
@@ -452,7 +455,7 @@ VITE_IPFS_API_SECRET=<your-pinata-api-secret>
 
 > **Keep `VITE_TOKEN_WASM_HASH` in sync with the factory.** This value must equal the
 > factory's on-chain `token_wasm_hash` — the WASM the factory actually deploys tokens
-> from. That field is set at `initialize` time and can only change through a contract
+> from. That field is set at deployment (`__constructor`) time and can only change through a contract
 > upgrade + migrate, so the realistic way they drift apart is a factory upgrade that
 > ships without a matching frontend redeploy.
 >
@@ -943,17 +946,41 @@ The factory contract supports in-place WASM upgrades without redeploying or migr
 
 ### Schema versioning
 
-`FactoryState` carries a `schema_version: u32` field. The constant `CURRENT_SCHEMA_VERSION` in `lib.rs` is the source of truth. `initialize` stamps the current version on every fresh deployment. `migrate` reads the on-chain version from a standalone `"sv"` storage key and applies each pending upgrade step in order, making it safe to call multiple times (idempotent).
+`FactoryState` carries a `schema_version: u32` field. The constant `CURRENT_SCHEMA_VERSION` in `lib.rs` is the source of truth. `__constructor` stamps the current version on every fresh deployment. `migrate` reads the on-chain version from a standalone `"sv"` storage key and applies each pending upgrade step in order, making it safe to call multiple times (idempotent).
 
-| Version | Change                                                                    |
-| ------- | ------------------------------------------------------------------------- |
-| 1       | Initial versioned schema — added `schema_version` field to `FactoryState` |
+| Version | Change                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1       | Initial versioned schema — added `schema_version` field to `FactoryState`                                                                                                                                                                                                                                                                                                                                                                                                  |
+| 2       | Max-supply accounting fix (issue #1006) — `deploy_one` now seeds the per-token supply counter with `initial_supply`; version bump only, no `FactoryState` field changes. Pre-fix capped tokens must be back-filled individually via `backfill_capped_supply` (see [docs/contract-abi.md](./docs/contract-abi.md#supply-cap-accounting))                                                                                                                                    |
+| 3       | Persistent-storage migration (issue #1007) — per-token bookkeeping (`TokenInfo`, `TokenIndex`, `Metadata`, `owner`, `supply`, `CreatorTokens`) moves out of the shared `instance` ledger entry into `persistent` storage, keeping `instance` storage O(1) in `token_count`. `TokenInfo` migrates in bounded, resumable chunks per `migrate` call; everything else migrates lazily on next access (see [docs/contract-abi.md](./docs/contract-abi.md#storage-architecture)) |
+| Version | Change                                                                                                                                                                                                                                                                                                                                  |
+| ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1       | Initial versioned schema — added `schema_version` field to `FactoryState`                                                                                                                                                                                                                                                               |
+| 2       | Max-supply accounting fix (issue #1006) — `deploy_one` now seeds the per-token supply counter with `initial_supply`; version bump only, no `FactoryState` field changes. Pre-fix capped tokens must be back-filled individually via `backfill_capped_supply` (see [docs/contract-abi.md](./docs/contract-abi.md#supply-cap-accounting)) |
+| 3       | Added `whitelist_enabled: bool` to `FactoryState`; new `set_whitelist_enabled` entrypoint; `create_token` and `create_tokens_batch` enforce the whitelist gate when enabled                                                                                                                                                              |
 
 ### Adding a new migration (version N → N+1)
 
 1. Increment `CURRENT_SCHEMA_VERSION` in `lib.rs` to `N+1`.
-2. Add an `if on_chain_version < N+1 { … }` block inside `migrate` that reads the current state, sets new fields to their defaults, writes the updated state, and bumps `on_chain_version`.
-3. Add a test in `test.rs` that seeds `sv = N` and asserts the state is correct after calling `migrate`.
+2. Add an `if on_chain_version < N+1 { … }` block inside `migrate` that reads the current state, sets new fields to their defaults, writes the updated state, **bumps `on_chain_version` to `N+1`**, and writes the updated `sv` key. The bump must happen inside the block, before the next block's guard runs — this is what allows a contract that is multiple versions behind to walk through every pending step in a single `migrate` call.
+
+   ```rust
+   // Example: adding version 2
+   if on_chain_version < 2 {
+       let mut s = Self::load_state(&env)?;
+       s.new_field = default_value;   // initialise any new FactoryState fields
+       Self::save_state(&env, &s);
+       on_chain_version = 2;          // ← bump BEFORE the next if-block is evaluated
+       env.storage().instance().set(&sv_key, &on_chain_version);
+   }
+   ```
+
+   > **Critical:** `on_chain_version` is a `mut` local variable. Each block must assign the new version back to it after writing to storage. If you forget the in-place bump, the next `if on_chain_version < N+2` block will compare against the _original_ value read at the top of `migrate`, not the value just written — causing steps to run out of order or be skipped entirely on a multi-version catch-up.
+
+3. Add tests in `test.rs` that:
+   - Seed `sv = N-1` (or 0) and assert `migrate` walks through _all_ pending steps in one call, ending at `CURRENT_SCHEMA_VERSION`.
+   - Seed `sv = N` and confirm only the N → N+1 step runs (earlier steps are skipped).
+   - Call `migrate` twice at the final version and assert it is a no-op (idempotent).
 
 ### How it works
 

@@ -127,6 +127,9 @@ async function decodeFactoryState(scVal: unknown): Promise<FactoryState> {
     metadataFee: getI128('metadata_fee').toString(),
     tokenCount: getU32('token_count'),
     paused: getBool('paused'),
+    // Defaults to false for factories deployed before schema v3 added the field,
+    // matching the on-chain default (whitelist enforcement off).
+    whitelistEnabled: map.get('whitelist_enabled') ? getBool('whitelist_enabled') : false,
     tokenWasmHash: getBytesHex('token_wasm_hash'),
   }
 }
@@ -182,6 +185,7 @@ export function useFactoryState(): UseFactoryStateResult {
 
   // Initial fetch on mount
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetchState transitions to loading synchronously; a mount fetch is exactly what this effect is for. See #1002 follow-up
     fetchState(false)
   }, [fetchState])
 

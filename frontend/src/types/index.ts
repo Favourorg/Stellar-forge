@@ -32,6 +32,48 @@ export interface TokenInfo {
   createdAt: number // unix seconds (u64 from contract)
   totalSupply?: string // derived from events, not stored on contract
   metadataUri?: string // stored separately in contract
+  /**
+   * The token's stable 1-based factory index (`TokenInfo(index)` on-chain).
+   * Set when a token is resolved via the index-range path (`getAllTokens`);
+   * undefined for tokens resolved purely from events, which carry no index.
+   */
+  index?: number
+}
+
+/**
+ * Result of resolving a token by its contract address.
+ *
+ * Identity (name/symbol/decimals/creator) is resolved from the on-chain
+ * `get_token_info_by_address` view — never fabricated from a guessed default
+ * or the raw address. When the factory cannot confirm the token, callers get
+ * an explicit `unresolved` marker instead of a plausible-looking placeholder,
+ * so the UI can render "unresolved" rather than wrong data (e.g. balances off
+ * by orders of magnitude from a guessed `decimals`).
+ */
+export type TokenInfoResult =
+  | ({ status: 'resolved' } & TokenInfo)
+  | {
+      status: 'unresolved'
+      address: string
+      /** `not-found`: no such token registered with the factory.
+       *  `rpc-error`: the factory could not be reached / returned an error. */
+      reason: 'not-found' | 'rpc-error'
+      message: string
+    }
+
+/**
+ * Per-token event history plus a disclosure that Soroban RPC only retains
+ * events for a bounded window. `retentionLimited` is always true for
+ * event-derived history: the RPC cannot serve events older than
+ * `retentionDays`, so callers must never present the returned list as the
+ * token's complete lifetime.
+ */
+export interface TokenEventsResult {
+  events: ContractEvent[]
+  retentionLimited: boolean
+  /** Approximate RPC event-retention window, in days. */
+  retentionDays: number
+  cursor: string | null
 }
 
 /**
@@ -45,6 +87,7 @@ export interface FactoryState {
   baseFee: string // i128 from contract, represented as string for precision
   metadataFee: string // i128 from contract, represented as string for precision
   tokenCount: number // u32 from contract
+  whitelistEnabled: boolean // when true, only whitelisted addresses can create tokens
   /**
    * Lowercase hex encoding of the contract's `token_wasm_hash` (BytesN<32>) —
    * the WASM the factory actually deploys tokens from. Compared against
@@ -84,6 +127,7 @@ export interface AppError {
 
 export type SortOrder = 'newest' | 'oldest' | 'alphabetical'
 export type ContractEventType =
+  'init' | 'created' | 'meta' | 'mint' | 'burn' | 'fees' | 'pause' | 'unpause' | 'admin_update'
   | 'init'
   | 'created'
   | 'meta'
@@ -92,7 +136,10 @@ export type ContractEventType =
   | 'fees'
   | 'pause'
   | 'unpause'
-  | 'admin_update'
+  | 'adm_upd'
+  | 'wl_add'
+  | 'wl_rm'
+  | 'wl_tog'
 
 export interface ContractEvent {
   id: string

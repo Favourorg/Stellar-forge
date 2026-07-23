@@ -1,7 +1,8 @@
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router-dom'
 import { useStellarContext } from '../context/StellarContext'
+import { useNetwork } from '../context/NetworkContext'
 import { useToast } from '../context/ToastContext'
 import { ipfsService } from '../services/ipfs'
 import { STELLAR_CONFIG } from '../config/stellar'
@@ -19,10 +20,26 @@ interface TokenWithMetadata extends TokenInfo {
   metadata?: IPFSMetadata | null
 }
 
+/**
+ * Maps derived from factory events, correlating a token's on-chain 1-based
+ * index to its contract address and latest metadata URI. `get_token_info`
+ * (the authoritative index-range listing) carries neither, so events are the
+ * complementary path used purely for enrichment — a token still renders from
+ * its `get_token_info` data if this lookup is unavailable.
+ */
+interface EventMaps {
+  key: string
+  indexToAddress: Map<number, string>
+  addressToMeta: Map<string, string>
+}
+
 export const TokenExplorer: React.FC = () => {
   const { t } = useTranslation()
   const { stellarService } = useStellarContext()
+  const { network } = useNetwork()
   const { addToast } = useToast()
+
+  const contractId = STELLAR_CONFIG.factoryContractId || ''
 
   const [searchInput, setSearchInput] = useState('')
   const [creatorFilter, setCreatorFilter] = useState('')
@@ -36,16 +53,92 @@ export const TokenExplorer: React.FC = () => {
   const [totalTokens, setTotalTokens] = useState(0)
   const [tokens, setTokens] = useState<TokenWithMetadata[]>([])
   const [loadingTokens, setLoadingTokens] = useState(false)
+  // Distinct from an empty list: a non-null value means the page fetch failed,
+  // so the UI must show an error state rather than "no tokens exist".
+  const [listError, setListError] = useState<Error | null>(null)
+  // Bumped to force a re-fetch (retry / after a mutation) without changing page.
+  const [reloadNonce, setReloadNonce] = useState(0)
 
   const tokensPerPage = 10
 
-  // Load factory state to get total token count
-  useEffect(() => {
-    stellarService
-      .getFactoryState()
-      .then((state) => setTotalTokens(state.tokenCount))
-      .catch(() => setTotalTokens(0))
-  }, [stellarService])
+  // Per-mount page cache keyed by (network, contractId, pageSize, page). The
+  // key embeds network + contract so a page from another chain is never served
+  // after a network switch. Created-event invalidation for shared app state
+  // lives in the useTokens hook; here a stale cache is bypassed via
+  // `reloadNonce`. Only ever read/written inside effects, never during render.
+  const pageCacheRef = useRef<Map<string, { tokens: TokenInfo[]; total: number }>>(new Map())
+  const eventMapsRef = useRef<EventMaps | null>(null)
+
+  const pageCacheKey = useCallback(
+    (page: number) => `${network}:${contractId}:${tokensPerPage}:${page}`,
+    [network, contractId],
+  )
+
+  // Build (and memoise) the index→address / address→metadataUri correlation
+  // from factory events. Paginated via fetchAllContractEvents — a single capped
+  // getContractEvents() call would silently drop the newest tokens once history
+  // exceeds one page.
+  const getEventMaps = useCallback(async (): Promise<EventMaps> => {
+    const key = `${network}:${contractId}`
+    if (eventMapsRef.current?.key === key) return eventMapsRef.current
+
+    const events = await fetchAllContractEvents(stellarService, contractId)
+    // Creation order == 1-based index order: the k-th `created` event (oldest
+    // first) is the token stored at index k+1.
+    const created = events
+      .filter((e) => e.type === 'created')
+      .sort((a, b) => a.ledger - b.ledger || a.id.localeCompare(b.id))
+    const indexToAddress = new Map<number, string>()
+    created.forEach((e, k) => {
+      if (e.data.tokenAddress) indexToAddress.set(k + 1, e.data.tokenAddress)
+    })
+    const addressToMeta = new Map<string, string>()
+    for (const e of events.filter((e) => e.type === 'meta').sort((a, b) => a.ledger - b.ledger)) {
+      if (e.data.tokenAddress && e.data.metadataUri) {
+        addressToMeta.set(e.data.tokenAddress, e.data.metadataUri)
+      }
+    }
+
+    const maps: EventMaps = { key, indexToAddress, addressToMeta }
+    eventMapsRef.current = maps
+    return maps
+  }, [network, contractId, stellarService])
+
+  // Enrich an authoritative index-range page with token address + metadata.
+  // Best-effort: if events are unavailable the tokens still render (without a
+  // detail link or image) rather than disappearing.
+  const enrichPage = useCallback(
+    async (infoPage: TokenInfo[]): Promise<TokenWithMetadata[]> => {
+      let maps: EventMaps | null = null
+      try {
+        maps = await getEventMaps()
+      } catch {
+        maps = null
+      }
+
+      return Promise.all(
+        infoPage.map(async (info) => {
+          const address = info.index != null ? (maps?.indexToAddress.get(info.index) ?? '') : ''
+          const metadataUri =
+            info.metadataUri ?? (address ? maps?.addressToMeta.get(address) : undefined)
+
+          let metadata: IPFSMetadata | null = null
+          if (metadataUri) {
+            try {
+              metadata = (await ipfsService.getMetadata(metadataUri)) as IPFSMetadata
+            } catch {
+              // Metadata fetch failure is non-fatal
+            }
+          }
+
+          const enriched: TokenWithMetadata = { ...info, address, metadata }
+          if (metadataUri !== undefined) enriched.metadataUri = metadataUri
+          return enriched
+        }),
+      )
+    },
+    [getEventMaps],
+  )
 
   const loadTokenByAddress = useCallback(
     async (address: string): Promise<TokenWithMetadata | null> => {
@@ -73,41 +166,45 @@ export const TokenExplorer: React.FC = () => {
     [stellarService],
   )
 
-  // Load tokens for current page
+  // Load the current page from the authoritative index-range view
+  // (getAllTokens → { tokens, total }), newest-first. "Latest request wins":
+  // a superseded page fetch is discarded so rapid navigation cannot leave a
+  // stale page rendered.
   useEffect(() => {
-    if (totalTokens === 0) return
+    let cancelled = false
 
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- entering the loading state is the first step of the page fetch this effect exists to run; see #1002 follow-up
     setLoadingTokens(true)
-    const startIndex = (currentPage - 1) * tokensPerPage
-    const endIndex = Math.min(startIndex + tokensPerPage, totalTokens)
+    setListError(null)
 
-    // Get all token_created events to map indices to addresses. Paginated
-    // via fetchAllContractEvents rather than a single capped
-    // getContractEvents() call — see that helper for why a fixed limit
-    // would silently drop the newest tokens once history exceeds one page.
-    fetchAllContractEvents(stellarService, STELLAR_CONFIG.factoryContractId || '')
-      .then((events) => {
-        const tokenCreatedEvents = events
-          .filter((e) => e.type === 'created')
-          .sort((a, b) => a.ledger - b.ledger) // Sort by creation order
+    async function run() {
+      try {
+        const key = pageCacheKey(currentPage)
+        const cached = pageCacheRef.current.get(key)
+        const page =
+          cached ??
+          (await stellarService.getAllTokens((currentPage - 1) * tokensPerPage, tokensPerPage))
+        if (!cached) pageCacheRef.current.set(key, page)
+        if (cancelled) return
 
-        const promises: Promise<TokenWithMetadata | null>[] = []
-        for (let i = startIndex; i < endIndex; i++) {
-          const event = tokenCreatedEvents[i]
-          if (event?.data.tokenAddress) {
-            promises.push(loadTokenByAddress(event.data.tokenAddress))
-          }
-        }
+        setTotalTokens(page.total)
+        const enriched = await enrichPage(page.tokens)
+        if (cancelled) return
+        setTokens(enriched)
+      } catch (err) {
+        if (cancelled) return
+        setTokens([])
+        setListError(err instanceof Error ? err : new Error(String(err)))
+      } finally {
+        if (!cancelled) setLoadingTokens(false)
+      }
+    }
 
-        return Promise.all(promises)
-      })
-      .then((results) => {
-        const validTokens = results.filter((t): t is TokenWithMetadata => t !== null)
-        setTokens(validTokens)
-      })
-      .catch(() => setTokens([]))
-      .finally(() => setLoadingTokens(false))
-  }, [currentPage, totalTokens, stellarService, loadTokenByAddress])
+    run()
+    return () => {
+      cancelled = true
+    }
+  }, [currentPage, stellarService, enrichPage, pageCacheKey, reloadNonce])
 
   const getFilteredTokens = (): TokenWithMetadata[] => {
     if (!debouncedCreatorFilter) return tokens
@@ -130,11 +227,12 @@ export const TokenExplorer: React.FC = () => {
     setSearchResult(null)
 
     try {
-      // Check if input is a number (index)
+      // Check if input is a number (contract index, 1-based to match the
+      // `#index` shown in the list below).
       const indexMatch = /^\d+$/.exec(query)
       if (indexMatch) {
         const index = parseInt(query, 10)
-        if (index >= totalTokens) {
+        if (index < 1 || index > totalTokens) {
           setSearchError(`Token index ${index} does not exist. Total tokens: ${totalTokens}`)
           return
         }
@@ -146,9 +244,9 @@ export const TokenExplorer: React.FC = () => {
         )
         const tokenCreatedEvents = events
           .filter((e) => e.type === 'created')
-          .sort((a, b) => a.ledger - b.ledger)
+          .sort((a, b) => a.ledger - b.ledger || a.id.localeCompare(b.id))
 
-        const event = tokenCreatedEvents[index]
+        const event = tokenCreatedEvents[index - 1]
         if (!event?.data.tokenAddress) {
           setSearchError('Token not found at this index')
           return
@@ -254,6 +352,32 @@ export const TokenExplorer: React.FC = () => {
           <div className="flex justify-center py-12">
             <Spinner size="lg" label={t('tokenExplorer.loadingTokens', 'Loading tokens...')} />
           </div>
+        ) : listError ? (
+          // Fetch failure — never render as an empty list, which would read as
+          // "no tokens exist" and mask the outage.
+          <Card>
+            <div className="text-center py-8" role="alert">
+              <p className="text-red-600 dark:text-red-400 font-medium">
+                {t('tokenExplorer.loadError', 'Could not load tokens')}
+              </p>
+              <p className="mt-1 text-sm text-gray-500 dark:text-gray-400 break-words">
+                {listError.message}
+              </p>
+              <Button
+                type="button"
+                variant="secondary"
+                className="mt-4"
+                onClick={() => {
+                  // Bypass the cached (failed) page and any stale event maps on retry.
+                  pageCacheRef.current.delete(pageCacheKey(currentPage))
+                  eventMapsRef.current = null
+                  setReloadNonce((n) => n + 1)
+                }}
+              >
+                {t('tokenExplorer.retry', 'Retry')}
+              </Button>
+            </div>
+          </Card>
         ) : getFilteredTokens().length === 0 ? (
           <Card>
             <p className="text-center text-gray-500 dark:text-gray-400 py-8">
@@ -265,18 +389,14 @@ export const TokenExplorer: React.FC = () => {
         ) : (
           <div className="space-y-4">
             {getFilteredTokens().map((token, index) => (
-              <Card key={`${token.address}-${index}`}>
-                <TokenDisplay
-                  token={token}
-                  showIndex
-                  index={(currentPage - 1) * tokensPerPage + index}
-                />
+              <Card key={`${token.address || token.index}-${index}`}>
+                <TokenDisplay token={token} showIndex />
               </Card>
             ))}
           </div>
         )}
 
-        {totalPages > 1 && !loadingTokens && !debouncedCreatorFilter && (
+        {totalPages > 1 && !loadingTokens && !listError && !debouncedCreatorFilter && (
           <PaginationControls
             page={currentPage}
             totalPages={totalPages}
@@ -294,10 +414,9 @@ export const TokenExplorer: React.FC = () => {
 interface TokenDisplayProps {
   token: TokenWithMetadata
   showIndex?: boolean
-  index?: number
 }
 
-const TokenDisplay: React.FC<TokenDisplayProps> = ({ token, showIndex, index }) => {
+const TokenDisplay: React.FC<TokenDisplayProps> = ({ token, showIndex }) => {
   const { t } = useTranslation()
   const imageUrl = token.metadata?.image ? ipfsToGatewayUrl(token.metadata.image) : null
 
@@ -317,8 +436,10 @@ const TokenDisplay: React.FC<TokenDisplayProps> = ({ token, showIndex, index }) 
         )}
         <div className="flex-1 min-w-0">
           <div className="flex items-baseline gap-2 flex-wrap">
-            {showIndex !== undefined && index !== undefined && (
-              <span className="text-sm font-mono text-gray-500 dark:text-gray-400">#{index}</span>
+            {showIndex && token.index !== undefined && (
+              <span className="text-sm font-mono text-gray-500 dark:text-gray-400">
+                #{token.index}
+              </span>
             )}
             <h4 className="text-lg font-semibold text-gray-900 dark:text-white">{token.name}</h4>
             <span className="text-sm font-mono text-gray-500 dark:text-gray-400">
@@ -326,7 +447,10 @@ const TokenDisplay: React.FC<TokenDisplayProps> = ({ token, showIndex, index }) 
             </span>
           </div>
           {token.metadata?.description && (
-            <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">
+            // Clamped hard with no expand affordance: this is a list row, and a
+            // single token must not be able to grow its card and push the rest
+            // of the results off-screen.
+            <p className="mt-1 text-sm text-gray-600 dark:text-gray-400 line-clamp-2 break-words">
               {token.metadata.description}
             </p>
           )}
@@ -335,15 +459,17 @@ const TokenDisplay: React.FC<TokenDisplayProps> = ({ token, showIndex, index }) 
 
       {/* Token Details */}
       <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3 text-sm">
-        <div>
-          <dt className="text-gray-500 dark:text-gray-400">
-            {t('tokenExplorer.address', 'Address')}
-          </dt>
-          <dd className="flex items-center gap-1 font-mono text-xs break-all text-gray-900 dark:text-gray-100 mt-1">
-            <span title={token.address}>{formatAddress(token.address)}</span>
-            <CopyButton value={token.address} ariaLabel="Copy token address" />
-          </dd>
-        </div>
+        {token.address && (
+          <div>
+            <dt className="text-gray-500 dark:text-gray-400">
+              {t('tokenExplorer.address', 'Address')}
+            </dt>
+            <dd className="flex items-center gap-1 font-mono text-xs break-all text-gray-900 dark:text-gray-100 mt-1">
+              <span title={token.address}>{formatAddress(token.address)}</span>
+              <CopyButton value={token.address} ariaLabel="Copy token address" />
+            </dd>
+          </div>
+        )}
 
         <div>
           <dt className="text-gray-500 dark:text-gray-400">
@@ -399,15 +525,18 @@ const TokenDisplay: React.FC<TokenDisplayProps> = ({ token, showIndex, index }) 
         )}
       </dl>
 
-      {/* View Details Link */}
-      <div className="pt-2 border-t border-gray-200 dark:border-gray-700">
-        <Link
-          to={`/tokens/${token.address}`}
-          className="text-sm text-blue-600 dark:text-blue-400 hover:underline font-medium"
-        >
-          {t('tokenExplorer.viewDetails', 'View full details')} →
-        </Link>
-      </div>
+      {/* View Details Link — only when the token address is known (resolved
+          from events); the index-range listing alone carries no address. */}
+      {token.address && (
+        <div className="pt-2 border-t border-gray-200 dark:border-gray-700">
+          <Link
+            to={`/tokens/${token.address}`}
+            className="text-sm text-blue-600 dark:text-blue-400 hover:underline font-medium"
+          >
+            {t('tokenExplorer.viewDetails', 'View full details')} →
+          </Link>
+        </div>
+      )}
     </div>
   )
 }

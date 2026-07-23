@@ -20,6 +20,7 @@ import { BurnForm } from './BurnForm'
 import { SetMetadataForm } from './SetMetadataForm'
 import { TokenHistory } from './TokenHistory'
 import { NotFound } from './NotFound'
+import { ClampedText } from './ClampedText'
 
 const BASE_URL = 'https://stellarforge.app'
 
@@ -47,6 +48,10 @@ export const TokenDetail: React.FC = () => {
   const [metadata, setMetadata] = useState<IPFSMetadata | null>(null)
   const [loading, setLoading] = useState(true)
   const [notFound, setNotFound] = useState(false)
+  // Set when the factory cannot confirm a token at this address. Distinct from
+  // `notFound` (invalid address / hard failure): we never fabricate placeholder
+  // token data, so an unresolvable address renders an explicit marker instead.
+  const [unresolved, setUnresolved] = useState<string | null>(null)
   const [activePanel, setActivePanel] = useState<ActivePanel>(null)
   const [showQR, setShowQR] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -63,12 +68,19 @@ export const TokenDetail: React.FC = () => {
 
     setLoading(true)
     setNotFound(false)
+    setUnresolved(null)
     setError(null)
 
     stellarService
-      .getTokenInfoByAddress(address)
-      .then(async (info) => {
-        setToken(info as TokenInfo)
+      .resolveTokenInfoByAddress(address)
+      .then(async (result) => {
+        if (result.status === 'unresolved') {
+          // Never render fabricated identity — surface the unresolved marker.
+          setUnresolved(result.message)
+          return
+        }
+        const { status: _status, ...info } = result
+        setToken(info)
         if (info.metadataUri) {
           try {
             const meta = await ipfsService.getMetadata(info.metadataUri)
@@ -134,6 +146,26 @@ export const TokenDetail: React.FC = () => {
 
   if (loading) {
     return <TokenDetailSkeleton />
+  }
+
+  if (unresolved) {
+    return (
+      <div className="max-w-2xl mx-auto space-y-4">
+        <Card title="Token unresolved">
+          <p className="text-sm text-gray-700 dark:text-gray-300">{unresolved}</p>
+          <p className="mt-2 text-xs text-gray-500 dark:text-gray-400 font-mono break-all">
+            {address}
+          </p>
+          <div className="mt-4">
+            <Link to="/tokens">
+              <Button variant="outline" size="sm">
+                ← Back to tokens
+              </Button>
+            </Link>
+          </div>
+        </Card>
+      </div>
+    )
   }
 
   if (notFound || !token) {
@@ -269,10 +301,14 @@ export const TokenDetail: React.FC = () => {
             )}
             <div className="space-y-1 text-sm">
               {metadata.name && (
-                <p className="font-medium text-gray-900 dark:text-gray-100">{metadata.name}</p>
+                <p className="font-medium text-gray-900 dark:text-gray-100 line-clamp-2 break-words">
+                  {metadata.name}
+                </p>
               )}
               {metadata.description && (
-                <p className="text-gray-600 dark:text-gray-400">{metadata.description}</p>
+                <ClampedText lines={3} expandable className="text-gray-600 dark:text-gray-400">
+                  {metadata.description}
+                </ClampedText>
               )}
             </div>
           </div>
