@@ -433,13 +433,21 @@ impl TokenFactory {
                         let page = (migrated / MAX_TOKENS_BY_CREATOR_PAGE)
                             .checked_sub(1)
                             .ok_or(Error::ArithmeticOverflow)?;
-                        Self::set_persistent(env, &DataKey::CreatorTokens(creator.clone(), page), &bucket);
+                        Self::set_persistent(
+                            env,
+                            &DataKey::CreatorTokens(creator.clone(), page),
+                            &bucket,
+                        );
                         bucket = vec![env];
                     }
                 }
                 if !bucket.is_empty() {
                     let page = migrated / MAX_TOKENS_BY_CREATOR_PAGE;
-                    Self::set_persistent(env, &DataKey::CreatorTokens(creator.clone(), page), &bucket);
+                    Self::set_persistent(
+                        env,
+                        &DataKey::CreatorTokens(creator.clone(), page),
+                        &bucket,
+                    );
                 }
                 migrated
             }
@@ -831,7 +839,11 @@ impl TokenFactory {
         // Transfer fee from admin to treasury using the dedicated fee_token
         Self::distribute_fee(&env, &state, &admin, fee_payment)?;
 
-        Self::set_persistent(&env, &DataKey::Metadata(token_address.clone()), &metadata_uri);
+        Self::set_persistent(
+            &env,
+            &DataKey::Metadata(token_address.clone()),
+            &metadata_uri,
+        );
 
         state.locked = false;
         Self::save_state(&env, &state);
@@ -869,8 +881,9 @@ impl TokenFactory {
         }
 
         // Fetch token index and verify creator authorization
-        let index: u32 = Self::migrate_addr_keyed(&env, &DataKey::TokenIndex(token_address.clone()))
-            .ok_or(Error::TokenNotFound)?;
+        let index: u32 =
+            Self::migrate_addr_keyed(&env, &DataKey::TokenIndex(token_address.clone()))
+                .ok_or(Error::TokenNotFound)?;
 
         let token_info: TokenInfo = Self::migrate_addr_keyed(&env, &DataKey::TokenInfo(index))
             .ok_or(Error::TokenNotFound)?;
@@ -999,8 +1012,9 @@ impl TokenFactory {
             return Err(Error::Unauthorized);
         }
 
-        let index: u32 = Self::migrate_addr_keyed(&env, &DataKey::TokenIndex(token_address.clone()))
-            .ok_or(Error::TokenNotFound)?;
+        let index: u32 =
+            Self::migrate_addr_keyed(&env, &DataKey::TokenIndex(token_address.clone()))
+                .ok_or(Error::TokenNotFound)?;
 
         let mut info: TokenInfo = Self::migrate_addr_keyed(&env, &DataKey::TokenInfo(index))
             .ok_or(Error::TokenNotFound)?;
@@ -1282,8 +1296,9 @@ impl TokenFactory {
             return Err(Error::Unauthorized);
         }
 
-        let index: u32 = Self::migrate_addr_keyed(&env, &DataKey::TokenIndex(token_address.clone()))
-            .ok_or(Error::TokenNotFound)?;
+        let index: u32 =
+            Self::migrate_addr_keyed(&env, &DataKey::TokenIndex(token_address.clone()))
+                .ok_or(Error::TokenNotFound)?;
         let token_info: TokenInfo = Self::migrate_addr_keyed(&env, &DataKey::TokenInfo(index))
             .ok_or(Error::TokenNotFound)?;
         let cap = token_info.max_supply.ok_or(Error::InvalidParameters)?;
@@ -1379,10 +1394,7 @@ impl TokenFactory {
     /// data, which cannot be trusted for tokens created outside the RPC's
     /// event-retention window. Returns `TokenNotFound` for unregistered
     /// addresses.
-    pub fn get_token_info_by_address(
-        env: Env,
-        token_address: Address,
-    ) -> Result<TokenInfo, Error> {
+    pub fn get_token_info_by_address(env: Env, token_address: Address) -> Result<TokenInfo, Error> {
         let index: u32 = Self::read_addr_keyed(&env, &DataKey::TokenIndex(token_address))
             .ok_or(Error::TokenNotFound)?;
         Self::read_addr_keyed(&env, &DataKey::TokenInfo(index)).ok_or(Error::TokenNotFound)
@@ -1433,8 +1445,8 @@ impl TokenFactory {
             limit
         };
 
-        let total: u32 = Self::read_addr_keyed(&env, &DataKey::CreatorTokenCount(creator.clone()))
-            .unwrap_or(0);
+        let total: u32 =
+            Self::read_addr_keyed(&env, &DataKey::CreatorTokenCount(creator.clone())).unwrap_or(0);
         if offset >= total {
             return vec![&env];
         }

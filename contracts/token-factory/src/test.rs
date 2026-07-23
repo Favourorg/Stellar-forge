@@ -1154,7 +1154,10 @@ fn test_get_token_info_by_address_returns_authoritative_identity() {
         max_supply: Some(1_000_000),
     };
     s.env.as_contract(&s.client.address, || {
-        s.env.storage().instance().set(&DataKey::TokenInfo(7), &info);
+        s.env
+            .storage()
+            .instance()
+            .set(&DataKey::TokenInfo(7), &info);
         s.env
             .storage()
             .instance()
@@ -1398,11 +1401,9 @@ fn test_instance_storage_size_stays_flat_under_load() {
     // must be identical before and after — a precise, deterministic
     // measurement rather than a resource-cost heuristic.
     let state_size = |s: &Setup| -> u32 {
-        let state: FactoryState = s
-            .env
-            .as_contract(&s.client.address, || {
-                s.env.storage().instance().get(&DataKey::State).unwrap()
-            });
+        let state: FactoryState = s.env.as_contract(&s.client.address, || {
+            s.env.storage().instance().get(&DataKey::State).unwrap()
+        });
         state.to_xdr(&s.env).len()
     };
     let baseline_size = state_size(&s);
@@ -2323,10 +2324,7 @@ fn test_migrate_upgrades_pre_versioned_state() {
 
     // A single `migrate` call walks through every pending step, so a
     // contract starting at sv = 0 lands directly on CURRENT_SCHEMA_VERSION.
-    assert_eq!(
-        s.client.get_state().schema_version,
-        CURRENT_SCHEMA_VERSION
-    );
+    assert_eq!(s.client.get_state().schema_version, CURRENT_SCHEMA_VERSION);
     s.env.as_contract(&s.client.address, || {
         let sv: u32 = s
             .env
@@ -2388,10 +2386,7 @@ fn test_migrate_from_version_0_walks_all_steps() {
     s.client.migrate(&s.admin);
 
     assert_eq!(read_sv(&s), CURRENT_SCHEMA_VERSION);
-    assert_eq!(
-        s.client.get_state().schema_version,
-        CURRENT_SCHEMA_VERSION
-    );
+    assert_eq!(s.client.get_state().schema_version, CURRENT_SCHEMA_VERSION);
 }
 
 /// A contract already at version 1 must only run the 1→2 and 2→3 steps — the
@@ -2412,10 +2407,7 @@ fn test_migrate_from_version_1_only_runs_v2_step() {
     s.client.migrate(&s.admin);
 
     assert_eq!(read_sv(&s), CURRENT_SCHEMA_VERSION);
-    assert_eq!(
-        s.client.get_state().schema_version,
-        CURRENT_SCHEMA_VERSION
-    );
+    assert_eq!(s.client.get_state().schema_version, CURRENT_SCHEMA_VERSION);
 }
 
 /// Calling `migrate` again once already at `CURRENT_SCHEMA_VERSION` must be a
@@ -2466,8 +2458,7 @@ fn test_backfill_capped_supply_allows_headroom_mint() {
     let token_addr = seed_token(&s, &admin, true, Some(1_000));
 
     // initial_supply = cap - 10, reconstructed off-chain.
-    s.client
-        .backfill_capped_supply(&s.admin, &token_addr, &990);
+    s.client.backfill_capped_supply(&s.admin, &token_addr, &990);
 
     s.fund(&admin, 2_000);
     let recipient = Address::generate(&s.env);
@@ -2524,8 +2515,7 @@ fn test_backfill_capped_supply_cannot_be_applied_twice() {
     let admin = Address::generate(&s.env);
     let token_addr = seed_token(&s, &admin, true, Some(1_000));
 
-    s.client
-        .backfill_capped_supply(&s.admin, &token_addr, &500);
+    s.client.backfill_capped_supply(&s.admin, &token_addr, &500);
     let result = s
         .client
         .try_backfill_capped_supply(&s.admin, &token_addr, &600);
