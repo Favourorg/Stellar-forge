@@ -2,8 +2,8 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::{Address as _, AuthorizedFunction, AuthorizedInvocation},
-    Address, Env, String,
+    testutils::{Address as _, AuthorizedFunction, AuthorizedInvocation, Events},
+    symbol_short, Address, Env, IntoVal, String,
 };
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -47,6 +47,43 @@ fn test_admin_can_unpause() {
     client.unpause(&admin);
     let state = client.get_state();
     assert!(!state.paused);
+}
+
+#[test]
+fn test_pause_emits_event() {
+    let (env, client, admin, _treasury) = setup_env();
+    client.pause(&admin);
+
+    let events = env.events().all();
+    let (contract_id, topics, data) = events.last().unwrap();
+    assert_eq!(contract_id, client.address);
+    assert_eq!(topics, (symbol_short!("paused"),).into_val(&env));
+    assert_eq!(data, (admin,).into_val(&env));
+}
+
+#[test]
+fn test_unpause_emits_event() {
+    let (env, client, admin, _treasury) = setup_env();
+    client.pause(&admin);
+    client.unpause(&admin);
+
+    let events = env.events().all();
+    let (contract_id, topics, data) = events.last().unwrap();
+    assert_eq!(contract_id, client.address);
+    assert_eq!(topics, (symbol_short!("unpaused"),).into_val(&env));
+    assert_eq!(data, (admin,).into_val(&env));
+}
+
+#[test]
+fn test_update_fees_emits_event() {
+    let (env, client, admin, _treasury) = setup_env();
+    client.update_fees(&admin, &Some(2000), &Some(750));
+
+    let events = env.events().all();
+    let (contract_id, topics, data) = events.last().unwrap();
+    assert_eq!(contract_id, client.address);
+    assert_eq!(topics, (symbol_short!("fees_updated"),).into_val(&env));
+    assert_eq!(data, (Some(2000i128), Some(750i128)).into_val(&env));
 }
 
 #[test]

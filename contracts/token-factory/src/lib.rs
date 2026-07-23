@@ -230,6 +230,9 @@ impl TokenFactory {
 
         state.paused = true;
         env.storage().instance().set(&symbol_short!("state"), &state);
+
+        env.events().publish((symbol_short!("paused"),), (admin,));
+
         Ok(())
     }
 
@@ -243,6 +246,9 @@ impl TokenFactory {
 
         state.paused = false;
         env.storage().instance().set(&symbol_short!("state"), &state);
+
+        env.events().publish((symbol_short!("unpaused"),), (admin,));
+
         Ok(())
     }
 
