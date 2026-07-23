@@ -2,8 +2,8 @@ import React, { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Input, Button } from './UI'
 import { useToast } from '../context/ToastContext'
-import { useWallet } from '../context/WalletContext'
-import { ipfsService, MAX_METADATA_DESCRIPTION_LENGTH, clearUploadToken } from '../services/ipfs'
+import { useWalletContext } from '../context/WalletContext'
+import { ipfsService, MAX_METADATA_DESCRIPTION_LENGTH } from '../services/ipfs'
 import { isIpfsConfigured } from '../config/env'
 import { isValidImageFile } from '../utils/validation'
 import { DropZone } from './DropZone'
@@ -20,7 +20,7 @@ export const MetadataUploadForm: React.FC<MetadataUploadFormProps> = ({
 }) => {
   const { t } = useTranslation()
   const { addToast } = useToast()
-  const { wallet } = useWallet()
+  const { wallet } = useWalletContext()
 
   const [tokenName, setTokenName] = useState('')
   const [description, setDescription] = useState('')
