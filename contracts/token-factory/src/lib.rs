@@ -54,13 +54,55 @@ pub struct TokenInfo {
 
 /// Current schema version written by `initialize` and bumped by `migrate`.
 /// Increment this constant whenever `FactoryState` gains new fields.
-pub const CURRENT_SCHEMA_VERSION: u32 = 2;
+pub const CURRENT_SCHEMA_VERSION: u32 = 3;
 
 #[contracttype]
 #[derive(Clone)]
 pub struct FactoryState {
     pub admin: Address,
     pub paused: bool,
+    /// # Reentrancy guard — threat model
+    ///
+    /// ## What it guards against
+    /// Soroban's cross-contract call model differs from EVM: each top-level
+    /// transaction runs in a single host invocation, and the storage layer
+    /// does **not** automatically roll back mid-function on re-entry. A
+    /// malicious contract called during an in-progress factory operation
+    /// (e.g. a crafted token-init WASM, a fee-split recipient that is itself
+    /// a contract, or a future cross-contract callback) could re-enter the
+    /// factory and observe or mutate partially-committed state — for example:
+    ///
+    /// - `token_count` incremented but `TokenInfo` not yet written
+    /// - Fee transferred out but `creator_tokens` list not yet updated
+    /// - Multiple tokens deployed with the same `salt`/`token_count` index
+    ///
+    /// ## Concrete sequence that `locked` prevents
+    /// 1. Alice calls `create_token`.
+    /// 2. Factory sets `locked = true` and starts executing.
+    /// 3. During `TokenInitClient::initialize` (external call), a malicious
+    ///    WASM calls back into `create_token` or `create_tokens_batch`.
+    /// 4. The guard detects `locked == true` and returns `Error::Reentrancy`,
+    ///    rejecting the re-entrant call before any state mutation can occur.
+    ///
+    /// ## Scope — all state-mutating, cross-contract-calling entrypoints
+    /// The guard applies to every entrypoint that both (a) calls out to an
+    /// external contract and (b) writes factory state. This currently covers:
+    /// `create_token`, `create_tokens_batch`, `mint_tokens`, `burn`,
+    /// `set_metadata`, and `set_burn_enabled`.
+    ///
+    /// ## Lock release on panic / host trap
+    /// Soroban executes each top-level transaction atomically: if the host
+    /// traps or the contract panics, the **entire transaction is rolled back**,
+    /// including the `locked = true` write. The lock is therefore guaranteed
+    /// to be released on every exit path:
+    ///
+    /// - **Normal return (Ok or Err)**: the outer function always writes
+    ///   `locked = false` via `save_state` before returning.
+    /// - **Panic / host trap**: Soroban rolls back all storage mutations for
+    ///   the transaction, so `locked = true` is never persisted.
+    ///
+    /// This means there is no "stuck lock" risk even if an inner function
+    /// panics rather than returning an `Err`.
     pub locked: bool,
     pub treasury: Address,
     pub fee_token: Address,
@@ -99,8 +141,12 @@ pub enum Error {
     MaxSupplyExceeded = 16,
     /// Fee split basis points do not sum to 10_000
     InvalidFeeSplit = 17,
+    /// Fee split recipient count exceeds `MAX_FEE_SPLIT_RECIPIENTS`
+    TooManyFeeSplitRecipients = 18,
+    /// `backfill_capped_supply` already applied for this token
+    AlreadyBackfilled = 19,
     /// Caller is not on the whitelist when whitelist enforcement is enabled
-    NotWhitelisted = 18,
+    NotWhitelisted = 20,
 }
 
 #[contract]
@@ -114,12 +160,47 @@ const MAX_TTL: u32 = 535_000;
 /// has registered many tokens, which is the problem this cap was added to
 /// address.
 const MAX_TOKENS_BY_CREATOR_PAGE: u32 = 50;
+/// Maximum number of recipients allowed in a `set_fee_split` map.
+///
+/// `distribute_fee` transfers a share to every configured recipient on each
+/// `create_token` / `create_tokens_batch` / `mint_tokens` / `set_metadata`
+/// call, so an unbounded recipient count makes every fee-paying call
+/// arbitrarily expensive for the caller and risks exceeding Soroban's
+/// per-transaction resource limits.
+///
+/// Empirically measured (`bench_fee_split_mint_*` in `bench.rs`): ledger
+/// *writes* — not CPU or memory — is the binding resource, since each
+/// non-zero-share recipient writes a new SEP-41 balance entry. Cost grows at
+/// ~1.03 writes per recipient; at 20 recipients that's 24 of the mainnet
+/// per-transaction write-entry limit of 50 (48%), leaving a 52% margin.
+/// CPU/memory stay under 1.5% of their respective mainnet limits at this
+/// size, even before accounting for the native-test-host underestimate
+/// (~30x CPU, ~5x memory) documented in `docs/contract-abi.md`. See
+/// `bench_fee_split_mint_20_within_limits` for the assertion that enforces
+/// this margin going forward.
+const MAX_FEE_SPLIT_RECIPIENTS: u32 = 20;
 
 #[contractimpl]
 impl TokenFactory {
-    /// Initialize the factory. `fee_token` is the SEP-41 token used for all
-    /// fee payments; fees are transferred from the caller to `treasury`.
-    pub fn initialize(
+    /// Constructor — runs atomically as part of contract deployment (Soroban
+    /// SDK ≥ 22 `deploy_v2` constructor support), so there is no window
+    /// between deployment and initialization for an attacker to front-run
+    /// with their own admin/treasury. `fee_token` is the SEP-41 token used
+    /// for all fee payments; fees are transferred from the caller to
+    /// `treasury`.
+    ///
+    /// `admin.require_auth()` additionally ensures the designated admin
+    /// address itself has authorized taking on that role, not just the
+    /// deploying account.
+    ///
+    /// `base_fee` and `metadata_fee` must be **≥ 0**. A value of `0` is
+    /// explicitly allowed (free token creation / free metadata). Negative
+    /// values are rejected with `Error::InvalidParameters` because a negative
+    /// fee satisfies every `fee_payment < required_fee` guard (making the
+    /// gate trivially by-passable) and would flow a negative amount into
+    /// `distribute_fee`, whose behavior with a negative SEP-41 transfer is
+    /// implementation-defined on the token contract side.
+    pub fn __constructor(
         env: Env,
         admin: Address,
         treasury: Address,
@@ -128,8 +209,18 @@ impl TokenFactory {
         base_fee: i128,
         metadata_fee: i128,
     ) -> Result<(), Error> {
+        admin.require_auth();
+
         if env.storage().instance().has(&DataKey::State) {
             return Err(Error::AlreadyInitialized);
+        }
+
+        // Fee sign constraint: fees must be non-negative.
+        // 0 is allowed (free token creation is a legitimate use-case).
+        // Negative fees corrupt the fee-gate logic and produce undefined
+        // behaviour in distribute_fee — reject them unconditionally.
+        if base_fee < 0 || metadata_fee < 0 {
+            return Err(Error::InvalidParameters);
         }
 
         let state = FactoryState {
@@ -447,6 +538,12 @@ impl TokenFactory {
         if p.symbol.is_empty() || p.symbol.len() > 12 {
             return Err(Error::InvalidParameters);
         }
+        if p.decimals > 18 {
+            return Err(Error::InvalidParameters);
+        }
+        if p.initial_supply < 0 {
+            return Err(Error::InvalidParameters);
+        }
         if let Some(cap) = p.max_supply {
             if cap <= 0 || p.initial_supply > cap {
                 return Err(Error::InvalidParameters);
@@ -477,11 +574,21 @@ impl TokenFactory {
             token::StellarAssetClient::new(env, &token_address).mint(creator, &p.initial_supply);
         }
 
-        let new_count = state
+        // Seed the tracked-supply counter with `initial_supply` so `mint_tokens`'s
+        // cap check accounts for tokens already minted at creation time.
+        // Without this, a capped token created with `initial_supply == max_supply`
+        // could still be minted for another full `max_supply`, since the counter
+        // (which `mint_tokens` reads via `.unwrap_or(0)`) would otherwise start
+        // at zero regardless of how much was minted here (issue #1006).
+        if p.max_supply.is_some() {
+            let supply_key = (&token_address, symbol_short!("supply"));
+            env.storage().instance().set(&supply_key, &p.initial_supply);
+        }
+
+        state.token_count = state
             .token_count
             .checked_add(1)
             .ok_or(Error::ArithmeticOverflow)?;
-        state.token_count = new_count;
         let index = state.token_count;
 
         let token_name = p.name.clone();
@@ -555,6 +662,12 @@ impl TokenFactory {
             Self::validate_batch_params(&p)?;
         }
 
+        // Front-load token count overflow check for the entire batch before any deployment happens.
+        state
+            .token_count
+            .checked_add(tokens.len())
+            .ok_or(Error::ArithmeticOverflow)?;
+
         let total_fee = state
             .base_fee
             .checked_mul(count)
@@ -575,27 +688,18 @@ impl TokenFactory {
         Self::save_state(&env, &state);
 
         let mut addresses: Vec<Address> = vec![&env];
-        let mut result: Result<(), Error> = Ok(());
 
+        // Soroban enforces per-invocation ledger atomicity: if any host error, panic,
+        // or Err occurs during deployment or fee transfer, the entire invocation transaction
+        // (including all deployed sub-tokens, storage updates, and mints) is automatically reverted.
         for p in tokens.into_iter() {
-            match Self::deploy_one(&env, &creator, p, &mut state) {
-                Ok(addr) => addresses.push_back(addr),
-                Err(e) => {
-                    result = Err(e);
-                    break;
-                }
-            }
-        }
-
-        state.locked = false;
-
-        if let Err(e) = result {
-            Self::save_state(&env, &state);
-            return Err(e);
+            let addr = Self::deploy_one(&env, &creator, p, &mut state)?;
+            addresses.push_back(addr);
         }
 
         // Transfer fee from creator to treasury using the dedicated fee_token
         Self::distribute_fee(&env, &state, &creator, fee_payment)?;
+        state.locked = false;
         Self::save_state(&env, &state);
         Ok(addresses)
     }
@@ -610,7 +714,11 @@ impl TokenFactory {
         Self::require_not_paused(&env)?;
         admin.require_auth();
 
-        let state = Self::load_state(&env)?;
+        let mut state = Self::load_state(&env)?;
+
+        if state.locked {
+            return Err(Error::Reentrancy);
+        }
 
         if fee_payment < state.metadata_fee {
             return Err(Error::InsufficientFee);
@@ -634,6 +742,9 @@ impl TokenFactory {
             return Err(Error::MetadataAlreadySet);
         }
 
+        state.locked = true;
+        Self::save_state(&env, &state);
+
         // Transfer fee from admin to treasury using the dedicated fee_token
         Self::distribute_fee(&env, &state, &admin, fee_payment)?;
 
@@ -641,6 +752,9 @@ impl TokenFactory {
             .instance()
             .set(&DataKey::Metadata(token_address.clone()), &metadata_uri);
         env.storage().instance().extend_ttl(MIN_TTL, MAX_TTL);
+
+        state.locked = false;
+        Self::save_state(&env, &state);
 
         env.events().publish(
             (symbol_short!("factory"), symbol_short!("meta")),
@@ -664,7 +778,11 @@ impl TokenFactory {
             return Err(Error::InvalidParameters);
         }
 
-        let state = Self::load_state(&env)?;
+        let mut state = Self::load_state(&env)?;
+
+        if state.locked {
+            return Err(Error::Reentrancy);
+        }
 
         if fee_payment < state.base_fee {
             return Err(Error::InsufficientFee);
@@ -706,10 +824,16 @@ impl TokenFactory {
             env.storage().instance().set(&supply_key, &new_total);
         }
 
+        state.locked = true;
+        Self::save_state(&env, &state);
+
         // Transfer fee from admin to treasury using the dedicated fee_token
         Self::distribute_fee(&env, &state, &admin, fee_payment)?;
 
         token::StellarAssetClient::new(&env, &token_address).mint(&to, &amount);
+
+        state.locked = false;
+        Self::save_state(&env, &state);
 
         env.events().publish(
             (symbol_short!("factory"), symbol_short!("mint")),
@@ -751,7 +875,33 @@ impl TokenFactory {
             }
         }
 
-        token.burn(&from, &amount);
+        // Acquire the reentrancy lock before the external burn call.
+        // `burn` calls into an externally-deployed token contract, which
+        // could theoretically call back into the factory. The lock prevents
+        // any re-entrant factory call from seeing or mutating partially-
+        // committed state.
+        //
+        // Note: `burn` does not load a full FactoryState (it is intentionally
+        // lightweight and works even when the factory is paused), so we guard
+        // via a direct storage read/write rather than through `load_state`.
+        let state_key = DataKey::State;
+        if let Some(mut state) = env.storage().instance().get::<_, FactoryState>(&state_key) {
+            if state.locked {
+                return Err(Error::Reentrancy);
+            }
+            state.locked = true;
+            env.storage().instance().set(&state_key, &state);
+            env.storage().instance().extend_ttl(MIN_TTL, MAX_TTL);
+
+            token.burn(&from, &amount);
+
+            state.locked = false;
+            env.storage().instance().set(&state_key, &state);
+            env.storage().instance().extend_ttl(MIN_TTL, MAX_TTL);
+        } else {
+            // Factory not initialized — proceed without the lock (no state to protect).
+            token.burn(&from, &amount);
+        }
 
         env.events().publish(
             (symbol_short!("factory"), symbol_short!("burn")),
@@ -767,6 +917,12 @@ impl TokenFactory {
         enabled: bool,
     ) -> Result<(), Error> {
         admin.require_auth();
+
+        let mut state = Self::load_state(&env)?;
+
+        if state.locked {
+            return Err(Error::Reentrancy);
+        }
 
         let creator: Address = env
             .storage()
@@ -790,11 +946,24 @@ impl TokenFactory {
             .get(&DataKey::TokenInfo(index))
             .ok_or(Error::TokenNotFound)?;
 
+        // set_burn_enabled does not make any external cross-contract calls, so
+        // the lock is acquired and immediately released in the same call frame.
+        // It is guarded anyway for consistency: all state-mutating entrypoints
+        // share the same invariant so future additions cannot accidentally
+        // introduce cross-contract calls without being noticed as "already
+        // guarded" or "newly needs the guard".
+        state.locked = true;
+        Self::save_state(&env, &state);
+
         info.burn_enabled = enabled;
         env.storage()
             .instance()
             .set(&DataKey::TokenInfo(index), &info);
         env.storage().instance().extend_ttl(MIN_TTL, MAX_TTL);
+
+        state.locked = false;
+        Self::save_state(&env, &state);
+
         Ok(())
     }
 
@@ -840,6 +1009,16 @@ impl TokenFactory {
             return Ok(());
         }
 
+        // Fail fast on an oversized map before paying for the summation loop
+        // below — see `MAX_FEE_SPLIT_RECIPIENTS` for why this bound exists.
+        // Guard: cap the number of recipients to prevent transaction-budget
+        // exhaustion and ledger-entry size overflow in `distribute_fee`.
+        // Exceeding the cap is rejected with `TooManyFeeSplitRecipients` so
+        // callers get a meaningful error rather than a silent host-level failure.
+        if splits.len() > MAX_FEE_SPLIT_RECIPIENTS {
+            return Err(Error::TooManyFeeSplitRecipients);
+        }
+
         let mut total: u32 = 0;
         for (_, bps) in splits.iter() {
             total = total.checked_add(bps).ok_or(Error::ArithmeticOverflow)?;
@@ -871,10 +1050,20 @@ impl TokenFactory {
         if admin != state.admin {
             return Err(Error::Unauthorized);
         }
+        // Fee sign constraint — same policy as initialize: 0 is allowed,
+        // negative values are rejected.  A negative fee would silently bypass
+        // every fee-gate check (`fee_payment < required_fee` is always false
+        // when required_fee < 0) and pass a negative amount to distribute_fee.
         if let Some(fee) = base_fee {
+            if fee < 0 {
+                return Err(Error::InvalidParameters);
+            }
             state.base_fee = fee;
         }
         if let Some(fee) = metadata_fee {
+            if fee < 0 {
+                return Err(Error::InvalidParameters);
+            }
             state.metadata_fee = fee;
         }
         Self::save_state(&env, &state);
@@ -902,23 +1091,133 @@ impl TokenFactory {
             return Err(Error::Unauthorized);
         }
         let sv_key = symbol_short!("sv");
+
+        // `on_chain_version` is declared `mut` so that each migration step can
+        // bump it immediately after it runs.  This is the critical detail that
+        // makes multi-step migrations compose correctly: the *next* `if` block
+        // compares against the value that was just written, not the value that
+        // was read before any step ran.  Without the `mut` + in-place bump the
+        // second block would still see the original version and would either
+        // run unconditionally (wrong) or not run at all (also wrong).
         let mut on_chain_version: u32 = env.storage().instance().get(&sv_key).unwrap_or(0);
+
         if on_chain_version < 1 {
-            // Version 1: ensure schema_version field is set
-            let mut s = state.clone();
+            // Version 1: stamp schema_version onto pre-versioned state.
+            let mut s = Self::load_state(&env)?;
             s.schema_version = 1;
             Self::save_state(&env, &s);
-            env.storage().instance().set(&sv_key, &1u32);
             on_chain_version = 1;
+            env.storage().instance().set(&sv_key, &on_chain_version);
         }
+
         if on_chain_version < 2 {
-            // Version 2: add whitelist_enabled field (defaults to false)
+            // Version 2: fixes the max-supply accounting bug (issue #1006) where
+            // `deploy_one` never seeded the tracked-supply counter with
+            // `initial_supply`, letting a capped token be minted past its
+            // advertised cap. This step only bumps the version marker — it does
+            // NOT loop over every stored `TokenInfo`, because `token_count` is
+            // unbounded and rewriting every entry inside a single `migrate` call
+            // could exceed the transaction's instruction budget.
+            //
+            // Tokens created before this fix that have `max_supply` configured
+            // still have an under-seeded (or absent) supply counter. There is no
+            // on-chain record of their true `initial_supply` to recover it
+            // automatically. Operators must back-fill each affected token
+            // individually via `backfill_capped_supply`, supplying a
+            // `verified_supply` reconstructed off-chain (e.g. by summing every
+            // `mint` event the token contract itself has emitted since
+            // deployment). See docs/contract-abi.md ("Supply cap accounting")
+            // for the full back-fill procedure and its limitations.
             let mut s = Self::load_state(&env)?;
-            s.whitelist_enabled = false;
             s.schema_version = 2;
             Self::save_state(&env, &s);
-            env.storage().instance().set(&sv_key, &2u32);
+            on_chain_version = 2;
+            env.storage().instance().set(&sv_key, &on_chain_version);
         }
+
+        if on_chain_version < 3 {
+            // Version 3: add the `whitelist_enabled` field, defaulting to
+            // `false` so existing deployments keep their open behaviour until an
+            // admin explicitly enables enforcement via `set_whitelist_enabled`.
+            let mut s = Self::load_state(&env)?;
+            s.whitelist_enabled = false;
+            s.schema_version = 3;
+            Self::save_state(&env, &s);
+            on_chain_version = 3;
+            env.storage().instance().set(&sv_key, &on_chain_version);
+        }
+
+        // Each future migration step follows the same pattern:
+        //
+        //   if on_chain_version < N {
+        //       // … apply N-specific changes …
+        //       on_chain_version = N;
+        //       env.storage().instance().set(&sv_key, &on_chain_version);
+        //   }
+        //
+        // Because `on_chain_version` is updated in-place between blocks,
+        // a contract that is K versions behind will walk through every pending
+        // step in a single `migrate` call, arriving at CURRENT_SCHEMA_VERSION.
+
+        let _ = on_chain_version; // suppress unused-variable warning when no further steps exist
+        Ok(())
+    }
+
+    /// One-time back-fill of the tracked-supply counter for a capped token
+    /// created before `deploy_one` began seeding it with `initial_supply`
+    /// (issue #1006). See docs/contract-abi.md for the full procedure.
+    ///
+    /// `verified_supply` must be independently reconstructed off-chain — the
+    /// factory has no on-chain record of a pre-fix token's true initial
+    /// supply. A reliable source is the sum of every `mint` event the token
+    /// contract itself has emitted since deployment (queryable via RPC /
+    /// Horizon even though the factory never stored it).
+    ///
+    /// Guards: admin-only; the token must exist and have `max_supply`
+    /// configured; `verified_supply` must fit within the cap; and this may
+    /// only be applied once per token, so it cannot be used as a repeated
+    /// backdoor to rewrite tracked supply after the fact.
+    pub fn backfill_capped_supply(
+        env: Env,
+        admin: Address,
+        token_address: Address,
+        verified_supply: i128,
+    ) -> Result<(), Error> {
+        admin.require_auth();
+        let state = Self::load_state(&env)?;
+        if state.admin != admin {
+            return Err(Error::Unauthorized);
+        }
+
+        let index: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TokenIndex(token_address.clone()))
+            .ok_or(Error::TokenNotFound)?;
+        let token_info: TokenInfo = env
+            .storage()
+            .instance()
+            .get(&DataKey::TokenInfo(index))
+            .ok_or(Error::TokenNotFound)?;
+        let cap = token_info.max_supply.ok_or(Error::InvalidParameters)?;
+
+        if verified_supply < 0 || verified_supply > cap {
+            return Err(Error::InvalidParameters);
+        }
+
+        let backfill_marker = (&token_address, symbol_short!("bkfld"));
+        if env.storage().instance().has(&backfill_marker) {
+            return Err(Error::AlreadyBackfilled);
+        }
+
+        let supply_key = (&token_address, symbol_short!("supply"));
+        let current: i128 = env.storage().instance().get(&supply_key).unwrap_or(0i128);
+        if verified_supply > current {
+            env.storage().instance().set(&supply_key, &verified_supply);
+        }
+        env.storage().instance().set(&backfill_marker, &true);
+        env.storage().instance().extend_ttl(MIN_TTL, MAX_TTL);
+
         Ok(())
     }
 
@@ -971,6 +1270,60 @@ impl TokenFactory {
             .instance()
             .get(&DataKey::TokenInfo(index))
             .ok_or(Error::TokenNotFound)
+    }
+
+    /// Resolve a token's storage index from its contract address.
+    ///
+    /// The `TokenIndex(address)` mapping is written by `create_token` /
+    /// `create_tokens_batch` when a token is registered, so this is the
+    /// authoritative address → index lookup. Returns `TokenNotFound` when the
+    /// address was never registered with this factory.
+    ///
+    /// This exists so off-chain clients can resolve a token's identity in O(1)
+    /// from its address alone, rather than re-deriving it from the factory's
+    /// event stream — which only reflects a bounded RPC retention window and
+    /// silently truncates once history exceeds one page.
+    pub fn get_token_index(env: Env, token_address: Address) -> Result<u32, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::TokenIndex(token_address))
+            .ok_or(Error::TokenNotFound)
+    }
+
+    /// Return a token's full `TokenInfo` addressed by its contract address.
+    ///
+    /// Equivalent to `get_token_info(get_token_index(address))` but in a single
+    /// call. This is the source of truth for a token's name, symbol, decimals,
+    /// creator and creation time — clients must prefer it over event-derived
+    /// data, which cannot be trusted for tokens created outside the RPC's
+    /// event-retention window. Returns `TokenNotFound` for unregistered
+    /// addresses.
+    pub fn get_token_info_by_address(
+        env: Env,
+        token_address: Address,
+    ) -> Result<TokenInfo, Error> {
+        let index: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TokenIndex(token_address))
+            .ok_or(Error::TokenNotFound)?;
+        env.storage()
+            .instance()
+            .get(&DataKey::TokenInfo(index))
+            .ok_or(Error::TokenNotFound)
+    }
+
+    /// Return the metadata URI set for a token, or `None` if none was set.
+    ///
+    /// Metadata is written by `set_metadata` and stored under
+    /// `DataKey::Metadata(address)`. Exposing it as a view lets clients read
+    /// the current URI directly from contract state instead of scanning `meta`
+    /// events, which are subject to the same retention truncation as every
+    /// other event.
+    pub fn get_metadata(env: Env, token_address: Address) -> Option<String> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Metadata(token_address))
     }
 
     /// Return a paginated slice of token indices for `creator`.
@@ -1046,5 +1399,7 @@ impl TokenFactory {
 #[cfg(test)]
 mod test;
 
-#[cfg(test)]
+// Benchmarks need a real token WASM installed in the env, which plain unit
+// tests can't provide; opt in via `cargo test --features bench bench_`.
+#[cfg(all(test, feature = "bench"))]
 mod bench;

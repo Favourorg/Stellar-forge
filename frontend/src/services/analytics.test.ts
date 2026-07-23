@@ -10,12 +10,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import {
-  isOptedOut,
-  setOptOut,
-  trackEvent,
-  trackPageView,
-} from './analytics'
+import { isOptedOut, setOptOut, trackEvent, trackPageView } from './analytics'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -24,14 +19,12 @@ import {
 /** Install a spy on window.plausible and return it. */
 function stubPlausible() {
   const spy = vi.fn()
-  // @ts-expect-error — plausible is an optional global typed in vite-env.d.ts
   window.plausible = spy
   return spy
 }
 
 /** Remove window.plausible so "not configured" tests work cleanly. */
 function removePlausible() {
-  // @ts-expect-error — plausible is an optional global typed in vite-env.d.ts
   delete window.plausible
 }
 
@@ -231,11 +224,11 @@ describe('opt-out suppresses ALL tracking call sites for the remainder of the se
     setOptOut(true)
 
     // --- Phase 3: every call site fires — none should reach plausible ---
-    trackPageView('/create')      // App.tsx call site
-    trackEvent('token_created')   // generic trackEvent
-    trackPageView('/mint')        // another page view
-    trackEvent('burn_tokens')     // generic trackEvent
-    trackEvent('metadata_set')    // generic trackEvent
+    trackPageView('/create') // App.tsx call site
+    trackEvent('token_created') // generic trackEvent
+    trackPageView('/mint') // another page view
+    trackEvent('burn_tokens') // generic trackEvent
+    trackEvent('metadata_set') // generic trackEvent
 
     // Plausible call count must NOT have increased
     expect(plausible.mock.calls.length).toBe(callsBeforeOptOut)

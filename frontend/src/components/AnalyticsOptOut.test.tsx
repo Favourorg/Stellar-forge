@@ -9,7 +9,6 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
-import React from 'react'
 import { AnalyticsOptOut } from './AnalyticsOptOut'
 import { isOptedOut, trackEvent } from '../services/analytics'
 
@@ -20,7 +19,6 @@ beforeEach(() => {
 
 afterEach(() => {
   localStorage.clear()
-  // @ts-expect-error — plausible is an optional global typed in vite-env.d.ts
   delete window.plausible
   vi.unstubAllEnvs()
 })
@@ -75,7 +73,6 @@ describe('AnalyticsOptOut component', () => {
 
   it('analytics events are suppressed immediately after checking the opt-out box — no reload required', () => {
     const plausible = vi.fn()
-    // @ts-expect-error — plausible is an optional global typed in vite-env.d.ts
     window.plausible = plausible
 
     render(<AnalyticsOptOut />)
@@ -92,7 +89,6 @@ describe('AnalyticsOptOut component', () => {
   it('analytics events fire again after un-checking the opt-out box', () => {
     localStorage.setItem('analytics_opt_out', 'true')
     const plausible = vi.fn()
-    // @ts-expect-error — plausible is an optional global typed in vite-env.d.ts
     window.plausible = plausible
 
     render(<AnalyticsOptOut />)

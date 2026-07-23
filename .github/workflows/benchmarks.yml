@@ -51,12 +51,12 @@ jobs:
 
       - name: Run benchmark tests
         run: |
-          cargo test bench_ -- --nocapture 2>/dev/null | tee /tmp/bench_raw.txt || true
+          cargo test --features bench bench_ -- --nocapture 2>/dev/null | tee /tmp/bench_raw.txt || true
           echo "Benchmark test run complete. Lines captured: $(wc -l < /tmp/bench_raw.txt)"
         working-directory: contracts/token-factory
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.11"
 
@@ -102,7 +102,7 @@ jobs:
 
       - name: Upload benchmark artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: benchmark-results-${{ github.run_id }}
           path: |

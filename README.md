@@ -6,24 +6,81 @@ StellarForge is a user-friendly decentralized application (dApp) that enables cr
 
 ## Features
 
-- **Token Factory Contract**: Deploy custom tokens on Stellar using Soroban smart contracts
-- **Fee-Based System**: Configurable fees for token creation, metadata setting, and minting
-- **IPFS Integration**: Store token metadata (images, descriptions) on IPFS via Pinata
-- **Wallet Integration**: Connect with Freighter wallet for seamless transactions
-- **Burn Functionality**: Burn tokens to reduce supply
-- **Admin Controls**: Update fees and manage the factory
-- **Network Switcher**: Toggle between testnet and mainnet from the UI
-- **Transaction History**: View on-chain contract events with pagination
-- **Testnet & Mainnet Support**: Deploy on both testnet and mainnet
+- **Token Factory Contract**: Deploy custom SEP-41 tokens on Stellar using a single Soroban smart contract, without writing or auditing your own contract code
+- **Single & Batch Token Creation**: Deploy one token per transaction, or atomically deploy multiple tokens in a single `create_tokens_batch` call
+- **Fee-Based System**: Configurable, admin-adjustable fees for token creation, metadata setting, and minting, paid in a dedicated SEP-41 fee token (typically native XLM)
+- **Fee Splitting**: Route a percentage (in basis points) of every collected fee to multiple recipients instead of a single treasury address
+- **Max Supply Caps**: Optionally cap a token's total mintable supply at creation time (batch path); further `mint_tokens` calls are rejected once the cap would be exceeded
+- **IPFS Integration**: Store token metadata (images, descriptions) on IPFS via Pinata, referenced on-chain by a single `ipfs://` URI
+- **Wallet Integration**: Connect with the Freighter wallet extension for account discovery and transaction signing
+- **Burn Functionality**: Token holders can burn their own balance; each token has a per-token `burn_enabled` flag an admin can toggle off
+- **Admin Controls**: Update fees, pause/unpause the factory, rotate the admin address, and upgrade the contract's WASM in place
+- **Network Mismatch Protection**: Writes are blocked in the UI whenever the connected Freighter network differs from the app's selected network, preventing accidental cross-network signing
+- **Network Switcher**: Toggle between testnet and mainnet from the UI, each with its own contract ID, RPC endpoint, and explorer links
+- **Transaction History**: View on-chain contract events (token creation, mint, burn, metadata, fee changes) with pagination and CSV export
+- **Contract Upgradability**: In-place WASM upgrades with an idempotent, versioned state-migration path (`schema_version` + `migrate`) that preserves all existing tokens, fees, and admin state
+- **Testnet & Mainnet Support**: The same frontend build supports both networks via environment configuration, with an explicit confirmation modal before mainnet-destructive actions
+
+## How StellarForge Works
+
+StellarForge is built around one on-chain "factory" contract that deploys and administers many independent token contracts, plus a React frontend that talks directly to Stellar — there is no StellarForge backend server and no database. Every piece of durable state (tokens, balances, fees, metadata pointers) lives on the Stellar ledger; the frontend is a thin, stateless client that reads and writes it.
+
+### 1. The factory pattern
+
+The `token-factory` Soroban contract (`contracts/token-factory/src/lib.rs`) is deployed once per network (one factory on testnet, one on mainnet). It does not implement token logic itself — instead it:
+
+1. Holds a `token_wasm_hash`: the hash of a separately-deployed, audited SEP-41 token contract WASM.
+2. On `create_token`, uses Soroban's deterministic deployer (`env.deployer().with_address(creator, salt)`) to instantiate a **new, independent contract instance** of that WASM, owned at an address derived from `(creator, salt)`.
+3. Initializes the new token contract with the requested `name`, `symbol`, and `decimals`, and optionally mints the caller an `initial_supply`.
+4. Records bookkeeping for the new token in its own storage: a `TokenInfo` record (name, symbol, decimals, creator, timestamp, burn flag, optional max supply), a reverse `token_address → index` lookup, and an append-only `creator → [indices]` list for "my tokens" queries.
+
+Every token deployed this way is a fully standalone contract on the ledger — it can be transferred, held, and queried through the standard SEP-41 interface by any Stellar wallet or tool, independent of StellarForge.
+
+### 2. The fee model
+
+Every mutating factory call that has a monetary cost (`create_token`, `create_tokens_batch`, `mint_tokens`, `set_metadata`) requires the caller to pass a `fee_payment` argument and pre-authorize a transfer of that amount in the factory's configured `fee_token` (a SEP-41 asset — usually native XLM). The factory:
+
+- Rejects the call with `Error::InsufficientFee` if `fee_payment` is below the current `base_fee` (or `base_fee * token_count` for batch creation) or `metadata_fee`.
+- Transfers the fee from the caller either straight to a single `treasury` address, or — if the admin has configured a **fee split** via `set_fee_split` — proportionally across multiple recipients by basis points (parts per 10,000), with any rounding remainder going to `treasury`.
+- Lets the admin retune `base_fee` and `metadata_fee` at any time via `update_fees`, without redeploying.
+
+### 3. Metadata: on-chain pointer, off-chain payload
+
+Token images and descriptions are too large and mutable to store cheaply on a Soroban ledger, so StellarForge splits metadata into two layers:
+
+1. **Off-chain payload** — the frontend uploads the image and a JSON document (`{ name, description, image }`) to IPFS through Pinata's pinning API, getting back a content identifier (CID) for each.
+2. **On-chain pointer** — `set_metadata(token_address, admin, metadata_uri, fee_payment)` stores a single `ipfs://<cid>` string against the token, one time only (`Error::MetadataAlreadySet` on a second attempt). Any client — StellarForge's UI, a block explorer, another dApp — can resolve that URI through any IPFS gateway to fetch the same image/description.
+
+### 4. Administration, safety, and lifecycle controls
+
+- **Pause switch** — `pause`/`unpause` let the admin halt `create_token`, `create_tokens_batch`, `mint_tokens`, and `set_metadata` factory-wide in an emergency. `burn` intentionally ignores the pause flag, since token holders should always be able to reduce their own balance.
+- **Reentrancy guard** — a `locked` flag on `FactoryState` prevents a second `create_token`/`create_tokens_batch` call from interleaving with one already in progress in the same transaction context.
+- **Per-token burn toggle** — `set_burn_enabled` lets a token's creator disable burning for that token specifically (e.g. for a fixed-supply asset), independent of the factory-wide pause.
+- **Allow-list primitives** — `add_to_whitelist` / `remove_from_whitelist` / `is_whitelisted` maintain an admin-managed address allow-list in factory storage. (These are currently standalone storage primitives; no factory entrypoint gates on them yet — see the project issue tracker for the tracked follow-up to wire enforcement into `create_token`.)
+- **Admin rotation** — `transfer_admin` / `update_admin` move admin privileges to a new address (both perform the same underlying state change; `update_admin` additionally emits an `adm_upd` event).
+- **Upgrade + migrate** — `upgrade` swaps the contract's executable WASM in place; `migrate` is an idempotent, versioned function (`schema_version` vs. `CURRENT_SCHEMA_VERSION`) that brings on-chain state up to date with the currently-deployed code without ever losing existing tokens or fee configuration. See [Contract Upgrade Process](#contract-upgrade-process) below.
+
+### 5. The frontend's role
+
+The React app (`frontend/src`) is organized in layers so that UI code never talks to the network directly:
+
+- **`services/`** — the only layer that touches the outside world: `stellar.ts` / `stellar-impl.ts` build, sign-request, submit, and poll Soroban transactions and parse contract events; `ipfs.ts` uploads to and reads from Pinata; `wallet.ts` wraps the Freighter browser extension API.
+- **`context/`** — app-wide React state: `WalletContext` (connected account, signing), `NetworkContext` (testnet/mainnet selection, persisted to `localStorage`, cross-checked against Freighter's actual network via `useNetworkMismatch`), `ToastContext`, `DarkModeContext`, `TosContext`.
+- **`hooks/`** — data-fetching and derived state built on the services layer: `useTokens` (cached, paginated token listings), `useTransaction`/`useTransactionPolling` (submit-and-poll a signed transaction), `useFactoryState`, `useTokenBalance`, `useTransactionHistory`, and more.
+- **`components/`** — presentation and forms (`CreateToken`, `MintForm`, `BurnForm`, `SetMetadataForm`, `AdminPanel`, `TokenExplorer`, `TokenDashboard`, `TransactionHistory`, …) that compose hooks and services but hold no blockchain logic of their own.
+
+Because all state lives on-chain (or on IPFS), the frontend can be redeployed, pointed at a different factory contract ID, or replaced entirely without any data migration — it is purely a view over the Stellar ledger.
 
 ## Tech Stack
 
 ### Backend (Smart Contracts)
+
 - **Rust**: Programming language for Soroban contracts
 - **Soroban SDK**: Stellar's smart contract development framework
 - **Soroban Token SDK**: For token operations
 
 ### Frontend
+
 - **React 19**: UI framework
 - **TypeScript**: Type-safe JavaScript
 - **Vite**: Build tool and dev server
@@ -31,6 +88,7 @@ StellarForge is a user-friendly decentralized application (dApp) that enables cr
 - **Vitest**: Testing framework
 
 ### Integrations
+
 - **Freighter Wallet**: Stellar wallet browser extension
 - **IPFS/Pinata**: Decentralized file storage for metadata
 - **Stellar Horizon**: Blockchain data API
@@ -70,42 +128,59 @@ See [DOCKER_SETUP.md](DOCKER_SETUP.md) for detailed Docker instructions.
 **Prerequisites**: Rust, Node.js (v18+), Stellar CLI, Freighter Wallet
 
 ### 1. Clone the Repository
+
 ```bash
 git clone <repository-url>
 cd stellar-forge
 ```
 
 ### 2. Setup Stellar CLI Environment
+
 Run the setup script to install Rust, Stellar CLI, and configure testnet:
+
 ```bash
 ./scripts/setup-soroban.sh
 ```
 
 > **Note:** The Soroban CLI was renamed to `stellar` in recent versions. All commands below use `stellar`. If you have the old `soroban` binary installed, uninstall it and run the setup script again:
+>
 > ```bash
 > cargo uninstall soroban-cli
 > cargo install stellar-cli --features opt
 > ```
 
 ### 3. Install Frontend Dependencies
+
 ```bash
 cd frontend
 npm install
 ```
 
 ### 4. Environment Variables
+
 Copy the example env file and fill in your values:
 Copy the example file and fill in your values:
+
 ```bash
 cp frontend/.env.example frontend/.env
 ```
 
 Then edit `frontend/.env`:
+
 ```env
 VITE_NETWORK=testnet
 VITE_FACTORY_CONTRACT_ID=<deployed-contract-id>
-VITE_IPFS_API_KEY=<pinata-api-key>
-VITE_IPFS_API_SECRET=<pinata-api-secret>
+```
+
+Metadata uploads go through a serverless proxy (`api/ipfs/*`) so Pinata
+credentials never reach the browser. Set these as **server-side** environment
+variables in your Vercel project settings (or a local `.env` at the repo
+root when running `vercel dev`) - never prefix them with `VITE_`, or they'll
+be inlined into the client bundle and shipped to every visitor:
+
+```env
+PINATA_API_KEY=<pinata-api-key>
+PINATA_API_SECRET=<pinata-api-secret>
 ```
 
 > **Note:** `VITE_FACTORY_CONTRACT_ID`, `VITE_IPFS_API_KEY`, and `VITE_IPFS_API_SECRET` are required. The app will display a misconfiguration screen if any of these are missing, rather than failing silently at runtime.
@@ -113,19 +188,23 @@ VITE_IPFS_API_SECRET=<pinata-api-secret>
 ## Building & Testing
 
 ### Smart Contracts
+
 ```bash
 cd contracts
 cargo build --target wasm32-unknown-unknown --release
 ```
 
 For an optimized binary (requires `binaryen` — install via `apt install binaryen` or `brew install binaryen`):
+
 ```bash
 cd contracts/token-factory
 bash build.sh
 ```
+
 This produces `target/wasm32-unknown-unknown/release/token_factory.optimized.wasm`, which is significantly smaller and lowers on-chain deployment costs.
 
 ### Run Contract Tests
+
 ```bash
 cd contracts/token-factory
 cargo test
@@ -145,6 +224,7 @@ cargo fuzz run fuzz_burn -- -timeout=60            # Test burn operations
 For more details on fuzz testing setup and interpretation, see [contracts/token-factory/fuzz/README.md](contracts/token-factory/fuzz/README.md).
 
 ### Frontend
+
 ```bash
 cd frontend
 npm run dev          # Start dev server
@@ -155,37 +235,71 @@ npm run lint         # Lint code
 
 ## Contract Functions
 
-### Initialization
-- `initialize(admin, treasury, base_fee, metadata_fee)`: Set up the factory with admin controls and fees
+The authoritative, field-by-field reference — including parameter tables, every error code, and every emitted event — lives in [`docs/contract-abi.md`](./docs/contract-abi.md). This section is a quick-scan summary of the same `#[contractimpl]` surface in `contracts/token-factory/src/lib.rs`.
 
-### Token Operations
-- `create_token(creator, name, symbol, decimals, initial_supply, fee_payment)`: Deploy a new token
-- `mint_tokens(token_address, admin, to, amount, fee_payment)`: Mint additional tokens
-- `burn(token_address, from, amount)`: Burn tokens from supply
+### Initialization
+
+- `__constructor(admin, treasury, fee_token, token_wasm_hash, base_fee, metadata_fee)`: One-time factory setup, run atomically as part of contract deployment. Fails with `AlreadyInitialized` on retry.
+
+### Token Lifecycle
+
+- `create_token(creator, salt, name, symbol, decimals, initial_supply, fee_payment)`: Deploy a single new token contract at a deterministic `(creator, salt)` address; optionally mint `initial_supply` to `creator`.
+- `create_tokens_batch(creator, tokens, fee_payment)`: Atomically deploy a `Vec<BatchTokenParams>` (each with its own name/symbol/decimals/initial_supply and optional `max_supply` cap) in one transaction. `fee_payment` must cover `base_fee * tokens.len()`; a failure partway through the batch aborts the whole call.
+- `mint_tokens(token_address, admin, to, amount, fee_payment)`: Mint additional supply. Only the token's original creator may call this. Rejected with `MaxSupplyExceeded` if the token was created with a `max_supply` cap that minting would exceed.
+- `burn(token_address, from, amount)`: Burn `amount` from the caller's own balance. Honors the token's `burn_enabled` flag; ignores the factory-wide pause.
 
 ### Metadata
-- `set_metadata(token_address, admin, metadata_uri, fee_payment)`: Set token metadata URI
 
-### Admin Functions
-- `update_fees(admin, base_fee?, metadata_fee?)`: Update factory fees
-- `pause(admin)` / `unpause(admin)`: Pause or resume the factory
+- `set_metadata(token_address, admin, metadata_uri, fee_payment)`: Attach an `ipfs://` (or `https://`) metadata URI to a token. One-shot — a second call returns `MetadataAlreadySet`.
+- `set_burn_enabled(token_address, admin, enabled)`: Toggle whether a specific token can be burned. Caller must be the token's creator.
+
+### Admin & Governance
+
+- `update_fees(admin, base_fee?, metadata_fee?)`: Adjust either fee; `None` leaves it unchanged.
+- `set_fee_split(admin, splits)` / `get_fee_split()`: Configure or read a `Map<Address, u32>` of basis-point fee recipients (must sum to `10_000`, or be empty to clear the split and fall back to `treasury`).
+- `pause(admin)` / `unpause(admin)`: Halt or resume `create_token`, `create_tokens_batch`, `mint_tokens`, and `set_metadata` factory-wide.
+- `add_to_whitelist(admin, address)` / `remove_from_whitelist(admin, address)` / `is_whitelisted(address)`: Maintain an admin-managed address allow-list in contract storage (not currently enforced by any entrypoint — see the issue tracker).
+- `transfer_admin(admin, new_admin)` / `update_admin(current_admin, new_admin)`: Rotate the admin address. Equivalent effect; `update_admin` additionally emits an `adm_upd` event.
+- `upgrade(admin, new_wasm_hash)`: Replace the factory's executable WASM in place, preserving all state. See [Contract Upgrade Process](#contract-upgrade-process).
+- `migrate(admin)`: Idempotently bring on-chain state up to `CURRENT_SCHEMA_VERSION` after an upgrade.
 
 ### View Functions
-- `get_state()`: Get factory state
-- `get_base_fee()`: Get token creation fee
-- `get_metadata_fee()`: Get metadata setting fee
-- `get_token_info(index)`: Get token information by index
-- `get_tokens_by_creator(creator, offset, limit)`: Get a paginated slice of token indices created by a given address. The contract caps `limit` at `MAX_TOKENS_BY_CREATOR_PAGE` (currently 50) per call, so list iteration should advance `offset` by the previous page's length until a short page is returned. See [`docs/contract-abi.md`](./docs/contract-abi.md).
+
+- `get_state()`: Full `FactoryState` (admin, treasury, fee_token, fees, pause flag, token count, schema version).
+- `get_base_fee()` / `get_metadata_fee()`: Current fee values.
+- `get_token_info(index)`: Look up a token by its 1-based factory index.
+- `get_tokens_by_creator(creator, offset, limit)`: Paginated slice of token indices created by a given address. The contract caps `limit` at `MAX_TOKENS_BY_CREATOR_PAGE` (currently 50) per call, so list iteration should advance `offset` by the previous page's length until a short page is returned. The frontend's `fetchAllTokensByCreator` helper (`frontend/src/hooks/useTokens.ts`) does this loop automatically.
+
+### Errors
+
+All fallible entrypoints return `Result<T, Error>`. See the full table (17 variants, e.g. `InsufficientFee`, `Unauthorized`, `ContractPaused`, `MaxSupplyExceeded`, `InvalidFeeSplit`) in [`docs/contract-abi.md`](./docs/contract-abi.md#errors).
+
+### Events
+
+The contract publishes Soroban events on `(factory, action)` topics — `init`, `created`, `meta`, `mint`, `burn`, `fees`, `pause`, `unpause`, `adm_upd` — parsed by the frontend in `frontend/src/services/stellar-impl.ts` and rendered in the Transaction History view. See [`docs/contract-abi.md`](./docs/contract-abi.md#events) for the exact payload of each.
 
 ## Usage
 
-1. **Connect Wallet**: Use Freighter wallet to connect to the dApp
-2. **Create Token**: Fill in token details (name, symbol, decimals, supply) and pay the creation fee
-3. **Set Metadata**: Upload token image and description to IPFS
-4. **Mint Tokens**: Mint additional tokens as needed
-5. **Manage Supply**: Burn tokens to reduce circulating supply
+1. **Connect Wallet**: Use the Freighter browser extension to connect an account. The app checks that Freighter's active network matches the app's selected network and blocks writes on mismatch.
+2. **Create Token**: Fill in name, symbol, decimals, and initial supply; the form validates against the same rules the contract enforces (name ≤ 32 chars, symbol ≤ 12 chars, decimals 0–18) before submission. Sign and submit the transaction to pay the creation fee and deploy the token contract.
+3. **Set Metadata**: Upload a token image and description — the app uploads the image to IPFS, pins a metadata JSON document referencing it, then calls `set_metadata` with the resulting `ipfs://` URI (one-time only per token).
+4. **Mint Tokens**: As the token's creator, mint additional supply to any address, subject to the token's optional `max_supply` cap.
+5. **Manage Supply**: Token holders can burn their own balance at any time (unless the creator has disabled burning for that token via `set_burn_enabled`).
+6. **Admin Panel**: The factory admin can update fees, configure a fee split, pause/unpause the factory, and rotate the admin address from the in-app Admin Panel.
+7. **Explore & Export**: Browse all deployed tokens or a specific creator's tokens in the Token Explorer/Dashboard, and export transaction history to CSV.
 
 ## Deployment
+
+## Deployment & Caching
+
+The application uses a service worker (via Workbox) to support offline capabilities. The cache is versioned using the `VITE_FACTORY_CONTRACT_ID` and `VITE_NETWORK` environment variables.
+
+- When either of these variables changes, the service worker will be updated and old caches will be cleared automatically.
+- The user interface displays the current contract ID and network in the footer, allowing manual verification before signing any transaction.
+
+To force a cache refresh, users can either reload the page (the SW will update in the background) or clear the site data from the browser.
+
+**Important**: After a contract redeployment, ensure the environment variables are updated and the build is deployed. The new SW will be served and clients will fetch the updated assets.
 
 ### Testnet Deployment Guide
 
@@ -202,16 +316,19 @@ This guide walks you through deploying StellarForge to Stellar testnet from scra
 You need testnet XLM to pay for contract deployment and transactions.
 
 1. **Create a testnet account** using Stellar CLI:
+
    ```bash
    stellar keys generate deployer --network testnet
    ```
+
    This creates a new keypair and saves it locally. The output shows your public key.
 
 2. **Fund your account** using Friendbot:
+
    ```bash
    stellar keys address deployer
    # Copy the address (starts with G...)
-   
+
    # Fund with 10,000 testnet XLM
    curl "https://friendbot.stellar.org?addr=YOUR_ADDRESS_HERE"
    ```
@@ -237,24 +354,9 @@ stellar contract optimize \
 
 The optimized WASM will be at `../../target/wasm32-unknown-unknown/release/token_factory.optimized.wasm`.
 
-#### Step 3: Deploy the Factory Contract
+#### Step 3: Upload Token Contract WASM
 
-```bash
-# Deploy to testnet
-stellar contract deploy \
-  --wasm ../../target/wasm32-unknown-unknown/release/token_factory.optimized.wasm \
-  --source deployer \
-  --network testnet
-
-# Save the contract ID (starts with C...)
-# Example output: CXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-```
-
-**Save this contract ID** - you'll need it for initialization and frontend configuration.
-
-#### Step 4: Upload Token Contract WASM
-
-The factory needs the token contract WASM hash to deploy tokens.
+The factory needs the token contract WASM hash _before_ it's deployed, since that hash is now one of its constructor arguments (see Step 4).
 
 ```bash
 # First, build the standard Stellar token contract
@@ -269,6 +371,7 @@ stellar contract install \
 ```
 
 If you don't have a token WASM, you can use the Stellar Asset Contract:
+
 ```bash
 # Download the official Stellar token contract
 wget https://github.com/stellar/soroban-examples/raw/main/token/target/wasm32-unknown-unknown/release/soroban_token_contract.wasm
@@ -280,32 +383,53 @@ stellar contract install \
   --network testnet
 ```
 
-#### Step 5: Initialize the Factory
+#### Step 4: Deploy and Initialize the Factory (atomically)
+
+`initialize` is the contract's `__constructor`, so deployment and initialization happen in a **single transaction** — there is no separate `invoke` step, and therefore no window where an attacker could race the deployer's own initialization with their own and seize the admin role (see [issue #1005](https://github.com/Favourorg/Stellar-forge/issues/1005) and [`docs/contract-abi.md`](./docs/contract-abi.md)). Constructor arguments go after `--`, the same as any other `stellar contract deploy` invocation with a constructor.
 
 ```bash
 # Get your admin address (same as deployer for simplicity)
 ADMIN_ADDRESS=$(stellar keys address deployer)
 
-# Initialize the contract
+# Deploy and initialize in one atomic call
+stellar contract deploy \
+  --wasm ../../target/wasm32-unknown-unknown/release/token_factory.optimized.wasm \
+  --source deployer \
+  --network testnet \
+  -- \
+  --admin $ADMIN_ADDRESS \
+  --treasury $ADMIN_ADDRESS \
+  --fee_token <NATIVE_XLM_CONTRACT_ADDRESS> \
+  --token_wasm_hash <TOKEN_WASM_HASH_FROM_STEP_3> \
+  --base_fee 100000000 \
+  --metadata_fee 50000000
+
+# Save the contract ID (starts with C...)
+# Example output: CXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+```
+
+**Save this contract ID** - you'll need it for frontend configuration.
+
+Before using this contract ID anywhere (frontend `.env`, docs, announcements), verify the on-chain admin matches:
+
+```bash
 stellar contract invoke \
   --id <FACTORY_CONTRACT_ID> \
   --source deployer \
   --network testnet \
   -- \
-  initialize \
-  --admin $ADMIN_ADDRESS \
-  --treasury $ADMIN_ADDRESS \
-  --fee_token <NATIVE_XLM_CONTRACT_ADDRESS> \
-  --base_fee 100000000 \
-  --metadata_fee 50000000
+  get_state
+# Confirm the "admin" field equals $ADMIN_ADDRESS before proceeding.
 ```
 
 **Parameters explained:**
-- `admin`: Address that can update fees and pause the factory
-- `treasury`: Address that receives fees from token creation
-- `fee_token`: Contract address for the fee token (use native XLM contract: `CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC`)
-- `base_fee`: Fee for creating a token (in stroops, 1 XLM = 10,000,000 stroops)
-- `metadata_fee`: Fee for setting token metadata
+
+- `admin`: Address that can update fees, pause the factory, manage the whitelist and fee split, rotate the admin, and upgrade the contract. Must authorize this deployment (`require_auth`).
+- `treasury`: Default address that receives fees from token creation (overridden per-recipient if a fee split is configured)
+- `fee_token`: Contract address for the SEP-41 token used to pay all fees (use native XLM contract: `CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC`)
+- `token_wasm_hash`: The WASM hash uploaded in Step 3 — every token the factory deploys is an instance of this code
+- `base_fee`: Fee for `create_token` / `mint_tokens` / each token in `create_tokens_batch` (in stroops, 1 XLM = 10,000,000 stroops)
+- `metadata_fee`: Fee for `set_metadata`
 
 #### Step 6: Configure Frontend
 
@@ -320,6 +444,7 @@ nano .env
 ```
 
 Update these required variables:
+
 ```env
 VITE_NETWORK=testnet
 VITE_FACTORY_CONTRACT_ID=<your-factory-contract-id>
@@ -328,7 +453,21 @@ VITE_IPFS_API_KEY=<your-pinata-api-key>
 VITE_IPFS_API_SECRET=<your-pinata-api-secret>
 ```
 
+> **Keep `VITE_TOKEN_WASM_HASH` in sync with the factory.** This value must equal the
+> factory's on-chain `token_wasm_hash` — the WASM the factory actually deploys tokens
+> from. That field is set at deployment (`__constructor`) time and can only change through a contract
+> upgrade + migrate, so the realistic way they drift apart is a factory upgrade that
+> ships without a matching frontend redeploy.
+>
+> On startup (and every 5 minutes thereafter) the app reads `get_state()` and compares
+> the on-chain hash against this variable, showing a red warning banner if they differ.
+> Treat that banner as a deployment bug: it is a **safety net for detecting drift, not a
+> substitute for updating both in lockstep**. If the check cannot be completed — the RPC
+> read fails, or the variable is unset — the app stays silent rather than warning, so a
+> missing banner is not by itself proof that the hashes match.
+
 **Getting Pinata credentials:**
+
 1. Sign up at [https://app.pinata.cloud](https://app.pinata.cloud)
 2. Go to API Keys → New Key
 3. Enable "pinFileToIPFS" permission
@@ -357,6 +496,7 @@ npm run build
 ```
 
 **Deployment options:**
+
 - **Vercel**: See [docs/deployment-vercel.md](./docs/deployment-vercel.md)
 - **Netlify**: Drag and drop the `dist/` folder
 - **GitHub Pages**: Use `gh-pages` package
@@ -369,6 +509,7 @@ npm run build
 Before deploying to mainnet, complete the [Mainnet Deployment Checklist](./docs/mainnet-deployment-checklist.md).
 
 The process is identical to testnet, but:
+
 1. Use `--network mainnet` instead of `--network testnet`
 2. Fund your account with real XLM (buy from an exchange)
 3. Set `VITE_NETWORK=mainnet` in your `.env`
@@ -378,6 +519,7 @@ The process is identical to testnet, but:
 ### Troubleshooting Deployment
 
 #### Error: "account not found"
+
 Your account doesn't exist on the network yet. Fund it with Friendbot (testnet) or send XLM from an exchange (mainnet).
 
 ```bash
@@ -386,6 +528,7 @@ curl "https://friendbot.stellar.org?addr=$(stellar keys address deployer)"
 ```
 
 #### Error: "insufficient balance"
+
 You don't have enough XLM to pay for the transaction.
 
 ```bash
@@ -397,19 +540,25 @@ curl "https://friendbot.stellar.org?addr=$(stellar keys address deployer)"
 ```
 
 #### Error: "contract already initialized"
+
 The contract has already been initialized. You can't initialize it again. If you need to change parameters, deploy a new contract.
 
 #### Error: "wasm not found"
+
 The WASM hash you provided doesn't exist on the network. Make sure you ran `stellar contract install` first and used the correct hash.
 
 #### Build fails with "target not found"
+
 Add the wasm32 target to Rust:
+
 ```bash
 rustup target add wasm32-unknown-unknown
 ```
 
 #### Frontend shows "Misconfiguration Screen"
+
 One or more required environment variables are missing. Check that your `.env` file has:
+
 - `VITE_FACTORY_CONTRACT_ID`
 - `VITE_TOKEN_WASM_HASH`
 - `VITE_IPFS_API_KEY`
@@ -533,6 +682,7 @@ StellarForge consists of three main components that work together:
 **Symptoms**: "Wallet not installed" error or connection button doesn't work
 
 **Solutions**:
+
 - Install [Freighter wallet extension](https://www.freighter.app/)
 - Refresh the page after installing
 - Check that Freighter is enabled in your browser extensions
@@ -543,6 +693,7 @@ StellarForge consists of three main components that work together:
 **Symptoms**: Transactions fail with "account not found" or "contract not found"
 
 **Solutions**:
+
 - Check the network indicator in the top-right corner of the app
 - Click the network switcher to toggle between testnet and mainnet
 - In Freighter, ensure you're on the same network as the app
@@ -553,6 +704,7 @@ StellarForge consists of three main components that work together:
 **Symptoms**: "insufficient balance" or "insufficient fee" errors
 
 **Solutions**:
+
 - **Testnet**: Get free XLM from Friendbot:
   ```bash
   curl "https://friendbot.stellar.org?addr=YOUR_ADDRESS"
@@ -567,6 +719,7 @@ StellarForge consists of three main components that work together:
 **Symptoms**: Transaction pending for a long time, then fails
 
 **Solutions**:
+
 - Check Stellar network status at [status.stellar.org](https://status.stellar.org)
 - Increase timeout in the code (default is 30 seconds)
 - Try submitting the transaction again
@@ -580,6 +733,7 @@ StellarForge consists of three main components that work together:
 **Symptoms**: "Failed to upload metadata" or IPFS errors
 
 **Solutions**:
+
 - Verify your Pinata API credentials in `.env`
 - Check Pinata dashboard for API key status
 - Ensure image file is under 10MB
@@ -591,6 +745,7 @@ StellarForge consists of three main components that work together:
 **Symptoms**: "AlreadyInitialized" error or initialization transaction fails
 
 **Solutions**:
+
 - Contract can only be initialized once
 - If you need different parameters, deploy a new contract
 - Check if contract is already initialized:
@@ -606,6 +761,7 @@ StellarForge consists of three main components that work together:
 **Symptoms**: "InvalidTokenParams" or creation transaction fails
 
 **Solutions**:
+
 - Ensure token name is 1-32 characters
 - Ensure token symbol is 1-12 characters
 - Decimals must be 0-18
@@ -624,6 +780,7 @@ StellarForge consists of three main components that work together:
 **Symptoms**: Token created but image/description doesn't show
 
 **Solutions**:
+
 - Check that metadata was set (look for `metadata_set` event)
 - Verify IPFS URI is accessible:
   ```bash
@@ -645,6 +802,7 @@ StellarForge consists of three main components that work together:
 **Symptoms**: `cargo build` or `npm run build` fails
 
 **Solutions**:
+
 - **Rust build fails**:
   ```bash
   rustup update
@@ -665,6 +823,7 @@ StellarForge consists of three main components that work together:
 **Symptoms**: Transaction history or token events don't display
 
 **Solutions**:
+
 - Check that Soroban RPC endpoint supports `getEvents`
 - Verify contract ID is correct in `.env`
 - Check browser console for API errors
@@ -702,6 +861,7 @@ script-src 'self'
 For stronger enforcement, set the CSP as an HTTP response header on your hosting provider instead of (or in addition to) the meta tag — HTTP headers take precedence and support more directives like `frame-ancestors`.
 
 **Vercel** — add to `vercel.json`:
+
 ```json
 {
   "headers": [
@@ -719,6 +879,7 @@ For stronger enforcement, set the CSP as an HTTP response header on your hosting
 ```
 
 **Netlify** — add to `netlify.toml`:
+
 ```toml
 [[headers]]
   for = "/*"
@@ -727,18 +888,20 @@ For stronger enforcement, set the CSP as an HTTP response header on your hosting
 ```
 
 **Nginx** — add to your server block:
+
 ```nginx
 add_header Content-Security-Policy "default-src 'self'; connect-src 'self' https://*.stellar.org https://api.pinata.cloud; img-src 'self' data: https://gateway.pinata.cloud; script-src 'self'";
 ```
 
 For users deploying tokens, we strongly recommend:
+
 - Always test on testnet first before mainnet deployment
 - Review all parameters carefully using the [Mainnet Deployment Checklist](./docs/mainnet-deployment-checklist.md)
 - Verify contract addresses and transaction details before signing
 
 ## Fee Bump Transactions
 
-If a user's XLM balance is too low to cover the network base fee, their transaction will fail. Stellar's [fee bump](https://developers.stellar.org/docs/learn/encyclopedia/transactions-specialized/fee-bump-transactions) mechanism lets a third-party account (the *fee source*) pay the base fee on behalf of the original sender.
+If a user's XLM balance is too low to cover the network base fee, their transaction will fail. Stellar's [fee bump](https://developers.stellar.org/docs/learn/encyclopedia/transactions-specialized/fee-bump-transactions) mechanism lets a third-party account (the _fee source_) pay the base fee on behalf of the original sender.
 
 ### When to use fee bumps
 
@@ -753,10 +916,13 @@ Two utilities are exported from `frontend/src/services/stellar.ts`:
 ```ts
 // 1. Wrap a signed inner transaction in a fee bump envelope.
 //    The fee-source account (connected via Freighter) signs the bump.
-const signedFeeBumpXdr = await buildFeeBumpTransaction(innerTxXdr, feeSourceAddress)
+const signedFeeBumpXdr = await buildFeeBumpTransaction(
+  innerTxXdr,
+  feeSourceAddress,
+);
 
 // 2. Submit the fee bump and wait for confirmation.
-const txHash = await submitFeeBumpTransaction(signedFeeBumpXdr)
+const txHash = await submitFeeBumpTransaction(signedFeeBumpXdr);
 ```
 
 The fee source must have enough XLM to cover the base fee. The inner transaction is not re-signed — only the fee bump envelope requires the fee source's signature.
@@ -780,18 +946,36 @@ The factory contract supports in-place WASM upgrades without redeploying or migr
 
 ### Schema versioning
 
-`FactoryState` carries a `schema_version: u32` field. The constant `CURRENT_SCHEMA_VERSION` in `lib.rs` is the source of truth. `initialize` stamps the current version on every fresh deployment. `migrate` reads the on-chain version from a standalone `"sv"` storage key and applies each pending upgrade step in order, making it safe to call multiple times (idempotent).
+`FactoryState` carries a `schema_version: u32` field. The constant `CURRENT_SCHEMA_VERSION` in `lib.rs` is the source of truth. `__constructor` stamps the current version on every fresh deployment. `migrate` reads the on-chain version from a standalone `"sv"` storage key and applies each pending upgrade step in order, making it safe to call multiple times (idempotent).
 
-| Version | Change |
-|---------|--------|
-| 1 | Initial versioned schema — added `schema_version` field to `FactoryState` |
-| 2 | Added `whitelist_enabled: bool` to `FactoryState`; new `set_whitelist_enabled` entrypoint; `create_token` and `create_tokens_batch` enforce the whitelist gate when enabled |
+| Version | Change                                                                                                                                                                                                                                                                                                                                  |
+| ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1       | Initial versioned schema — added `schema_version` field to `FactoryState`                                                                                                                                                                                                                                                               |
+| 2       | Max-supply accounting fix (issue #1006) — `deploy_one` now seeds the per-token supply counter with `initial_supply`; version bump only, no `FactoryState` field changes. Pre-fix capped tokens must be back-filled individually via `backfill_capped_supply` (see [docs/contract-abi.md](./docs/contract-abi.md#supply-cap-accounting)) |
+| 3       | Added `whitelist_enabled: bool` to `FactoryState`; new `set_whitelist_enabled` entrypoint; `create_token` and `create_tokens_batch` enforce the whitelist gate when enabled                                                                                                                                                              |
 
 ### Adding a new migration (version N → N+1)
 
 1. Increment `CURRENT_SCHEMA_VERSION` in `lib.rs` to `N+1`.
-2. Add an `if on_chain_version < N+1 { … }` block inside `migrate` that reads the current state, sets new fields to their defaults, writes the updated state, and bumps `on_chain_version`.
-3. Add a test in `test.rs` that seeds `sv = N` and asserts the state is correct after calling `migrate`.
+2. Add an `if on_chain_version < N+1 { … }` block inside `migrate` that reads the current state, sets new fields to their defaults, writes the updated state, **bumps `on_chain_version` to `N+1`**, and writes the updated `sv` key. The bump must happen inside the block, before the next block's guard runs — this is what allows a contract that is multiple versions behind to walk through every pending step in a single `migrate` call.
+
+   ```rust
+   // Example: adding version 2
+   if on_chain_version < 2 {
+       let mut s = Self::load_state(&env)?;
+       s.new_field = default_value;   // initialise any new FactoryState fields
+       Self::save_state(&env, &s);
+       on_chain_version = 2;          // ← bump BEFORE the next if-block is evaluated
+       env.storage().instance().set(&sv_key, &on_chain_version);
+   }
+   ```
+
+   > **Critical:** `on_chain_version` is a `mut` local variable. Each block must assign the new version back to it after writing to storage. If you forget the in-place bump, the next `if on_chain_version < N+2` block will compare against the _original_ value read at the top of `migrate`, not the value just written — causing steps to run out of order or be skipped entirely on a multi-version catch-up.
+
+3. Add tests in `test.rs` that:
+   - Seed `sv = N-1` (or 0) and assert `migrate` walks through _all_ pending steps in one call, ending at `CURRENT_SCHEMA_VERSION`.
+   - Seed `sv = N` and confirm only the N → N+1 step runs (earlier steps are skipped).
+   - Call `migrate` twice at the final version and assert it is a no-op (idempotent).
 
 ### How it works
 

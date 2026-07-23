@@ -34,7 +34,7 @@ jobs:
           workspaces: contracts
 
       - name: Restore fuzz corpus cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: contracts/token-factory/fuzz/corpus-cache
           key: fuzz-corpus-${{ runner.os }}-${{ github.ref_name }}
@@ -120,7 +120,7 @@ jobs:
           workspaces: contracts
 
       - name: Restore fuzz corpus cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: contracts/token-factory/fuzz/corpus-cache
           key: fuzz-corpus-${{ runner.os }}-${{ github.ref_name }}
@@ -185,7 +185,7 @@ jobs:
 
       - name: Save fuzz corpus cache
         if: always()
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: contracts/token-factory/fuzz/corpus-cache
           key: fuzz-corpus-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}

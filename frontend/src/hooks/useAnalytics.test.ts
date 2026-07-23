@@ -59,7 +59,6 @@ describe('useAnalytics', () => {
 
   it('opt-out takes effect IMMEDIATELY in the same session — analytics service is updated synchronously', () => {
     const plausible = vi.fn()
-    // @ts-expect-error — plausible is an optional global typed in vite-env.d.ts
     window.plausible = plausible
 
     const { result } = renderHook(() => useAnalytics())
@@ -77,14 +76,12 @@ describe('useAnalytics', () => {
     trackEvent('should_be_suppressed')
     expect(plausible).not.toHaveBeenCalled()
 
-    // @ts-expect-error — plausible is an optional global typed in vite-env.d.ts
     delete window.plausible
   })
 
   it('re-enabling tracking via toggleOptOut allows events to fire again', () => {
     localStorage.setItem('analytics_opt_out', 'true')
     const plausible = vi.fn()
-    // @ts-expect-error — plausible is an optional global typed in vite-env.d.ts
     window.plausible = plausible
 
     const { result } = renderHook(() => useAnalytics())
@@ -100,7 +97,6 @@ describe('useAnalytics', () => {
     trackEvent('should_fire')
     expect(plausible).toHaveBeenCalledOnce()
 
-    // @ts-expect-error — plausible is an optional global typed in vite-env.d.ts
     delete window.plausible
   })
 
