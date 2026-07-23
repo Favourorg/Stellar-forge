@@ -105,9 +105,12 @@ describe('CONTRACT_TOPIC_MAP', () => {
     'pause',
     'unpause',
     'adm_upd',
+    'wl_add',
+    'wl_rm',
+    'wl_tog',
   ] as const
 
-  it('contains exactly the nine contract topics', () => {
+  it('contains exactly the twelve contract topics', () => {
     expect(Object.keys(CONTRACT_TOPIC_MAP).sort()).toEqual([...EXPECTED_TOPICS].sort())
   })
 

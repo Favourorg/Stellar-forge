@@ -81,6 +81,11 @@ export class StellarService {
     return impl.updateFees(params)
   }
 
+  async setWhitelistEnabled(enabled: boolean) {
+    const impl = await this.getImpl()
+    return impl.setWhitelistEnabled(enabled)
+  }
+
   async getContractEvents(contractId: string, limit?: number, cursor?: string) {
     const impl = await this.getImpl()
     return impl.getContractEvents(contractId, limit, cursor)

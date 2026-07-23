@@ -35,6 +35,7 @@ const mockFactoryState: FactoryState = {
   metadataFee: '5000000', // 0.5 XLM in stroops
   tokenCount: 10,
   paused: false,
+  whitelistEnabled: false,
 }
 
 const renderWithProviders = async (

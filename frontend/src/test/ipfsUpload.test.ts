@@ -4,6 +4,7 @@ import { IPFSService } from '../services/ipfs'
 class FakeXHR {
   static lastUrl = ''
   static lastMethod = ''
+  static lastHeaders: Record<string, string> = {}
   status = 200
   responseText = JSON.stringify({ cid: 'QmFakeImageCid' })
   upload = { addEventListener: () => {} }
@@ -14,6 +15,10 @@ class FakeXHR {
     FakeXHR.lastUrl = url
   }
 
+  setRequestHeader(name: string, value: string) {
+    FakeXHR.lastHeaders[name] = value
+  }
+
   addEventListener(event: string, handler: () => void) {
     if (event === 'load') this.loadHandler = handler
   }
@@ -22,6 +27,14 @@ class FakeXHR {
     this.loadHandler?.()
   }
 }
+
+
+// The upload flow now authenticates via a wallet-signed JWT; stub it out so
+// these tests keep exercising only the upload transport.
+vi.mock('../services/auth', () => ({
+  getUploadToken: vi.fn().mockResolvedValue('test-jwt'),
+  clearUploadToken: vi.fn(),
+}))
 
 describe('IPFSService.uploadMetadata', () => {
   const service = new IPFSService()
@@ -45,7 +58,7 @@ describe('IPFSService.uploadMetadata', () => {
   it('uploads the image and metadata through the local serverless proxy, never Pinata directly', async () => {
     const file = new File(['fake image bytes'], 'token.png', { type: 'image/png' })
 
-    const uri = await service.uploadMetadata(file, 'A cool token', 'MyToken')
+    const uri = await service.uploadMetadata(file, 'A cool token', 'MyToken', 'GTESTWALLETADDRESS')
 
     expect(FakeXHR.lastMethod).toBe('POST')
     expect(FakeXHR.lastUrl).toBe('/api/ipfs/upload-file')

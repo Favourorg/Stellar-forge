@@ -5,7 +5,7 @@ import { IPFS_CONFIG } from '../config/ipfs'
 import { withRetry, isTransientError, HttpError } from '../utils/retry'
 import { isValidImageFile } from '../utils/validation'
 import { IPFSUploadError } from './ipfs-errors'
-import { getUploadToken, clearUploadToken } from './auth'
+import { getUploadToken } from './auth'
 
 export { IPFSConfigError, IPFSUploadError } from './ipfs-errors'
 export { clearUploadToken } from './auth'

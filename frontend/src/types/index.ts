@@ -86,6 +86,7 @@ export interface FactoryState {
   baseFee: string // i128 from contract, represented as string for precision
   metadataFee: string // i128 from contract, represented as string for precision
   tokenCount: number // u32 from contract
+  whitelistEnabled: boolean // when true, only whitelisted addresses can create tokens
   /**
    * Lowercase hex encoding of the contract's `token_wasm_hash` (BytesN<32>) —
    * the WASM the factory actually deploys tokens from. Compared against
@@ -125,6 +126,7 @@ export interface AppError {
 
 export type SortOrder = 'newest' | 'oldest' | 'alphabetical'
 export type ContractEventType =
+  'init' | 'created' | 'meta' | 'mint' | 'burn' | 'fees' | 'pause' | 'unpause' | 'admin_update'
   | 'init'
   | 'created'
   | 'meta'
@@ -134,6 +136,9 @@ export type ContractEventType =
   | 'pause'
   | 'unpause'
   | 'adm_upd'
+  | 'wl_add'
+  | 'wl_rm'
+  | 'wl_tog'
 
 export interface ContractEvent {
   id: string
