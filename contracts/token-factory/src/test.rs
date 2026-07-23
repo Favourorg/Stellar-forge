@@ -460,10 +460,7 @@ fn test_fee_update_race_rejects_with_no_partial_transfer() {
         TokenClient::new(&s.env, &s.fee_token).balance(&s.treasury),
         0
     );
-    assert_eq!(
-        TokenClient::new(&s.env, &token_addr).balance(&recipient),
-        0
-    );
+    assert_eq!(TokenClient::new(&s.env, &token_addr).balance(&recipient), 0);
 }
 
 #[test]
