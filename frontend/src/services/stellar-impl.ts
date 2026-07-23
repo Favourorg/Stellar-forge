@@ -548,7 +548,6 @@ export class StellarService {
     decimals: number
     initialSupply: string
     salt: string
-    tokenWasmHash: string
     feePayment: string
   }): Promise<DeploymentResult> {
     const functionName = 'deployToken'
@@ -568,7 +567,6 @@ export class StellarService {
             'create_token',
             new Address(sourceAddress).toScVal(),
             nativeToScVal(hexToBytes(params.salt), { type: 'bytes' }),
-            nativeToScVal(hexToBytes(params.tokenWasmHash), { type: 'bytes' }),
             nativeToScVal(params.name, { type: 'string' }),
             nativeToScVal(params.symbol, { type: 'string' }),
             nativeToScVal(params.decimals, { type: 'u32' }),

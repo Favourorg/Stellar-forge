@@ -8,7 +8,6 @@ import { useTransaction } from '../hooks/useTransaction'
 import { TokenForm } from './TokenForm'
 import { ShareButton } from './ShareButton'
 import { CopyButton } from './CopyButton'
-import { STELLAR_CONFIG } from '../config/stellar'
 import ErrorBoundary from './ErrorBoundary'
 import { logger } from '../utils/logger'
 
@@ -71,7 +70,6 @@ export const CreateToken: React.FC<CreateTokenProps> = ({ onSuccess }) => {
         initialSupply: paramsRef.current!.initialSupply,
         salt:
           Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15),
-        tokenWasmHash: STELLAR_CONFIG.tokenWasmHash || '',
         feePayment: factoryState?.baseFee ?? '100000',
       }),
     [stellarService, factoryState?.baseFee],
