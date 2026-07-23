@@ -30,7 +30,6 @@ export class StellarService {
     decimals: number
     initialSupply: string
     salt: string
-    tokenWasmHash: string
     feePayment: string
   }) {
     const impl = await this.getImpl()
