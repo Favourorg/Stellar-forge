@@ -2,6 +2,7 @@ import React, { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Input, Button } from './UI'
 import { useToast } from '../context/ToastContext'
+import { useWalletContext } from '../context/WalletContext'
 import { ipfsService, MAX_METADATA_DESCRIPTION_LENGTH } from '../services/ipfs'
 import { isIpfsConfigured } from '../config/env'
 import { isValidImageFile } from '../utils/validation'
@@ -19,6 +20,7 @@ export const MetadataUploadForm: React.FC<MetadataUploadFormProps> = ({
 }) => {
   const { t } = useTranslation()
   const { addToast } = useToast()
+  const { wallet } = useWalletContext()
 
   const [tokenName, setTokenName] = useState('')
   const [description, setDescription] = useState('')
@@ -26,7 +28,7 @@ export const MetadataUploadForm: React.FC<MetadataUploadFormProps> = ({
   const [uploadProgress, setUploadProgress] = useState(0)
   const [isUploading, setIsUploading] = useState(false)
 
-  const ipfsReady = isIpfsConfigured()
+  const ipfsReady = isIpfsConfigured() && wallet.isConnected
 
   const [imagePreview, setImagePreview] = useState<string | null>(null)
 
@@ -89,6 +91,7 @@ export const MetadataUploadForm: React.FC<MetadataUploadFormProps> = ({
         imageFile,
         description,
         tokenName,
+        wallet.address!,
         (progress) => setUploadProgress(progress),
         (attempt) => addToast(`Retrying upload… (attempt ${attempt}/3)`, 'warning'),
       )

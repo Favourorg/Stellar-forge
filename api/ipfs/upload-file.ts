@@ -1,11 +1,12 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import Busboy from 'busboy'
-import { isRateLimited, clientIp } from '../_lib/rateLimit'
+import { isRateLimited } from '../_lib/rateLimit'
 import { PINATA_API_URL, pinataHeaders } from '../_lib/pinata'
+import { validateFileMagicBytes } from '../_lib/fileValidation'
+import { verifyToken } from '../_lib/jwt'
 
 // Kept just under Vercel's 4.5MB serverless function request-body ceiling.
 const MAX_FILE_SIZE = 4 * 1024 * 1024
-const ALLOWED_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif'])
 
 interface ParsedFile {
   buffer: Buffer
@@ -59,7 +60,29 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return
   }
 
-  if (isRateLimited(clientIp(req))) {
+  // Authenticate: require a valid JWT from the challenge → signature flow
+  const authHeader = req.headers.authorization
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    res.status(401).json({
+      error: 'Authorization required. Request a challenge and sign with your wallet.',
+    })
+    return
+  }
+
+  let walletAddress: string
+  try {
+    const token = authHeader.slice(7) // Remove "Bearer "
+    const payload = verifyToken(token)
+    walletAddress = payload.address
+  } catch (err) {
+    res.status(401).json({
+      error: err instanceof Error ? err.message : 'Invalid or expired token.',
+    })
+    return
+  }
+
+  // Check rate limits (per wallet address, durable across instances)
+  if (await isRateLimited(walletAddress)) {
     res.status(429).json({ error: 'Too many upload requests. Please try again later.' })
     return
   }
@@ -76,10 +99,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return
   }
 
-  if (!ALLOWED_TYPES.has(file.mimeType)) {
-    res.status(400).json({ error: `Unsupported file type "${file.mimeType}". Only JPEG, PNG, and GIF are allowed.` })
+  // Validate file content against magic bytes, not client-supplied MIME type
+  const magicValidation = validateFileMagicBytes(file.buffer, file.mimeType)
+  if (!magicValidation.valid) {
+    res.status(400).json({ error: magicValidation.error })
     return
   }
+  const verifiedMimeType = magicValidation.mimeType
 
   let headers: Record<string, string>
   try {
@@ -91,7 +117,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   try {
     const formData = new FormData()
-    formData.append('file', new Blob([file.buffer], { type: file.mimeType }), file.filename)
+    formData.append('file', new Blob([file.buffer], { type: verifiedMimeType }), file.filename)
     formData.append('pinataMetadata', JSON.stringify({ name: file.filename }))
     formData.append('pinataOptions', JSON.stringify({ cidVersion: 1 }))
 

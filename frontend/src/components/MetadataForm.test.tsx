@@ -26,6 +26,20 @@ vi.mock('../hooks/useBalanceCheck', () => ({
   useBalanceCheck: () => ({ hasSufficientBalance: true, shortfall: 0, isTestnet: true }),
 }))
 
+// MetadataForm now reads the connected wallet for upload auth; supply one.
+vi.mock('../context/WalletContext', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../context/WalletContext')>()),
+  useWalletContext: () => ({
+    wallet: { address: 'GTESTWALLETADDRESS', isConnected: true, balance: undefined },
+    isConnecting: false,
+    error: null,
+    isInstalled: true,
+    connect: vi.fn(),
+    disconnect: vi.fn(),
+    refreshBalance: vi.fn(),
+  }),
+}))
+
 vi.mock('../config/env', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../config/env')>()),
   isIpfsConfigured: () => true,

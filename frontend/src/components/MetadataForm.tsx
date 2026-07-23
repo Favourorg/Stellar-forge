@@ -6,6 +6,7 @@ import { isValidImageFile } from '../utils/validation'
 import { MAX_METADATA_DESCRIPTION_LENGTH } from '../services/ipfs'
 import { useToast } from '../context/ToastContext'
 import { useStellarContext } from '../context/StellarContext'
+import { useWalletContext } from '../context/WalletContext'
 import { useBalanceCheck } from '../hooks/useBalanceCheck'
 import { useNetwork } from '../context/NetworkContext'
 import { useNetworkGuard } from '../hooks/useNetworkGuard'
@@ -27,6 +28,7 @@ type Step = 'idle' | 'uploading-ipfs' | 'confirming-stellar' | 'done' | 'error'
 export const MetadataForm: React.FC<MetadataFormProps> = ({ initialTokenAddress = '' }) => {
   const { ipfsService, stellarService } = useStellarContext()
   const { addToast } = useToast()
+  const { wallet } = useWalletContext()
   const { network } = useNetwork()
   const { blocked: networkBlocked, reason: networkReason } = useNetworkGuard()
   const { requireTos } = useTos()
@@ -136,6 +138,7 @@ export const MetadataForm: React.FC<MetadataFormProps> = ({ initialTokenAddress 
         imageFile!,
         description,
         tokenAddress,
+        wallet.address!,
         (p) => setUploadProgress(p),
         (attempt) => addToast(`Retrying upload… (attempt ${attempt}/3)`, 'warning'),
       )

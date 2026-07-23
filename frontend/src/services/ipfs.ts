@@ -5,8 +5,10 @@ import { IPFS_CONFIG } from '../config/ipfs'
 import { withRetry, isTransientError, HttpError } from '../utils/retry'
 import { isValidImageFile } from '../utils/validation'
 import { IPFSUploadError } from './ipfs-errors'
+import { getUploadToken } from './auth'
 
 export { IPFSConfigError, IPFSUploadError } from './ipfs-errors'
+export { clearUploadToken } from './auth'
 
 export interface TokenMetadata {
   name: string
@@ -73,22 +75,25 @@ export class IPFSService {
   /**
    * Upload an image and pin metadata JSON to IPFS via our serverless proxy.
    *
-   * Requires no client-side credentials: both hops go to same-origin
-   * `api/ipfs/*` handlers that hold the Pinata keys in server env.
+   * Requires wallet authentication: client requests a challenge, signs it with Freighter,
+   * and exchanges the signature for a JWT. Both upload hops use the JWT in the Authorization header.
+   * Pinata credentials live in server env and are never sent from the browser.
    *
    * @param image       - JPEG/PNG/GIF file, max 4MB (Vercel body limit)
    * @param description - Token description
    * @param tokenName   - Token name (used as metadata `name` field)
+   * @param walletAddress - Connected Stellar wallet (for auth)
    * @param onProgress  - Optional progress callback (0–100)
    * @param onRetry     - Optional callback fired before each retry attempt
    * @returns           Metadata URI in ipfs:// format
    *
-   * @throws {IPFSUploadError}  On validation failures or exhausted retries
+   * @throws {IPFSUploadError}  On validation failures, auth failures, or exhausted retries
    */
   async uploadMetadata(
     image: File,
     description: string,
     tokenName: string,
+    walletAddress: string,
     onProgress?: (percent: number) => void,
     onRetry?: (attempt: number, delayMs: number) => void,
   ): Promise<string> {
@@ -97,9 +102,12 @@ export class IPFSService {
       throw new IPFSUploadError(validation.error ?? 'Invalid image file.')
     }
 
-    // Step 1: Upload image file (progress 0 → 75)
+    // Obtain JWT for authenticated requests
     onProgress?.(0)
-    const imageCid = await this._uploadFile(image, onProgress, onRetry)
+    const token = await getUploadToken(walletAddress)
+
+    // Step 1: Upload image file (progress 0 → 75)
+    const imageCid = await this._uploadFile(image, token, onProgress, onRetry)
 
     // Step 2: Build and upload metadata JSON (progress 75 → 100)
     onProgress?.(75)
@@ -108,7 +116,7 @@ export class IPFSService {
       description,
       image: `ipfs://${imageCid}`,
     }
-    const metadataCid = await this._uploadJSON(metadata, `${tokenName}-metadata.json`, onRetry)
+    const metadataCid = await this._uploadJSON(metadata, `${tokenName}-metadata.json`, token, onRetry)
     onProgress?.(100)
 
     return `ipfs://${metadataCid}`
@@ -185,6 +193,7 @@ export class IPFSService {
 
   private _uploadFile(
     file: File,
+    token: string,
     onProgress?: (percent: number) => void,
     onRetry?: (attempt: number, delayMs: number) => void,
   ): Promise<string> {
@@ -238,9 +247,9 @@ export class IPFSService {
           reject(new IPFSUploadError('Image upload was aborted.'))
         })
 
-        // Proxied through our own serverless function; Pinata credentials live
-        // in server env and must never be sent from the browser.
+        // Proxied through our own serverless function with JWT authentication
         xhr.open('POST', UPLOAD_FILE_ENDPOINT)
+        xhr.setRequestHeader('Authorization', `Bearer ${token}`)
         xhr.send(formData)
       })
 
@@ -268,6 +277,7 @@ export class IPFSService {
   private async _uploadJSON(
     json: object,
     name: string,
+    token: string,
     onRetry?: (attempt: number, delayMs: number) => void,
   ): Promise<string> {
     // Shape expected by api/ipfs/upload-json; the serverless function wraps it
@@ -280,7 +290,10 @@ export class IPFSService {
         () =>
           fetch(UPLOAD_JSON_ENDPOINT, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${token}`,
+            },
             body: JSON.stringify(body),
           }),
         {
