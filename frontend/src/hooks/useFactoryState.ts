@@ -127,6 +127,9 @@ async function decodeFactoryState(scVal: unknown): Promise<FactoryState> {
     metadataFee: getI128('metadata_fee').toString(),
     tokenCount: getU32('token_count'),
     paused: getBool('paused'),
+    // Defaults to false for factories deployed before schema v3 added the field,
+    // matching the on-chain default (whitelist enforcement off).
+    whitelistEnabled: map.get('whitelist_enabled') ? getBool('whitelist_enabled') : false,
     tokenWasmHash: getBytesHex('token_wasm_hash'),
   }
 }

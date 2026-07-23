@@ -9,9 +9,12 @@ import type {
   DeploymentResult,
   FactoryState,
   GetEventsResult,
+  TokenEventsResult,
   TokenInfo,
+  TokenInfoResult,
 } from '../types'
 import {
+  Account,
   Contract,
   TransactionBuilder,
   Networks,
@@ -50,6 +53,51 @@ function hexToBytes(hex: string): Uint8Array {
 function toAppError(err: unknown): AppError {
   const parsed = parseContractError(err)
   return { code: 'CONTRACT_ERROR', message: parsed.message }
+}
+
+/**
+ * Default page size for `getAllTokens` when a caller does not specify one.
+ * Mirrors the Token Explorer / dashboard default so the first page maps to a
+ * single index-range fetch.
+ */
+const DEFAULT_TOKEN_PAGE_LIMIT = 10
+
+/**
+ * Maximum number of `get_token_info` view calls kept in flight at once while
+ * assembling one page of the global token list. The SDF publishes no static
+ * RPC rate limit and throttles dynamically (see docs/rpc-rate-limits.md), so
+ * we stay deliberately conservative — a single page never bursts more than
+ * this many simultaneous simulations at the endpoint.
+ */
+const GET_ALL_TOKENS_CONCURRENCY = 5
+
+/**
+ * Resolve `tasks` with at most `limit` running concurrently, preserving input
+ * order. Uses `Promise.allSettled` semantics: every task settles and the
+ * caller decides how to treat rejections, so one failing index read never
+ * rejects the whole batch.
+ */
+async function allSettledWithConcurrency<T>(
+  tasks: Array<() => Promise<T>>,
+  limit: number,
+): Promise<PromiseSettledResult<T>[]> {
+  const results = new Array<PromiseSettledResult<T>>(tasks.length)
+  let nextIndex = 0
+
+  async function worker() {
+    while (nextIndex < tasks.length) {
+      const i = nextIndex++
+      try {
+        results[i] = { status: 'fulfilled', value: await tasks[i]!() }
+      } catch (reason) {
+        results[i] = { status: 'rejected', reason }
+      }
+    }
+  }
+
+  const workerCount = Math.max(1, Math.min(limit, tasks.length))
+  await Promise.all(Array.from({ length: workerCount }, worker))
+  return results
 }
 
 // ── Network helpers ───────────────────────────────────────────────────────────
@@ -221,9 +269,66 @@ async function callView(
   return simResult.result.retval
 }
 
+/**
+ * Approximate window (in days) that public Soroban RPC infrastructure retains
+ * contract events for. `getEvents` cannot return events older than this, so any
+ * event-derived history is inherently partial and must be disclosed as such
+ * rather than presented as a token's complete lifetime. See
+ * `docs/rpc-rate-limits.md` for the retention constraint.
+ */
+export const RPC_EVENT_RETENTION_DAYS = 7
+
+/**
+ * Placeholder source account for read-only view simulations. Soroban's
+ * `simulateTransaction` does not require the source account to exist or be
+ * funded for invocations that require no authorization, so token identity can
+ * be resolved without a connected wallet. This is the canonical all-zero
+ * ed25519 account (`StrKey.encodeEd25519PublicKey(new Uint8Array(32))`), a
+ * valid — if unfunded — StrKey, hardcoded to avoid a Buffer dependency.
+ */
+const READONLY_SOURCE_ACCOUNT = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF'
+
+/**
+ * Call a read-only contract view via simulation without requiring a connected
+ * wallet. Unlike {@link callView}, the source account is not fetched from the
+ * network (a placeholder is used) so anonymous page loads can resolve token
+ * data. The connected wallet address is used when available so simulations are
+ * attributed to a real account, but it is never required.
+ */
+async function callViewReadonly(
+  server: rpc.Server,
+  contractId: string,
+  method: string,
+  args: xdr.ScVal[],
+  network: Network,
+): Promise<xdr.ScVal> {
+  const contract = new Contract(contractId)
+  const source = walletService.getConnectedAddress() ?? READONLY_SOURCE_ACCOUNT
+  // Sequence number is irrelevant for a read-only simulation; a locally
+  // constructed account avoids an extra `getAccount` round-trip and works even
+  // when `source` has never been funded on-chain.
+  const account = new Account(source, '0')
+  const tx = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase: getNetworkPassphrase(network),
+  })
+    .addOperation(contract.call(method, ...args))
+    .setTimeout(30)
+    .build()
+
+  const simResult = await withRetry(() => server.simulateTransaction(tx))
+  if (rpc.Api.isSimulationError(simResult)) {
+    throw parseContractError(new Error(simResult.error))
+  }
+  if (!rpc.Api.isSimulationSuccess(simResult) || !simResult.result) {
+    throw new Error(`View call to ${method} returned no result`)
+  }
+  return simResult.result.retval
+}
+
 // ── Raw RPC types ─────────────────────────────────────────────────────────────
 
-interface RpcEventResponse {
+export interface RpcEventResponse {
   id: string
   type: string
   ledger: number
@@ -277,24 +382,54 @@ function scValToString(val: xdr.ScVal | undefined): string {
 
 // ── Event parsing ─────────────────────────────────────────────────────────────
 
-const EVENT_TOPICS: ContractEventType[] = [
-  'init',
-  'created',
-  'meta',
-  'mint',
-  'burn',
-  'fees',
-  'pause',
-  'unpause',
-  'admin_update',
-]
+/**
+ * Single source of truth that maps every contract symbol_short! topic value to
+ * its ContractEventType.  The allow-list and the parser both derive from this
+ * table, so they can never drift apart.
+ *
+ * Contract topics are verified against lib.rs symbol_short! calls by
+ * scripts/check-event-topic-drift.sh (CI).  If you add a new event to the
+ * contract, add it here first — the CI script will catch any omission.
+ *
+ * Audit of all twelve contract topics (lib.rs → frontend):
+ *   init      → 'init'      (factory init)
+ *   created   → 'created'   (token deployed)
+ *   meta      → 'meta'      (metadata URI set)
+ *   mint      → 'mint'      (tokens minted)
+ *   burn      → 'burn'      (tokens burned)
+ *   fees      → 'fees'      (fees updated)
+ *   pause     → 'pause'     (factory paused)
+ *   unpause   → 'unpause'   (factory unpaused)
+ *   adm_upd   → 'adm_upd'  (admin rotated)  ← was incorrectly 'admin_update'
+ *   wl_add    → 'wl_add'   (address added to whitelist)
+ *   wl_rm     → 'wl_rm'    (address removed from whitelist)
+ *   wl_tog    → 'wl_tog'   (whitelist enforcement toggled)
+ */
+export const CONTRACT_TOPIC_MAP: Record<string, ContractEventType> = {
+  init: 'init',
+  created: 'created',
+  meta: 'meta',
+  mint: 'mint',
+  burn: 'burn',
+  fees: 'fees',
+  pause: 'pause',
+  unpause: 'unpause',
+  adm_upd: 'adm_upd',
+  wl_add: 'wl_add',
+  wl_rm: 'wl_rm',
+  wl_tog: 'wl_tog',
+} as const
 
-async function parseRpcEvent(raw: RpcEventResponse): Promise<ContractEvent | null> {
+/** Allow-list of recognised event types, derived from CONTRACT_TOPIC_MAP. */
+const EVENT_TOPICS = new Set<string>(Object.keys(CONTRACT_TOPIC_MAP))
+
+export async function parseRpcEvent(raw: RpcEventResponse): Promise<ContractEvent | null> {
   try {
     if (!raw.topic?.length || raw.topic.length < 2) return null
     const topicVal = xdr.ScVal.fromXDR(raw.topic[1]!, 'base64') // second topic is the action
-    const eventType = scValToString(topicVal) as ContractEventType
-    if (!EVENT_TOPICS.includes(eventType)) return null
+    const rawTopic = scValToString(topicVal)
+    if (!EVENT_TOPICS.has(rawTopic)) return null
+    const eventType = CONTRACT_TOPIC_MAP[rawTopic]!
 
     const items: xdr.ScVal[] = xdr.ScVal.fromXDR(raw.value, 'base64').vec() ?? []
     const data: Record<string, string> = {}
@@ -333,9 +468,18 @@ async function parseRpcEvent(raw: RpcEventResponse): Promise<ContractEvent | nul
       case 'unpause':
         data.admin = scValToString(items[0])
         break
-      case 'admin_update':
+      case 'adm_upd':
         data.currentAdmin = scValToString(items[0])
         data.newAdmin = scValToString(items[1])
+        break
+      case 'wl_add':
+        data.address = scValToString(items[0])
+        break
+      case 'wl_rm':
+        data.address = scValToString(items[0])
+        break
+      case 'wl_tog':
+        data.enabled = scValToString(items[0])
         break
     }
 
@@ -712,6 +856,7 @@ export class StellarService {
         baseFee: native.base_fee?.toString() ?? '0',
         metadataFee: native.metadata_fee?.toString() ?? '0',
         tokenCount: Number(native.token_count ?? 0),
+        whitelistEnabled: Boolean(native.whitelist_enabled ?? false),
         // scValToNative turns BytesN<32> into a Buffer/Uint8Array — normalise
         // to lowercase hex so it is directly comparable to VITE_TOKEN_WASM_HASH.
         tokenWasmHash: native.token_wasm_hash
@@ -794,6 +939,50 @@ export class StellarService {
     }
   }
 
+  // ── setWhitelistEnabled ──────────────────────────────────────────────────────
+
+  /**
+   * Invoke `set_whitelist_enabled` on the factory contract.
+   * When `enabled` is true, only whitelisted addresses may call
+   * `create_token` / `create_tokens_batch`.
+   */
+  async setWhitelistEnabled(enabled: boolean): Promise<string> {
+    const functionName = 'setWhitelistEnabled'
+    try {
+      const contractId = STELLAR_CONFIG.factoryContractId
+      if (!contractId) throw new Error('Factory contract ID is not configured')
+
+      const sourceAddress = walletService.getConnectedAddress()
+      if (!sourceAddress) throw new Error('Wallet not connected')
+
+      const server = getRpcServer(this.network)
+      const contract = new Contract(contractId)
+
+      const tx = (await buildTxBuilder(server, sourceAddress, this.network))
+        .addOperation(
+          contract.call(
+            'set_whitelist_enabled',
+            new Address(sourceAddress).toScVal(),
+            nativeToScVal(enabled, { type: 'bool' }),
+          ),
+        )
+        .setTimeout(30)
+        .build()
+
+      return await simulateAndSubmit(server, tx, this.network)
+    } catch (err) {
+      const appErr = toAppError(err)
+      const factoryContractId = STELLAR_CONFIG.factoryContractId ?? 'unknown'
+      captureContractError(err instanceof Error ? err : new Error(String(err)), {
+        network: this.network,
+        contractId: factoryContractId,
+        functionName,
+        params: { enabled },
+      })
+      throw new Error(appErr.message)
+    }
+  }
+
   // ── getContractEvents ───────────────────────────────────────────────────────
 
   async getContractEvents(
@@ -818,8 +1007,74 @@ export class StellarService {
 
   // ── getAllTokens ─────────────────────────────────────────────────────────────
 
-  async getAllTokens(): Promise<TokenInfo[]> {
-    return []
+  /**
+   * Fetch a page of the global token list, newest-first.
+   *
+   * The factory exposes no `get_all_tokens` view, but it maintains a
+   * monotonically increasing `token_count` and stores every token at a 1-based
+   * index (`TokenInfo(1..=token_count)`), readable via `get_token_info(index)`.
+   * We page over that index range instead of walking event history.
+   *
+   * `offset`/`limit` describe a newest-first window: `offset = 0` starts at the
+   * most-recently-created token (index `total`) and walks down toward index 1.
+   * Index reads are issued with bounded concurrency
+   * (`GET_ALL_TOKENS_CONCURRENCY`) to respect RPC rate limits
+   * (docs/rpc-rate-limits.md) and collected with `Promise.allSettled` semantics
+   * so a single transiently-missing index does not fail the whole page.
+   *
+   * Returns `{ tokens, total }` where `total` is the factory's `token_count`.
+   * Callers MUST use `total` (not `tokens.length`) to distinguish "factory has
+   * zero tokens" from "this page failed" — a short/empty page is never on its
+   * own a truthful "no tokens exist" signal.
+   *
+   * Throws when the factory state cannot be read, or when a non-empty index
+   * window was requested but *every* index read failed — so consumers render an
+   * error state rather than a fake-empty list.
+   */
+  async getAllTokens(
+    offset = 0,
+    limit = DEFAULT_TOKEN_PAGE_LIMIT,
+  ): Promise<{ tokens: TokenInfo[]; total: number }> {
+    const contractId = STELLAR_CONFIG.factoryContractId
+    if (!contractId) throw new Error('Factory contract ID is not configured')
+
+    const { tokenCount } = await this.getFactoryState()
+    const total = Math.max(0, tokenCount)
+    if (total === 0 || limit <= 0) return { tokens: [], total }
+
+    // Newest-first window over the 1-based index range [1, total].
+    const highIndex = total - Math.max(0, offset)
+    if (highIndex < 1) return { tokens: [], total } // offset past the oldest token
+    const lowIndex = Math.max(1, highIndex - limit + 1)
+
+    const indices: number[] = []
+    for (let i = highIndex; i >= lowIndex; i--) indices.push(i)
+
+    const settled = await allSettledWithConcurrency(
+      indices.map((index) => () => this.getTokenInfo(index)),
+      GET_ALL_TOKENS_CONCURRENCY,
+    )
+
+    // `settled[k]` corresponds to `indices[k]`; stamp the resolved 1-based
+    // index onto each token so consumers can correlate it (e.g. to a token
+    // address derived from `created` events, the complementary path).
+    const tokens: TokenInfo[] = []
+    settled.forEach((r, k) => {
+      if (r.status === 'fulfilled') tokens.push({ ...r.value, index: indices[k]! })
+    })
+
+    // A non-empty window that resolved nothing is a fetch failure, not an
+    // empty factory — surface it so the UI never shows a fake-empty list.
+    if (tokens.length === 0) {
+      const firstRejection = settled.find(
+        (r): r is PromiseRejectedResult => r.status === 'rejected',
+      )
+      throw firstRejection?.reason instanceof Error
+        ? firstRejection.reason
+        : new Error('Failed to fetch any tokens for the requested page')
+    }
+
+    return { tokens, total }
   }
 
   // ── getTokensByCreator ───────────────────────────────────────────────────────
@@ -882,75 +1137,162 @@ export class StellarService {
     }
   }
 
-  // ── getTokenInfoByAddress ────────────────────────────────────────────────────
+  // ── Address-keyed contract views ─────────────────────────────────────────────
 
   /**
-   * Get token info by contract address, derived from factory events.
+   * Read a token's authoritative `TokenInfo` by contract address via the
+   * on-chain `get_token_info_by_address` view.
    *
-   * Pages through the full event history rather than requesting a single
-   * fixed-size page. `getEvents` returns events in ascending ledger order, so
-   * a capped single call drops the *newest* events — meaning a token created
-   * after the cap was reached resolved to a placeholder record (name set to
-   * its own address, empty symbol and creator) that callers could not
-   * distinguish from a real token. See `fetchAllContractEvents` for the
-   * pagination contract, and `.kiro/specs/contract-event-indexing` for why
-   * re-walking history per lookup is a stopgap rather than the end state.
-   *
-   * Throws when no `created` event exists for `tokenAddress`. Callers treat a
-   * rejection as "not found" — `TokenDetail` renders its not-found state,
-   * `TokenExplorer` and `useTokens` filter the entry out — which is why a
-   * placeholder is not returned instead.
+   * This is the source of truth for a token's name, symbol, decimals, creator
+   * and creation time — unlike factory events, on-chain state has no retention
+   * window, so a token created arbitrarily long ago still resolves correctly.
+   * Throws (mapped to a `Token not found` error) when the address is not
+   * registered with the factory.
    */
-  async getTokenInfoByAddress(tokenAddress: string): Promise<TokenInfo> {
+  async getTokenInfoByAddressView(tokenAddress: string): Promise<TokenInfo> {
     const contractId = STELLAR_CONFIG.factoryContractId
     if (!contractId) throw new Error('Factory contract ID is not configured')
 
-    const events = await fetchAllContractEvents(this, contractId)
-    const createdEvent = events.find(
-      (e) => e.type === 'created' && e.data.tokenAddress === tokenAddress,
+    const server = getRpcServer(this.network)
+    const retval = await callViewReadonly(
+      server,
+      contractId,
+      'get_token_info_by_address',
+      [new Address(tokenAddress).toScVal()],
+      this.network,
     )
-    if (!createdEvent) {
-      throw new Error(`No token found at address ${tokenAddress}`)
-    }
 
-    // Most-recent metadata event for this token
-    const metaEvent = events
-      .filter((e) => e.type === 'meta' && e.data.tokenAddress === tokenAddress)
-      .sort((a, b) => b.ledger - a.ledger)[0]
-
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const native = scValToNative(retval) as any
     return {
-      name: createdEvent.data.name ?? tokenAddress,
-      symbol: createdEvent.data.symbol ?? '',
-      decimals: 7,
-      creator: createdEvent.data.creator ?? '',
-      createdAt: createdEvent.timestamp ?? 0,
-      metadataUri: metaEvent?.data.metadataUri ?? '',
+      name: String(native.name ?? ''),
+      symbol: String(native.symbol ?? ''),
+      // Decimals come straight from contract state — never a guessed default.
+      decimals: Number(native.decimals ?? 0),
+      creator: native.creator?.toString() ?? '',
+      createdAt: Number(native.created_at ?? 0),
     }
   }
 
   /**
-   * Get all events for a specific token address.
-   * Filters factory events to only those related to the given token.
+   * Read a token's current metadata URI from the on-chain `get_metadata` view.
+   * Returns an empty string when no metadata has been set. Resolving from
+   * contract state avoids scanning `meta` events, which are subject to RPC
+   * retention truncation.
    */
-  async getTokenEvents(
-    tokenAddress: string,
-    limit = 20,
-    cursor?: string,
-  ): Promise<GetEventsResult> {
+  async getTokenMetadataUri(tokenAddress: string): Promise<string> {
+    const contractId = STELLAR_CONFIG.factoryContractId
+    if (!contractId) throw new Error('Factory contract ID is not configured')
+
+    const server = getRpcServer(this.network)
+    const retval = await callViewReadonly(
+      server,
+      contractId,
+      'get_metadata',
+      [new Address(tokenAddress).toScVal()],
+      this.network,
+    )
+    const native = scValToNative(retval)
+    return native == null ? '' : String(native)
+  }
+
+  // ── resolveTokenInfoByAddress ────────────────────────────────────────────────
+
+  /**
+   * Resolve a token's identity by address, returning a typed result rather than
+   * ever fabricating a placeholder. Identity is read from the contract (see
+   * {@link getTokenInfoByAddressView}), so `decimals` and the rest are always
+   * authoritative when `status === 'resolved'`.
+   *
+   * When the factory has no such token (`not-found`) or cannot be reached
+   * (`rpc-error`) the caller gets an explicit `unresolved` marker to render as
+   * such — this is what prevents wrong decimals or an address-as-name from ever
+   * being shown as if they were real token data.
+   */
+  async resolveTokenInfoByAddress(tokenAddress: string): Promise<TokenInfoResult> {
+    try {
+      const info = await this.getTokenInfoByAddressView(tokenAddress)
+
+      let metadataUri = ''
+      try {
+        metadataUri = await this.getTokenMetadataUri(tokenAddress)
+      } catch {
+        // Metadata is non-critical; identity is already resolved. A failure
+        // here (e.g. transient RPC error) must not downgrade a resolved token
+        // to unresolved.
+      }
+
+      return { status: 'resolved', ...info, metadataUri }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      const notFound = /token not found/i.test(message) || /Error\(Contract,\s*4\)/.test(message)
+      return {
+        status: 'unresolved',
+        address: tokenAddress,
+        reason: notFound ? 'not-found' : 'rpc-error',
+        message: notFound
+          ? `No token is registered at ${tokenAddress} with the factory contract.`
+          : `Could not resolve token ${tokenAddress}: ${message}`,
+      }
+    }
+  }
+
+  // ── getTokenInfoByAddress ────────────────────────────────────────────────────
+
+  /**
+   * Throwing convenience wrapper over {@link resolveTokenInfoByAddress} for
+   * callers that treat a rejection as "not found" (`TokenExplorer`, `useTokens`
+   * filter the entry out). Prefer `resolveTokenInfoByAddress` where the UI can
+   * render the `unresolved` state explicitly.
+   */
+  async getTokenInfoByAddress(tokenAddress: string): Promise<TokenInfo> {
+    const result = await this.resolveTokenInfoByAddress(tokenAddress)
+    if (result.status === 'unresolved') {
+      throw new Error(
+        result.reason === 'not-found'
+          ? `No token found at address ${tokenAddress}`
+          : result.message,
+      )
+    }
+    const { status: _status, ...info } = result
+    return info
+  }
+
+  /**
+   * Get the complete available event history for a specific token address.
+   *
+   * Pages exhaustively through the factory's event stream via
+   * {@link fetchAllContractEvents} (rather than a single fixed-size page, which
+   * silently truncated a token's history to whatever happened most recently)
+   * and filters to events referencing `tokenAddress`.
+   *
+   * The result is always flagged `retentionLimited`: Soroban RPC only retains
+   * events for a bounded window (~{@link RPC_EVENT_RETENTION_DAYS} days on
+   * public infrastructure), so events older than that cannot be served and the
+   * list must never be presented as the token's complete lifetime. The UI
+   * discloses this boundary rather than implying completeness.
+   */
+  async getTokenEvents(tokenAddress: string): Promise<TokenEventsResult> {
     const contractId = STELLAR_CONFIG.factoryContractId
     if (!contractId) {
-      return { events: [], cursor: null }
+      return {
+        events: [],
+        retentionLimited: true,
+        retentionDays: RPC_EVENT_RETENTION_DAYS,
+        cursor: null,
+      }
     }
 
-    // Fetch events from the factory contract
-    const result = await this.getContractEvents(contractId, limit, cursor)
-
-    // Filter to only events related to this token
-    const tokenEvents = result.events.filter((event) => event.data.tokenAddress === tokenAddress)
+    const all = await fetchAllContractEvents(this, contractId)
+    const events = all
+      .filter((event) => event.data.tokenAddress === tokenAddress)
+      .sort((a, b) => b.ledger - a.ledger)
 
     return {
-      events: tokenEvents,
-      cursor: result.cursor,
+      events,
+      retentionLimited: true,
+      retentionDays: RPC_EVENT_RETENTION_DAYS,
+      cursor: null,
     }
   }
 }
