@@ -1889,6 +1889,9 @@ fn test_fee_split_zero_share_recipient_skipped_remainder_to_treasury() {
         .mint_tokens(&token_addr, &admin, &mint_to, &1, &fee);
 
     let big_share: i128 = fee * 9_999 / 10_000; // = 98
+                                                // `identity_op` is allowed here: the `* 1` is the 1-bps share and is kept
+                                                // literal so the formula reads in parallel with `big_share` above.
+    #[allow(clippy::identity_op)]
     let tiny_share: i128 = fee * 1 / 10_000; //    = 0  (floors to zero)
 
     // The tiny recipient's share computes to 0 — the transfer is skipped.

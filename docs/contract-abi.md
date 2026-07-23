@@ -292,7 +292,7 @@ Add or remove an address from the factory whitelist. Emits `wl_add` / `wl_rm` ev
 
 ### `set_whitelist_enabled(admin, enabled)`
 
-Toggle whitelist enforcement on or off. When `enabled = true`, only addresses that have been added to the whitelist via `add_to_whitelist` may call `create_token` or `create_tokens_batch` — attempts from non-whitelisted addresses return `Error::NotWhitelisted` (code 18). Emits a `wl_tog` event.
+Toggle whitelist enforcement on or off. When `enabled = true`, only addresses that have been added to the whitelist via `add_to_whitelist` may call `create_token` or `create_tokens_batch` — attempts from non-whitelisted addresses return `Error::NotWhitelisted` (code 20). Emits a `wl_tog` event.
 
 When `enabled = false` (the default after `initialize` and after `migrate`), the factory is open to all creators and the whitelist contents are ignored.
 
@@ -309,47 +309,6 @@ Read-only: returns `true` if `address` is on the whitelist.
 
 ## Errors
 
-| Code | Symbol                      | When                                                                         |
-| ---- | --------------------------- | ---------------------------------------------------------------------------- |
-| 1    | `InsufficientFee`           | `fee_payment < required_fee`                                                 |
-| 2    | `Unauthorized`              | caller is not allowed for this operation                                     |
-| 3    | `InvalidParameters`         | argument out of range or malformed                                           |
-| 4    | `TokenNotFound`             | unknown token index or address                                               |
-| 5    | `MetadataAlreadySet`        | `set_metadata` called twice                                                  |
-| 6    | `AlreadyInitialized`        | double-initialize attempt                                                    |
-| 7    | `BurnAmountExceedsBalance`  | `burn` > balance                                                             |
-| 8    | `BurnNotEnabled`            | burning on a token that has been disabled                                    |
-| 9    | `InvalidBurnAmount`         | zero or negative burn                                                        |
-| 10   | `ContractPaused`            | operation blocked because factory is paused                                  |
-| 11   | `Reentrancy`                | concurrent reentrant call detected                                           |
-| 12   | `ArithmeticOverflow`        | checked-op failed                                                            |
-| 13   | `StateNotFound`             | factory not yet initialized                                                  |
-| 14   | `InvalidTokenParams`        | name/symbol validation failed during token creation                          |
-| 15   | `InvalidDecimals`           | decimals outside `[0, 18]`                                                   |
-| 16   | `MaxSupplyExceeded`         | mint would exceed cap                                                        |
-| 17   | `InvalidFeeSplit`           | `set_fee_split` map bps do not sum to 10_000                                 |
-| 18   | `AlreadyBackfilled`         | `backfill_capped_supply` already applied for this token                      |
-| 19   | `TooManyFeeSplitRecipients` | `set_fee_split` map has more than `MAX_FEE_SPLIT_RECIPIENTS` (10) recipients |
-| Code | Symbol                     | When                                                    |
-| ---- | -------------------------- | ------------------------------------------------------- |
-| 1    | `InsufficientFee`          | `fee_payment < required_fee`                            |
-| 2    | `Unauthorized`             | caller is not allowed for this operation                |
-| 3    | `InvalidParameters`        | argument out of range or malformed                      |
-| 4    | `TokenNotFound`            | unknown token index or address                          |
-| 5    | `MetadataAlreadySet`       | `set_metadata` called twice                             |
-| 6    | `AlreadyInitialized`       | double-initialize attempt                               |
-| 7    | `BurnAmountExceedsBalance` | `burn` > balance                                        |
-| 8    | `BurnNotEnabled`           | burning on a token that has been disabled               |
-| 9    | `InvalidBurnAmount`        | zero or negative burn                                   |
-| 10   | `ContractPaused`           | operation blocked because factory is paused             |
-| 11   | `Reentrancy`               | concurrent reentrant call detected                      |
-| 12   | `ArithmeticOverflow`       | checked-op failed                                       |
-| 13   | `StateNotFound`            | factory not yet initialized                             |
-| 14   | `InvalidTokenParams`       | name/symbol validation failed during token creation     |
-| 15   | `InvalidDecimals`          | decimals outside `[0, 18]`                              |
-| 16   | `MaxSupplyExceeded`        | mint would exceed cap                                   |
-| 17   | `InvalidFeeSplit`          | `set_fee_split` map bps do not sum to 10_000            |
-| 18   | `AlreadyBackfilled`        | `backfill_capped_supply` already applied for this token |
 | Code | Symbol | When |
 |---|---|---|
 | 1 | `InsufficientFee` | `fee_payment < required_fee` |
@@ -369,7 +328,7 @@ Read-only: returns `true` if `address` is on the whitelist.
 | 15 | `InvalidDecimals` | decimals outside `[0, 18]` |
 | 16 | `MaxSupplyExceeded` | mint would exceed cap |
 | 17 | `InvalidFeeSplit` | `set_fee_split` map bps do not sum to 10_000 |
-| 18 | `TooManyFeeSplitRecipients` | `set_fee_split` map has more than `MAX_FEE_SPLIT_RECIPIENTS` (20) recipients |
+| 18 | `TooManyFeeSplitRecipients` | `set_fee_split` map has more than `MAX_FEE_SPLIT_RECIPIENTS` (10) recipients |
 | 19 | `AlreadyBackfilled` | `backfill_capped_supply` already applied for this token |
 | 20 | `NotWhitelisted` | creator is not on the whitelist when enforcement is enabled |
 
