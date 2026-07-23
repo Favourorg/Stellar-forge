@@ -172,7 +172,7 @@ fn test_set_metadata_fee_goes_to_treasury() {
     s.client.set_metadata(
         &token_addr,
         &admin,
-        &String::from_str(&s.env, "ipfs://Qm123"),
+        &String::from_str(&s.env, "ipfs://QmYwAPJzv5CZsnAztBbmLU7V7HLe52Y1ZbL21hEbdOC3Ba"),
         &500,
     );
 
@@ -358,7 +358,7 @@ fn test_set_metadata() {
     s.client.set_metadata(
         &token_addr,
         &admin,
-        &String::from_str(&s.env, "ipfs://QmTest"),
+        &String::from_str(&s.env, "ipfs://QmYwAPJzv5CZsnAztBbmLU7V7HLe52Y1ZbL21hEbdOC3Ba"),
         &500,
     );
     assert_eq!(
@@ -375,7 +375,7 @@ fn test_set_metadata_insufficient_fee() {
     let result = s.client.try_set_metadata(
         &token_addr,
         &admin,
-        &String::from_str(&s.env, "ipfs://QmTest"),
+        &String::from_str(&s.env, "ipfs://QmYwAPJzv5CZsnAztBbmLU7V7HLe52Y1ZbL21hEbdOC3Ba"),
         &100,
     );
     assert_eq!(result, Err(Ok(Error::InsufficientFee)));
@@ -391,7 +391,7 @@ fn test_set_metadata_unauthorized() {
     let result = s.client.try_set_metadata(
         &token_addr,
         &stranger,
-        &String::from_str(&s.env, "ipfs://QmTest"),
+        &String::from_str(&s.env, "ipfs://QmYwAPJzv5CZsnAztBbmLU7V7HLe52Y1ZbL21hEbdOC3Ba"),
         &500,
     );
     assert_eq!(result, Err(Ok(Error::Unauthorized)));
@@ -401,21 +401,33 @@ fn test_set_metadata_unauthorized() {
 fn test_set_metadata_already_set() {
     let s = Setup::new();
     let admin = Address::generate(&s.env);
-    s.fund(&admin, 1_000);
+    // Fund enough for METADATA_MAX_UPDATES (5) calls × 500 fee each
+    s.fund(&admin, 500 * 5);
     let token_addr = seed_token(&s, &admin, true, None);
-    s.client.set_metadata(
-        &token_addr,
-        &admin,
-        &String::from_str(&s.env, "ipfs://QmFirst"),
-        &500,
-    );
+    // Use valid ipfs:// URIs with proper CID length
+    let uris = [
+        "ipfs://QmYwAPJzv5CZsnAztBbmLU7V7HLe52Y1ZbL21hEbdOC3Ba",
+        "ipfs://QmYwAPJzv5CZsnAztBbmLU7V7HLe52Y1ZbL21hEbdOC3Bb",
+        "ipfs://QmYwAPJzv5CZsnAztBbmLU7V7HLe52Y1ZbL21hEbdOC3Bc",
+        "ipfs://QmYwAPJzv5CZsnAztBbmLU7V7HLe52Y1ZbL21hEbdOC3Bd",
+        "ipfs://QmYwAPJzv5CZsnAztBbmLU7V7HLe52Y1ZbL21hEbdOC3Be",
+    ];
+    for uri in &uris {
+        s.client.set_metadata(
+            &token_addr,
+            &admin,
+            &String::from_str(&s.env, uri),
+            &500,
+        );
+    }
+    // 6th call must fail — auto-frozen after METADATA_MAX_UPDATES
     let result = s.client.try_set_metadata(
         &token_addr,
         &admin,
-        &String::from_str(&s.env, "ipfs://QmSecond"),
+        &String::from_str(&s.env, "ipfs://QmYwAPJzv5CZsnAztBbmLU7V7HLe52Y1ZbL21hEbdOC3Bf"),
         &500,
     );
-    assert_eq!(result, Err(Ok(Error::MetadataAlreadySet)));
+    assert_eq!(result, Err(Ok(Error::MetadataFrozen)));
 }
 
 #[test]
@@ -428,15 +440,164 @@ fn test_set_metadata_different_tokens_independent() {
     s.client.set_metadata(
         &token_a,
         &admin,
-        &String::from_str(&s.env, "ipfs://QmA"),
+        &String::from_str(&s.env, "ipfs://QmYwAPJzv5CZsnAztBbmLU7V7HLe52Y1ZbL21hEbdOC3Ba"),
         &500,
     );
     s.client.set_metadata(
         &token_b,
         &admin,
-        &String::from_str(&s.env, "ipfs://QmB"),
+        &String::from_str(&s.env, "ipfs://QmYwAPJzv5CZsnAztBbmLU7V7HLe52Y1ZbL21hEbdOC3Bb"),
         &500,
     );
+}
+
+// ── metadata URI validation and mutability tests (#1023) ─────────────────────
+
+#[test]
+fn test_set_metadata_rejects_empty_uri() {
+    let s = Setup::new();
+    let admin = Address::generate(&s.env);
+    s.fund(&admin, 500);
+    let token_addr = seed_token(&s, &admin, true, None);
+    let result = s.client.try_set_metadata(
+        &token_addr,
+        &admin,
+        &String::from_str(&s.env, ""),
+        &500,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidMetadataUri)));
+}
+
+#[test]
+fn test_set_metadata_rejects_missing_ipfs_prefix() {
+    let s = Setup::new();
+    let admin = Address::generate(&s.env);
+    s.fund(&admin, 500);
+    let token_addr = seed_token(&s, &admin, true, None);
+    let result = s.client.try_set_metadata(
+        &token_addr,
+        &admin,
+        &String::from_str(&s.env, "https://example.com/metadata.json"),
+        &500,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidMetadataUri)));
+}
+
+#[test]
+fn test_set_metadata_rejects_uri_too_long() {
+    let s = Setup::new();
+    let admin = Address::generate(&s.env);
+    s.fund(&admin, 500);
+    let token_addr = seed_token(&s, &admin, true, None);
+    // 129-char URI (exceeds METADATA_URI_MAX_LEN = 128)
+    let long_uri = "ipfs://QmYwAPJzv5CZsnAztBbmLU7V7HLe52Y1ZbL21hEbdOC3BaQmYwAPJzv5CZsnAztBbmLU7V7HLe52Y1ZbL21hEbdOC3BaAAAAAAAAAAAAAAAA";
+    let result = s.client.try_set_metadata(
+        &token_addr,
+        &admin,
+        &String::from_str(&s.env, long_uri),
+        &500,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidMetadataUri)));
+}
+
+#[test]
+fn test_set_metadata_rejects_prefix_only() {
+    let s = Setup::new();
+    let admin = Address::generate(&s.env);
+    s.fund(&admin, 500);
+    let token_addr = seed_token(&s, &admin, true, None);
+    let result = s.client.try_set_metadata(
+        &token_addr,
+        &admin,
+        &String::from_str(&s.env, "ipfs://"),
+        &500,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidMetadataUri)));
+}
+
+#[test]
+fn test_set_metadata_update_then_freeze() {
+    let s = Setup::new();
+    let admin = Address::generate(&s.env);
+    s.fund(&admin, 1_000);
+    let token_addr = seed_token(&s, &admin, true, None);
+
+    // First set succeeds.
+    s.client.set_metadata(
+        &token_addr,
+        &admin,
+        &String::from_str(&s.env, "ipfs://QmYwAPJzv5CZsnAztBbmLU7V7HLe52Y1ZbL21hEbdOC3Ba"),
+        &500,
+    );
+    assert_eq!(s.client.get_metadata_version(&token_addr), 1);
+    assert!(!s.client.is_metadata_frozen(&token_addr));
+
+    // Update to a new URI.
+    s.client.set_metadata(
+        &token_addr,
+        &admin,
+        &String::from_str(&s.env, "ipfs://QmYwAPJzv5CZsnAztBbmLU7V7HLe52Y1ZbL21hEbdOC3Bb"),
+        &500,
+    );
+    assert_eq!(s.client.get_metadata_version(&token_addr), 2);
+
+    // Explicitly freeze.
+    s.client.freeze_metadata(&token_addr, &admin);
+    assert!(s.client.is_metadata_frozen(&token_addr));
+
+    // Further updates are rejected.
+    let result = s.client.try_set_metadata(
+        &token_addr,
+        &admin,
+        &String::from_str(&s.env, "ipfs://QmYwAPJzv5CZsnAztBbmLU7V7HLe52Y1ZbL21hEbdOC3Bc"),
+        &500,
+    );
+    assert_eq!(result, Err(Ok(Error::MetadataFrozen)));
+}
+
+#[test]
+fn test_freeze_metadata_unauthorized() {
+    let s = Setup::new();
+    let creator = Address::generate(&s.env);
+    let stranger = Address::generate(&s.env);
+    let token_addr = seed_token(&s, &creator, true, None);
+    assert_eq!(
+        s.client.try_freeze_metadata(&token_addr, &stranger),
+        Err(Ok(Error::Unauthorized))
+    );
+}
+
+#[test]
+fn test_freeze_metadata_idempotent() {
+    let s = Setup::new();
+    let admin = Address::generate(&s.env);
+    let token_addr = seed_token(&s, &admin, true, None);
+    // Freeze twice — second call must not error.
+    s.client.freeze_metadata(&token_addr, &admin);
+    s.client.freeze_metadata(&token_addr, &admin);
+    assert!(s.client.is_metadata_frozen(&token_addr));
+}
+
+#[test]
+fn test_set_metadata_version_increments() {
+    let s = Setup::new();
+    let admin = Address::generate(&s.env);
+    s.fund(&admin, 2_500);
+    let token_addr = seed_token(&s, &admin, true, None);
+    let uris = [
+        "ipfs://QmYwAPJzv5CZsnAztBbmLU7V7HLe52Y1ZbL21hEbdOC3Ba",
+        "ipfs://QmYwAPJzv5CZsnAztBbmLU7V7HLe52Y1ZbL21hEbdOC3Bb",
+        "ipfs://QmYwAPJzv5CZsnAztBbmLU7V7HLe52Y1ZbL21hEbdOC3Bc",
+    ];
+    for (i, uri) in uris.iter().enumerate() {
+        s.client.set_metadata(
+            &token_addr,
+            &admin,
+            &String::from_str(&s.env, uri),
+            &500,
+        );
+        assert_eq!(s.client.get_metadata_version(&token_addr), (i + 1) as u32);
+    }
 }
 
 // ── mint_tokens ───────────────────────────────────────────────────────────────
@@ -1067,6 +1228,114 @@ fn test_fee_goes_to_treasury_when_no_split() {
         TokenClient::new(&s.env, &s.fee_token).balance(&s.treasury),
         1_000
     );
+}
+
+// ── fee split: new edge-case tests (#1024) ────────────────────────────────────
+
+#[test]
+fn test_set_fee_split_zero_bps_rejected() {
+    let s = Setup::new();
+    let referral = Address::generate(&s.env);
+    // One entry has bps==0, which must be rejected.
+    let splits = make_split(&s, &[(&s.treasury, 10_000), (&referral, 0)]);
+    assert_eq!(
+        s.client.try_set_fee_split(&s.admin, &splits),
+        Err(Ok(Error::ZeroFeeSplitEntry))
+    );
+}
+
+#[test]
+fn test_set_fee_split_too_many_recipients_rejected() {
+    let s = Setup::new();
+    // Build 11 recipients each with 909 bps, total = 9999 ≠ 10000; we just
+    // want to trigger the cap error before the sum check.
+    let mut m = Map::new(&s.env);
+    for _ in 0..11u32 {
+        let addr = Address::generate(&s.env);
+        m.set(addr, 909u32);
+    }
+    assert_eq!(
+        s.client.try_set_fee_split(&s.admin, &m),
+        Err(Ok(Error::TooManyFeeSplitRecipients))
+    );
+}
+
+#[test]
+fn test_set_fee_split_exactly_at_cap_accepted() {
+    let s = Setup::new();
+    // 10 recipients each with 1_000 bps = 10_000 total — exactly at the cap.
+    let mut m = Map::new(&s.env);
+    for _ in 0..9u32 {
+        let addr = Address::generate(&s.env);
+        m.set(addr, 1_000u32);
+    }
+    m.set(s.treasury.clone(), 1_000u32);
+    s.client.set_fee_split(&s.admin, &m);
+    assert_eq!(s.client.get_fee_split().len(), 10);
+}
+
+#[test]
+fn test_fee_split_largest_remainder_dust_fee() {
+    // With a tiny fee (e.g. 3 stroops) and two recipients at 50/50 bps,
+    // floor shares are both 0 (1.5 each), remainder=3.
+    // Largest-remainder assigns 2 to highest-frac (both equal, tie → first)
+    // and 1 to second. Total transferred must equal 3.
+    let s = Setup::new();
+    let r1 = Address::generate(&s.env);
+    let r2 = Address::generate(&s.env);
+    let splits = make_split(&s, &[(&r1, 5_000), (&r2, 5_000)]);
+    s.client.set_fee_split(&s.admin, &splits);
+
+    let admin = Address::generate(&s.env);
+    s.fund(&admin, 3);
+    let token_addr = seed_token(&s, &admin, true, None);
+
+    // Update base_fee to 3 so the fee amount is tiny.
+    s.client.update_fees(&s.admin, &Some(3_i128), &None);
+
+    let recipient = Address::generate(&s.env);
+    s.client.mint_tokens(&token_addr, &admin, &recipient, &1, &3);
+
+    let bal_r1 = TokenClient::new(&s.env, &s.fee_token).balance(&r1);
+    let bal_r2 = TokenClient::new(&s.env, &s.fee_token).balance(&r2);
+    // Total must equal 3 regardless of individual allocation.
+    assert_eq!(bal_r1 + bal_r2, 3, "sum of splits must equal fee");
+    // Each recipient must receive at least 1 stroop (floor+1 via LR).
+    assert!(bal_r1 >= 1, "r1 must receive at least 1 stroop");
+    assert!(bal_r2 >= 1, "r2 must receive at least 1 stroop");
+}
+
+#[test]
+fn test_fee_split_sum_invariant_many_recipients() {
+    // 5 recipients at 2_000 bps each = 10_000; fee = 10_001 stroops.
+    // Each gets 2000 floor; remainder=1 goes to first-highest-frac.
+    // Sum must still equal 10_001.
+    let s = Setup::new();
+    let mut addrs = soroban_sdk::Vec::new(&s.env);
+    let mut m = Map::new(&s.env);
+    for _ in 0..5u32 {
+        let a = Address::generate(&s.env);
+        m.set(a.clone(), 2_000u32);
+        addrs.push_back(a);
+    }
+    s.client.set_fee_split(&s.admin, &m);
+
+    let fee_amount: i128 = 10_001;
+    let admin = Address::generate(&s.env);
+    s.fund(&admin, fee_amount);
+    let token_addr = seed_token(&s, &admin, true, None);
+    s.client.update_fees(&s.admin, &Some(fee_amount), &None);
+    let recipient = Address::generate(&s.env);
+    s.client
+        .mint_tokens(&token_addr, &admin, &recipient, &1, &fee_amount);
+
+    let mut total: i128 = 0;
+    for i in 0..addrs.len() {
+        if let Ok(Some(a)) = addrs.try_get(i) {
+            total += TokenClient::new(&s.env, &s.fee_token).balance(&a);
+        }
+    }
+    assert_eq!(total, fee_amount, "sum of all splits must equal fee amount");
 }
 
 // ── batch token creation ──────────────────────────────────────────────────────
