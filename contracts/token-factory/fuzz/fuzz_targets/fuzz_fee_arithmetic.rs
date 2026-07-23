@@ -60,22 +60,17 @@ fn fee_is_valid(fee: i128) -> bool {
 // nothing more — so any divergence between the model's result and the
 // contract's result is itself a bug.
 //
-// Contract logic (lib.rs ~line 167):
+// Contract logic (lib.rs, `distribute_fee`, largest-remainder allocation
+// introduced for issue #1024):
 //
-//   for (recipient, bps) in splits.iter() {
-//       let share = amount.checked_mul(bps as i128)
-//           .ok_or(ArithmeticOverflow)? / 10_000;
-//       if share > 0 {
-//           fee_client.transfer(payer, &recipient, &share);
-//       }
-//       distributed = distributed.checked_add(share)
-//           .ok_or(ArithmeticOverflow)?;
-//   }
-//   let remainder = amount.checked_sub(distributed)
-//       .ok_or(ArithmeticOverflow)?;
-//   if remainder > 0 {
-//       fee_client.transfer(payer, &state.treasury, &remainder);
-//   }
+//   Pass 1: for each recipient compute
+//       floor = amount.checked_mul(bps as i128)? / 10_000
+//       frac  = amount*bps - floor*10_000        (fractional numerator)
+//   Pass 2: while remainder = amount - Σfloor > 0, award one extra stroop
+//       to the entry with the largest frac, zeroing its frac (each entry
+//       wins at most once); stop when all fracs are zero.
+//   Pass 3: transfer each share (skipping share == 0); any leftover
+//       remainder goes to treasury.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Result of running the `distribute_fee` model.
@@ -103,29 +98,38 @@ fn model_distribute_fee(amount: i128, bps_values: &[u32]) -> DistributeResult {
         };
     }
 
+    // Pass 1: floor shares + fractional numerators (mirrors the contract's
+    // largest-remainder allocation, issue #1024).
     let mut shares = Vec::with_capacity(bps_values.len());
-    let mut distributed: i128 = 0;
+    let mut fracs = Vec::with_capacity(bps_values.len());
+    let mut total_floor: i128 = 0;
     let mut overflowed = false;
 
     for &bps in bps_values {
-        let mul = amount.checked_mul(bps as i128);
-        match mul {
+        let bps_i = bps as i128;
+        match amount.checked_mul(bps_i) {
             None => {
                 // checked_mul overflowed — contract returns ArithmeticOverflow.
                 overflowed = true;
                 shares.push(0);
+                fracs.push(0);
                 continue;
             }
             Some(product) => {
-                let share = product / 10_000;
-                shares.push(share);
-                match distributed.checked_add(share) {
+                let floor = product / 10_000;
+                // frac numerator = amount*bps - floor*10_000
+                let frac = match floor.checked_mul(10_000) {
                     None => {
                         overflowed = true;
+                        0
                     }
-                    Some(new_dist) => {
-                        distributed = new_dist;
-                    }
+                    Some(f10k) => product - f10k,
+                };
+                shares.push(floor);
+                fracs.push(frac);
+                match total_floor.checked_add(floor) {
+                    None => overflowed = true,
+                    Some(t) => total_floor = t,
                 }
             }
         }
@@ -139,7 +143,10 @@ fn model_distribute_fee(amount: i128, bps_values: &[u32]) -> DistributeResult {
         };
     }
 
-    let remainder = match amount.checked_sub(distributed) {
+    // Pass 2: award the remainder one stroop at a time to the entry with the
+    // largest fractional numerator (each entry can win at most once — its
+    // frac is zeroed after the award). Any leftover goes to treasury.
+    let mut remainder = match amount.checked_sub(total_floor) {
         None => {
             return DistributeResult {
                 shares,
@@ -149,6 +156,23 @@ fn model_distribute_fee(amount: i128, bps_values: &[u32]) -> DistributeResult {
         }
         Some(r) => r,
     };
+
+    while remainder > 0 {
+        let mut best_idx = 0usize;
+        let mut best_frac: i128 = -1;
+        for (i, &f) in fracs.iter().enumerate() {
+            if f > best_frac {
+                best_frac = f;
+                best_idx = i;
+            }
+        }
+        if best_frac <= 0 {
+            break;
+        }
+        shares[best_idx] = shares[best_idx].saturating_add(1);
+        fracs[best_idx] = 0;
+        remainder -= 1;
+    }
 
     DistributeResult {
         shares,

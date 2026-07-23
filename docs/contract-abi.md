@@ -175,9 +175,34 @@ Burn `amount` of `token_address` from `from`'s balance. Honors `burn_enabled`; r
 
 ### `set_metadata(token_address, admin, metadata_uri, fee_payment)`
 
-Set an IPFS / HTTPS metadata URI for an existing token. Requires `fee_payment >= metadata_fee`; charges exactly `metadata_fee`. One-shot — re-setting returns `Error::MetadataAlreadySet`.
+Set or update the metadata URI for an existing token. Requires `fee_payment >= metadata_fee`; charges exactly `metadata_fee`.
 
 The contract stores the URI opaquely and does not validate the document it points at. The frontend does, and enforces length caps on `name` and `description` plus an `ipfs://`-only rule for `image` when rendering — see [Token Metadata Format](./metadata-format.md) before pinning your own metadata.
+
+**URI validation (enforced on-chain):**
+
+| Rule | Error |
+|---|---|
+| `metadata_uri` is empty | `InvalidMetadataUri` |
+| Does not start with `ipfs://` | `InvalidMetadataUri` |
+| No CID after the prefix | `InvalidMetadataUri` |
+| `len > 128` bytes | `InvalidMetadataUri` |
+
+**Mutability:** Metadata is no longer write-once. A creator may update the URI up to `METADATA_MAX_UPDATES` (currently **5**) times total. Once the update count is exhausted the URI is automatically frozen (`MetadataFrozen`). Creators may also explicitly freeze at any time via `freeze_metadata`.
+
+Emits a `meta` event with `(token_address, metadata_uri, version)` on every successful update so the full history is auditable on-chain.
+
+### `freeze_metadata(token_address, admin)`
+
+Permanently freeze a token's metadata URI so it can no longer be updated. Only the token creator may call this. Idempotent — calling on an already-frozen token is a no-op. Emits a `meta_frz` event.
+
+### `is_metadata_frozen(token_address) → bool`
+
+Return `true` if the token's metadata has been frozen (either explicitly or by reaching the update cap).
+
+### `get_metadata_version(token_address) → u32`
+
+Return the current metadata update version (0 = never set, 1 = first set, …, up to `METADATA_MAX_UPDATES = 5`).
 
 ### `set_burn_enabled(token_address, admin, enabled)`
 
@@ -259,6 +284,20 @@ Toggle factory-wide pause. `create_token`, `create_tokens_batch`, `mint_tokens`,
 
 Set a fee split where `splits` is a `Map<Address, u32>` of basis-point recipients summing to `10_000`. Empty map clears the split (full fee goes back to `treasury`).
 
+**Constraints enforced at configuration time:**
+
+| Rule | Error |
+|---|---|
+| `splits.len() > 10` | `TooManyFeeSplitRecipients` |
+| Any entry has `bps == 0` | `ZeroFeeSplitEntry` |
+| `sum(bps) != 10_000` | `InvalidFeeSplit` |
+
+**Cap:** Maximum `10` recipients per split (`MAX_FEE_SPLIT_RECIPIENTS`). This bounds the number of cross-contract transfer calls per user transaction and keeps per-transaction gas predictable.
+
+**Rounding:** `distribute_fee` uses the **largest-remainder method**. Each recipient's share is `floor(amount * bps / 10_000)`. Remainder stroops (at most `recipients - 1`) are awarded one-at-a-time to the entries with the largest fractional parts, so the sum of all transfers always equals the full fee amount. No recipient with non-zero `bps` receives zero forever as long as the fee amount is ≥ 1 stroop (the largest-remainder guarantee).
+
+Emits a `split_set` event on successful configuration and a `split_clr` event when the split is cleared.
+
 **Recipient cap:** `splits` may contain at most **10 recipients** (`MAX_FEE_SPLIT_RECIPIENTS`). Exceeding it is rejected with `Error::TooManyFeeSplitRecipients` before the basis-point sum is even checked. This exists because `distribute_fee` transfers a share to every configured recipient on **every** `create_token`, `create_tokens_batch`, `mint_tokens`, and `set_metadata` call — an unbounded admin-configured split would make every fee-paying call on the contract arbitrarily expensive for the caller, and risk exceeding Soroban's per-transaction resource limits outright.
 
 The cap is conservative: typical treasury + referral + protocol-fund structures need ≤ 5 recipients, and the benchmark harness (`contracts/token-factory/src/bench.rs`, `bench_fee_split_mint_*`, `bench_fee_split_at_max_within_limits`) confirms `distribute_fee`'s cost at 10 recipients stays comfortably within Soroban's per-transaction resource limits — ledger _writes_ are the binding resource (each non-zero-share recipient writes a new SEP-41 balance entry), not CPU or memory.
@@ -315,7 +354,7 @@ Read-only: returns `true` if `address` is on the whitelist.
 | 2 | `Unauthorized` | caller is not allowed for this operation |
 | 3 | `InvalidParameters` | argument out of range or malformed |
 | 4 | `TokenNotFound` | unknown token index or address |
-| 5 | `MetadataAlreadySet` | `set_metadata` called twice |
+| 5 | `MetadataAlreadySet` | _(deprecated — retained for ABI compatibility; no longer returned by `set_metadata`)_ |
 | 6 | `AlreadyInitialized` | double-initialize attempt |
 | 7 | `BurnAmountExceedsBalance` | `burn` > balance |
 | 8 | `BurnNotEnabled` | burning on a token that has been disabled |
@@ -331,6 +370,9 @@ Read-only: returns `true` if `address` is on the whitelist.
 | 18 | `TooManyFeeSplitRecipients` | `set_fee_split` map has more than `MAX_FEE_SPLIT_RECIPIENTS` (10) recipients |
 | 19 | `AlreadyBackfilled` | `backfill_capped_supply` already applied for this token |
 | 20 | `NotWhitelisted` | creator is not on the whitelist when enforcement is enabled |
+| 21 | `InvalidMetadataUri` | URI is empty, missing `ipfs://` prefix, exceeds 128 bytes, or has no CID |
+| 22 | `ZeroFeeSplitEntry` | `set_fee_split` map contains an entry with `bps == 0` |
+| 23 | `MetadataFrozen` | metadata is frozen (via `freeze_metadata` or auto-freeze after max updates) |
 
 ## Events
 
@@ -341,16 +383,19 @@ The contract emits Soroban events on a `(factory, action)` topic. The frontend p
 | `init`    | `(admin)`                                | `initialize`                           |
 | `init`    | `(admin)`                                | `__constructor`                        |
 | `created` | `(token_address, creator, name, symbol)` | `create_token` / `create_tokens_batch` |
-| `meta`    | `(token_address, metadata_uri)`          | `set_metadata`                         |
-| `mint`    | `(token_address, to, amount)`            | `mint_tokens`                          |
-| `burn`    | `(token_address, from, amount)`          | `burn`                                 |
-| `fees`    | `(base_fee, metadata_fee)`               | `update_fees`                          |
-| `pause`   | `(admin)`                                | `pause`                                |
-| `unpause` | `(admin)`                                | `unpause`                              |
-| `adm_upd` | `(current_admin, new_admin)`             | `update_admin`                         |
-| `wl_add`  | `(address)`                              | `add_to_whitelist`                     |
-| `wl_rm`   | `(address)`                              | `remove_from_whitelist`                |
-| `wl_tog`  | `(enabled)`                              | `set_whitelist_enabled`                |
+| `meta` | `(token_address, metadata_uri, version)` | `set_metadata` (every update) |
+| `meta_frz` | `(token_address, admin)` | `freeze_metadata` |
+| `mint` | `(token_address, to, amount)` | `mint_tokens` |
+| `burn` | `(token_address, from, amount)` | `burn` |
+| `fees` | `(base_fee, metadata_fee)` | `update_fees` |
+| `split_set` | `(admin, splits)` | `set_fee_split` (non-empty) |
+| `split_clr` | `(admin)` | `set_fee_split` (empty — clears split) |
+| `pause` | `(admin)` | `pause` |
+| `unpause` | `(admin)` | `unpause` |
+| `adm_upd` | `(current_admin, new_admin)` | `update_admin` |
+| `wl_add` | `(address)` | `add_to_whitelist` |
+| `wl_rm` | `(address)` | `remove_from_whitelist` |
+| `wl_tog` | `(enabled)` | `set_whitelist_enabled` |
 
 ## Batch creation UI
 

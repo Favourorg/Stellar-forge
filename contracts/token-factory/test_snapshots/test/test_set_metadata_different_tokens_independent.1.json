@@ -139,7 +139,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
                 },
                 {
-                  "string": "ipfs://QmA"
+                  "string": "ipfs://QmYwAPJzv5CZsnAztBbmLU7V7HLe52Y1ZbL21hEbdOC3Ba"
                 },
                 {
                   "i128": "500"
@@ -188,7 +188,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
                 },
                 {
-                  "string": "ipfs://QmB"
+                  "string": "ipfs://QmYwAPJzv5CZsnAztBbmLU7V7HLe52Y1ZbL21hEbdOC3Bb"
                 },
                 {
                   "i128": "500"
@@ -478,7 +478,7 @@
               },
               "durability": "persistent",
               "val": {
-                "string": "ipfs://QmA"
+                "string": "ipfs://QmYwAPJzv5CZsnAztBbmLU7V7HLe52Y1ZbL21hEbdOC3Ba"
               }
             }
           },
@@ -505,7 +505,61 @@
               },
               "durability": "persistent",
               "val": {
-                "string": "ipfs://QmB"
+                "string": "ipfs://QmYwAPJzv5CZsnAztBbmLU7V7HLe52Y1ZbL21hEbdOC3Bb"
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 535000
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "MetadataVersion"
+                  },
+                  {
+                    "address": "CACMVW2KK4H5FZDFF2AUCAKQTEJMZZWJUIZF23XMRVYQBSXYLHZ6BKWN"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u32": 1
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 535000
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "MetadataVersion"
+                  },
+                  {
+                    "address": "CDS3FDGQ4JA2V3F26Y4BMWWJEC5TT26RJBN7KIQKUMVO2MAOCMDTSZ7A"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u32": 1
               }
             }
           },
@@ -1438,7 +1492,10 @@
                   "address": "CDS3FDGQ4JA2V3F26Y4BMWWJEC5TT26RJBN7KIQKUMVO2MAOCMDTSZ7A"
                 },
                 {
-                  "string": "ipfs://QmB"
+                  "string": "ipfs://QmYwAPJzv5CZsnAztBbmLU7V7HLe52Y1ZbL21hEbdOC3Bb"
+                },
+                {
+                  "u32": 1
                 }
               ]
             }

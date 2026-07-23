@@ -304,7 +304,10 @@ fn test_set_metadata_fee_goes_to_treasury() {
     s.client.set_metadata(
         &token_addr,
         &admin,
-        &String::from_str(&s.env, "ipfs://Qm123"),
+        &String::from_str(
+            &s.env,
+            "ipfs://QmYwAPJzv5CZsnAztBbmLU7V7HLe52Y1ZbL21hEbdOC3Ba",
+        ),
         &500,
     );
 
@@ -679,7 +682,10 @@ fn test_set_metadata() {
     s.client.set_metadata(
         &token_addr,
         &admin,
-        &String::from_str(&s.env, "ipfs://QmTest"),
+        &String::from_str(
+            &s.env,
+            "ipfs://QmYwAPJzv5CZsnAztBbmLU7V7HLe52Y1ZbL21hEbdOC3Ba",
+        ),
         &500,
     );
     assert_eq!(
@@ -696,7 +702,10 @@ fn test_set_metadata_insufficient_fee() {
     let result = s.client.try_set_metadata(
         &token_addr,
         &admin,
-        &String::from_str(&s.env, "ipfs://QmTest"),
+        &String::from_str(
+            &s.env,
+            "ipfs://QmYwAPJzv5CZsnAztBbmLU7V7HLe52Y1ZbL21hEbdOC3Ba",
+        ),
         &100,
     );
     assert_eq!(result, Err(Ok(Error::InsufficientFee)));
@@ -712,7 +721,10 @@ fn test_set_metadata_unauthorized() {
     let result = s.client.try_set_metadata(
         &token_addr,
         &stranger,
-        &String::from_str(&s.env, "ipfs://QmTest"),
+        &String::from_str(
+            &s.env,
+            "ipfs://QmYwAPJzv5CZsnAztBbmLU7V7HLe52Y1ZbL21hEbdOC3Ba",
+        ),
         &500,
     );
     assert_eq!(result, Err(Ok(Error::Unauthorized)));
@@ -722,21 +734,32 @@ fn test_set_metadata_unauthorized() {
 fn test_set_metadata_already_set() {
     let s = Setup::new();
     let admin = Address::generate(&s.env);
-    s.fund(&admin, 1_000);
+    // Fund enough for METADATA_MAX_UPDATES (5) calls × 500 fee each
+    s.fund(&admin, 500 * 5);
     let token_addr = seed_token(&s, &admin, true, None);
-    s.client.set_metadata(
-        &token_addr,
-        &admin,
-        &String::from_str(&s.env, "ipfs://QmFirst"),
-        &500,
-    );
+    // Use valid ipfs:// URIs with proper CID length
+    let uris = [
+        "ipfs://QmYwAPJzv5CZsnAztBbmLU7V7HLe52Y1ZbL21hEbdOC3Ba",
+        "ipfs://QmYwAPJzv5CZsnAztBbmLU7V7HLe52Y1ZbL21hEbdOC3Bb",
+        "ipfs://QmYwAPJzv5CZsnAztBbmLU7V7HLe52Y1ZbL21hEbdOC3Bc",
+        "ipfs://QmYwAPJzv5CZsnAztBbmLU7V7HLe52Y1ZbL21hEbdOC3Bd",
+        "ipfs://QmYwAPJzv5CZsnAztBbmLU7V7HLe52Y1ZbL21hEbdOC3Be",
+    ];
+    for uri in &uris {
+        s.client
+            .set_metadata(&token_addr, &admin, &String::from_str(&s.env, uri), &500);
+    }
+    // 6th call must fail — auto-frozen after METADATA_MAX_UPDATES
     let result = s.client.try_set_metadata(
         &token_addr,
         &admin,
-        &String::from_str(&s.env, "ipfs://QmSecond"),
+        &String::from_str(
+            &s.env,
+            "ipfs://QmYwAPJzv5CZsnAztBbmLU7V7HLe52Y1ZbL21hEbdOC3Bf",
+        ),
         &500,
     );
-    assert_eq!(result, Err(Ok(Error::MetadataAlreadySet)));
+    assert_eq!(result, Err(Ok(Error::MetadataFrozen)));
 }
 
 #[test]
@@ -749,15 +772,173 @@ fn test_set_metadata_different_tokens_independent() {
     s.client.set_metadata(
         &token_a,
         &admin,
-        &String::from_str(&s.env, "ipfs://QmA"),
+        &String::from_str(
+            &s.env,
+            "ipfs://QmYwAPJzv5CZsnAztBbmLU7V7HLe52Y1ZbL21hEbdOC3Ba",
+        ),
         &500,
     );
     s.client.set_metadata(
         &token_b,
         &admin,
-        &String::from_str(&s.env, "ipfs://QmB"),
+        &String::from_str(
+            &s.env,
+            "ipfs://QmYwAPJzv5CZsnAztBbmLU7V7HLe52Y1ZbL21hEbdOC3Bb",
+        ),
         &500,
     );
+}
+
+// ── metadata URI validation and mutability tests (#1023) ─────────────────────
+
+#[test]
+fn test_set_metadata_rejects_empty_uri() {
+    let s = Setup::new();
+    let admin = Address::generate(&s.env);
+    s.fund(&admin, 500);
+    let token_addr = seed_token(&s, &admin, true, None);
+    let result =
+        s.client
+            .try_set_metadata(&token_addr, &admin, &String::from_str(&s.env, ""), &500);
+    assert_eq!(result, Err(Ok(Error::InvalidMetadataUri)));
+}
+
+#[test]
+fn test_set_metadata_rejects_missing_ipfs_prefix() {
+    let s = Setup::new();
+    let admin = Address::generate(&s.env);
+    s.fund(&admin, 500);
+    let token_addr = seed_token(&s, &admin, true, None);
+    let result = s.client.try_set_metadata(
+        &token_addr,
+        &admin,
+        &String::from_str(&s.env, "https://example.com/metadata.json"),
+        &500,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidMetadataUri)));
+}
+
+#[test]
+fn test_set_metadata_rejects_uri_too_long() {
+    let s = Setup::new();
+    let admin = Address::generate(&s.env);
+    s.fund(&admin, 500);
+    let token_addr = seed_token(&s, &admin, true, None);
+    // 129-char URI (exceeds METADATA_URI_MAX_LEN = 128)
+    let long_uri = "ipfs://QmYwAPJzv5CZsnAztBbmLU7V7HLe52Y1ZbL21hEbdOC3BaQmYwAPJzv5CZsnAztBbmLU7V7HLe52Y1ZbL21hEbdOC3BaAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    assert_eq!(long_uri.len(), 129, "fixture must exceed the 128-byte cap");
+    let result = s.client.try_set_metadata(
+        &token_addr,
+        &admin,
+        &String::from_str(&s.env, long_uri),
+        &500,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidMetadataUri)));
+}
+
+#[test]
+fn test_set_metadata_rejects_prefix_only() {
+    let s = Setup::new();
+    let admin = Address::generate(&s.env);
+    s.fund(&admin, 500);
+    let token_addr = seed_token(&s, &admin, true, None);
+    let result = s.client.try_set_metadata(
+        &token_addr,
+        &admin,
+        &String::from_str(&s.env, "ipfs://"),
+        &500,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidMetadataUri)));
+}
+
+#[test]
+fn test_set_metadata_update_then_freeze() {
+    let s = Setup::new();
+    let admin = Address::generate(&s.env);
+    s.fund(&admin, 1_000);
+    let token_addr = seed_token(&s, &admin, true, None);
+
+    // First set succeeds.
+    s.client.set_metadata(
+        &token_addr,
+        &admin,
+        &String::from_str(
+            &s.env,
+            "ipfs://QmYwAPJzv5CZsnAztBbmLU7V7HLe52Y1ZbL21hEbdOC3Ba",
+        ),
+        &500,
+    );
+    assert_eq!(s.client.get_metadata_version(&token_addr), 1);
+    assert!(!s.client.is_metadata_frozen(&token_addr));
+
+    // Update to a new URI.
+    s.client.set_metadata(
+        &token_addr,
+        &admin,
+        &String::from_str(
+            &s.env,
+            "ipfs://QmYwAPJzv5CZsnAztBbmLU7V7HLe52Y1ZbL21hEbdOC3Bb",
+        ),
+        &500,
+    );
+    assert_eq!(s.client.get_metadata_version(&token_addr), 2);
+
+    // Explicitly freeze.
+    s.client.freeze_metadata(&token_addr, &admin);
+    assert!(s.client.is_metadata_frozen(&token_addr));
+
+    // Further updates are rejected.
+    let result = s.client.try_set_metadata(
+        &token_addr,
+        &admin,
+        &String::from_str(
+            &s.env,
+            "ipfs://QmYwAPJzv5CZsnAztBbmLU7V7HLe52Y1ZbL21hEbdOC3Bc",
+        ),
+        &500,
+    );
+    assert_eq!(result, Err(Ok(Error::MetadataFrozen)));
+}
+
+#[test]
+fn test_freeze_metadata_unauthorized() {
+    let s = Setup::new();
+    let creator = Address::generate(&s.env);
+    let stranger = Address::generate(&s.env);
+    let token_addr = seed_token(&s, &creator, true, None);
+    assert_eq!(
+        s.client.try_freeze_metadata(&token_addr, &stranger),
+        Err(Ok(Error::Unauthorized))
+    );
+}
+
+#[test]
+fn test_freeze_metadata_idempotent() {
+    let s = Setup::new();
+    let admin = Address::generate(&s.env);
+    let token_addr = seed_token(&s, &admin, true, None);
+    // Freeze twice — second call must not error.
+    s.client.freeze_metadata(&token_addr, &admin);
+    s.client.freeze_metadata(&token_addr, &admin);
+    assert!(s.client.is_metadata_frozen(&token_addr));
+}
+
+#[test]
+fn test_set_metadata_version_increments() {
+    let s = Setup::new();
+    let admin = Address::generate(&s.env);
+    s.fund(&admin, 2_500);
+    let token_addr = seed_token(&s, &admin, true, None);
+    let uris = [
+        "ipfs://QmYwAPJzv5CZsnAztBbmLU7V7HLe52Y1ZbL21hEbdOC3Ba",
+        "ipfs://QmYwAPJzv5CZsnAztBbmLU7V7HLe52Y1ZbL21hEbdOC3Bb",
+        "ipfs://QmYwAPJzv5CZsnAztBbmLU7V7HLe52Y1ZbL21hEbdOC3Bc",
+    ];
+    for (i, uri) in uris.iter().enumerate() {
+        s.client
+            .set_metadata(&token_addr, &admin, &String::from_str(&s.env, uri), &500);
+        assert_eq!(s.client.get_metadata_version(&token_addr), (i + 1) as u32);
+    }
 }
 
 // ── mint_tokens ───────────────────────────────────────────────────────────────
@@ -1769,22 +1950,116 @@ fn test_fee_goes_to_treasury_when_no_split() {
     );
 }
 
+// ── fee split: new edge-case tests (#1024) ────────────────────────────────────
+
+#[test]
+fn test_set_fee_split_zero_bps_rejected() {
+    let s = Setup::new();
+    let referral = Address::generate(&s.env);
+    // One entry has bps==0, which must be rejected.
+    let splits = make_split(&s, &[(&s.treasury, 10_000), (&referral, 0)]);
+    assert_eq!(
+        s.client.try_set_fee_split(&s.admin, &splits),
+        Err(Ok(Error::ZeroFeeSplitEntry))
+    );
+}
+
+#[test]
+fn test_set_fee_split_exactly_at_cap_accepted() {
+    let s = Setup::new();
+    // 10 recipients each with 1_000 bps = 10_000 total — exactly at the cap.
+    let mut m = Map::new(&s.env);
+    for _ in 0..9u32 {
+        let addr = Address::generate(&s.env);
+        m.set(addr, 1_000u32);
+    }
+    m.set(s.treasury.clone(), 1_000u32);
+    s.client.set_fee_split(&s.admin, &m);
+    assert_eq!(s.client.get_fee_split().len(), 10);
+}
+
+#[test]
+fn test_fee_split_largest_remainder_dust_fee() {
+    // With a tiny fee (e.g. 3 stroops) and two recipients at 50/50 bps,
+    // floor shares are both 0 (1.5 each), remainder=3.
+    // Largest-remainder assigns 2 to highest-frac (both equal, tie → first)
+    // and 1 to second. Total transferred must equal 3.
+    let s = Setup::new();
+    let r1 = Address::generate(&s.env);
+    let r2 = Address::generate(&s.env);
+    let splits = make_split(&s, &[(&r1, 5_000), (&r2, 5_000)]);
+    s.client.set_fee_split(&s.admin, &splits);
+
+    let admin = Address::generate(&s.env);
+    s.fund(&admin, 3);
+    let token_addr = seed_token(&s, &admin, true, None);
+
+    // Update base_fee to 3 so the fee amount is tiny.
+    s.client.update_fees(&s.admin, &Some(3_i128), &None);
+
+    let recipient = Address::generate(&s.env);
+    s.client
+        .mint_tokens(&token_addr, &admin, &recipient, &1, &3);
+
+    let bal_r1 = TokenClient::new(&s.env, &s.fee_token).balance(&r1);
+    let bal_r2 = TokenClient::new(&s.env, &s.fee_token).balance(&r2);
+    // Total must equal 3 regardless of individual allocation.
+    assert_eq!(bal_r1 + bal_r2, 3, "sum of splits must equal fee");
+    // Each recipient must receive at least 1 stroop (floor+1 via LR).
+    assert!(bal_r1 >= 1, "r1 must receive at least 1 stroop");
+    assert!(bal_r2 >= 1, "r2 must receive at least 1 stroop");
+}
+
+#[test]
+fn test_fee_split_sum_invariant_many_recipients() {
+    // 5 recipients at 2_000 bps each = 10_000; fee = 10_001 stroops.
+    // Each gets 2000 floor; remainder=1 goes to first-highest-frac.
+    // Sum must still equal 10_001.
+    let s = Setup::new();
+    let mut addrs = soroban_sdk::Vec::new(&s.env);
+    let mut m = Map::new(&s.env);
+    for _ in 0..5u32 {
+        let a = Address::generate(&s.env);
+        m.set(a.clone(), 2_000u32);
+        addrs.push_back(a);
+    }
+    s.client.set_fee_split(&s.admin, &m);
+
+    let fee_amount: i128 = 10_001;
+    let admin = Address::generate(&s.env);
+    s.fund(&admin, fee_amount);
+    let token_addr = seed_token(&s, &admin, true, None);
+    s.client.update_fees(&s.admin, &Some(fee_amount), &None);
+    let recipient = Address::generate(&s.env);
+    s.client
+        .mint_tokens(&token_addr, &admin, &recipient, &1, &fee_amount);
+
+    let mut total: i128 = 0;
+    for i in 0..addrs.len() {
+        if let Ok(Some(a)) = addrs.try_get(i) {
+            total += TokenClient::new(&s.env, &s.fee_token).balance(&a);
+        }
+    }
+    assert_eq!(total, fee_amount, "sum of all splits must equal fee amount");
+}
+
 /// Issue #918 — Task 1: 50/50 split on an odd fee amount.
 ///
 /// When a fee is split evenly between two recipients but the amount is odd,
-/// integer division floors each share by 1 unit. The total of the two floor
-/// values is `amount - 1`, so the 1-unit remainder must land on `treasury`.
+/// integer division floors each share by 1 unit. Under the largest-remainder
+/// allocation introduced for issue #1024, the 1-unit remainder is awarded to
+/// one of the split recipients (highest fractional share) rather than sent to
+/// treasury.
 ///
 /// Concrete example (fee = 1_001, two recipients at 5_000 bps each):
-///   share_a = 1_001 * 5_000 / 10_000 = 5_005_000 / 10_000 = 500  (floor)
-///   share_b = 1_001 * 5_000 / 10_000 = 500  (floor)
-///   distributed = 1_000
-///   remainder   = 1_001 - 1_000 = 1  → goes to treasury
+///   floor_a = 1_001 * 5_000 / 10_000 = 500
+///   floor_b = 500
+///   remainder = 1_001 - 1_000 = 1  → one recipient receives 501
 ///
 /// This test verifies:
-/// 1. Each split recipient receives exactly `floor(amount / 2)`.
-/// 2. The 1-unit remainder is credited to treasury, not lost or double-counted.
-/// 3. The conservation law holds: share_a + share_b + treasury_delta == fee.
+/// 1. One recipient receives `floor + 1`, the other exactly `floor`.
+/// 2. Treasury receives nothing — the remainder stays with split recipients.
+/// 3. The conservation law holds: share_a + share_b == fee.
 #[test]
 fn test_fee_split_odd_amount_remainder_goes_to_treasury() {
     let s = Setup::new();
@@ -1806,34 +2081,27 @@ fn test_fee_split_odd_amount_remainder_goes_to_treasury() {
     s.client
         .mint_tokens(&token_addr, &admin, &mint_to, &1, &fee);
 
-    // Each recipient gets floor(1_001 * 5_000 / 10_000) = floor(500.5) = 500.
-    let expected_each: i128 = fee * 5_000 / 10_000; // = 500
-    assert_eq!(
-        TokenClient::new(&s.env, &s.fee_token).balance(&recipient_a),
-        expected_each,
-        "recipient_a must receive floor(fee/2)"
-    );
-    assert_eq!(
-        TokenClient::new(&s.env, &s.fee_token).balance(&recipient_b),
-        expected_each,
-        "recipient_b must receive floor(fee/2)"
+    // Floor share is floor(1_001 * 5_000 / 10_000) = floor(500.5) = 500; the
+    // 1-unit remainder is awarded to one of the recipients (largest-remainder).
+    let floor_each: i128 = fee * 5_000 / 10_000; // = 500
+    let bal_a = TokenClient::new(&s.env, &s.fee_token).balance(&recipient_a);
+    let bal_b = TokenClient::new(&s.env, &s.fee_token).balance(&recipient_b);
+    assert!(
+        (bal_a == floor_each && bal_b == floor_each + 1)
+            || (bal_a == floor_each + 1 && bal_b == floor_each),
+        "one recipient must receive floor+1, the other floor (got {bal_a} / {bal_b})"
     );
 
-    // remainder = fee − (expected_each + expected_each) = 1_001 − 1_000 = 1
-    let remainder = fee - expected_each * 2;
-    assert_eq!(
-        remainder, 1,
-        "odd-amount split must leave a 1-unit remainder"
-    );
+    // Treasury receives nothing — the remainder stays with split recipients.
     assert_eq!(
         TokenClient::new(&s.env, &s.fee_token).balance(&s.treasury),
-        remainder,
-        "the 1-unit remainder must land on treasury"
+        0,
+        "remainder must go to a split recipient, not treasury"
     );
 
     // Conservation: every stroop accounted for.
     assert_eq!(
-        expected_each + expected_each + remainder,
+        bal_a + bal_b,
         fee,
         "total distributed must equal the fee exactly (no leaked or double-counted stroops)"
     );
@@ -1843,30 +2111,20 @@ fn test_fee_split_odd_amount_remainder_goes_to_treasury() {
 /// share floors to zero.
 ///
 /// The `distribute_fee` function skips the `token::transfer` call for any
-/// recipient whose `share == 0` (the `if share > 0` guard).  When a
-/// recipient is skipped their notional share is silently folded into the
-/// remainder that is sent to `treasury`.
+/// recipient whose allocated share is 0 (the `if share > 0` guard). Under the
+/// largest-remainder allocation (#1024) the rounding remainder is awarded to
+/// the recipient with the largest fractional share rather than to treasury.
 ///
-/// This is the correct product behaviour — it prevents zero-value transfer
-/// calls (which some SEP-41 implementations may reject) — but it means a
-/// very-low-bps recipient configured alongside a small fee payment will
-/// receive nothing for that particular call.  This test locks in that
-/// behaviour explicitly so any future change is intentional.
-///
-/// Concrete example (fee = 99, three recipients: 9_999 bps, 1 bps, treasury):
-///   Wait — `set_fee_split` requires the map to sum to exactly 10_000.
-///   Use a simpler setup: one big recipient at 9_999 bps and one tiny
-///   recipient at 1 bps.
-///   share_big  = 99 * 9_999 / 10_000 = 989_901 / 10_000 = 98  (floor)
-///   share_tiny = 99 * 1    / 10_000 = 99     / 10_000 = 0   (floor → skip)
-///   distributed = 98
-///   remainder   = 99 − 98 = 1 → goes to treasury
-///   tiny_recipient balance = 0  (transfer was skipped)
+/// Concrete example (fee = 99, big recipient at 9_999 bps, tiny at 1 bps):
+///   floor_big  = 99 * 9_999 / 10_000 = 98   (frac numerator 9_901)
+///   floor_tiny = 99 * 1     / 10_000 = 0    (frac numerator 99)
+///   remainder  = 99 − 98 = 1 → awarded to big (largest frac) → big gets 99
+///   tiny_recipient balance = 0  (transfer skipped, share == 0)
 ///
 /// This test verifies:
 /// 1. The tiny recipient receives 0 (transfer correctly skipped).
-/// 2. Treasury receives the full remainder (big share's rounding loss + tiny share's notional 0).
-/// 3. Conservation: big_share + tiny_balance + treasury_delta == fee.
+/// 2. The remainder goes to the largest-frac recipient, not treasury.
+/// 3. Conservation: big_balance + tiny_balance == fee.
 #[test]
 fn test_fee_split_zero_share_recipient_skipped_remainder_to_treasury() {
     let s = Setup::new();
@@ -1888,16 +2146,16 @@ fn test_fee_split_zero_share_recipient_skipped_remainder_to_treasury() {
     s.client
         .mint_tokens(&token_addr, &admin, &mint_to, &1, &fee);
 
-    let big_share: i128 = fee * 9_999 / 10_000; // = 98
+    let floor_big: i128 = fee * 9_999 / 10_000; // = 98
                                                 // `identity_op` is allowed here: the `* 1` is the 1-bps share and is kept
-                                                // literal so the formula reads in parallel with `big_share` above.
+                                                // literal so the formula reads in parallel with `floor_big` above.
     #[allow(clippy::identity_op)]
-    let tiny_share: i128 = fee * 1 / 10_000; //    = 0  (floors to zero)
+    let floor_tiny: i128 = fee * 1 / 10_000; //    = 0  (floors to zero)
 
     // The tiny recipient's share computes to 0 — the transfer is skipped.
     assert_eq!(
-        tiny_share, 0,
-        "precondition: tiny_share must be 0 for this test to exercise the skip path"
+        floor_tiny, 0,
+        "precondition: floor_tiny must be 0 for this test to exercise the skip path"
     );
     assert_eq!(
         TokenClient::new(&s.env, &s.fee_token).balance(&tiny_recipient),
@@ -1905,24 +2163,24 @@ fn test_fee_split_zero_share_recipient_skipped_remainder_to_treasury() {
         "tiny_recipient must receive 0 — transfer must be skipped when share == 0"
     );
 
-    // big_recipient receives their floored share.
+    // big_recipient receives their floor share plus the 1-unit remainder
+    // (largest-remainder award — big's frac 9_901 beats tiny's 99).
     assert_eq!(
         TokenClient::new(&s.env, &s.fee_token).balance(&big_recipient),
-        big_share,
-        "big_recipient must receive floor(fee * 9_999 / 10_000)"
+        floor_big + 1,
+        "big_recipient must receive floor + the largest-remainder award"
     );
 
-    // Treasury receives the full remainder (includes tiny_recipient's notional share).
-    let remainder = fee - big_share - tiny_share;
+    // Treasury receives nothing — the remainder went to a split recipient.
     assert_eq!(
         TokenClient::new(&s.env, &s.fee_token).balance(&s.treasury),
-        remainder,
-        "treasury must receive the remainder (big-share rounding loss + tiny-share notional 0)"
+        0,
+        "remainder must go to the largest-frac recipient, not treasury"
     );
 
     // Conservation: every stroop accounted for.
     assert_eq!(
-        big_share + tiny_share + remainder,
+        (floor_big + 1) + floor_tiny,
         fee,
         "total distributed must equal the fee exactly"
     );

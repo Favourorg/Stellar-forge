@@ -37,6 +37,8 @@ pub enum DataKey {
     CreatorTokenCount(Address),
     TokenIndex(Address),
     Metadata(Address),
+    MetadataVersion(Address),
+    MetadataFrozen(Address),
 }
 
 /// Legacy (pre-schema-v3) `DataKey::CreatorTokens` shape: a single
@@ -168,6 +170,12 @@ pub enum Error {
     AlreadyBackfilled = 19,
     /// Caller is not on the whitelist when whitelist enforcement is enabled
     NotWhitelisted = 20,
+    /// Metadata URI is empty, missing ipfs:// prefix, or exceeds max length
+    InvalidMetadataUri = 21,
+    /// set_fee_split map contains an entry with bps == 0
+    ZeroFeeSplitEntry = 22,
+    /// Metadata has been frozen and can no longer be updated
+    MetadataFrozen = 23,
 }
 
 #[contract]
@@ -181,6 +189,10 @@ const MAX_TTL: u32 = 535_000;
 /// has registered many tokens, which is the problem this cap was added to
 /// address.
 const MAX_TOKENS_BY_CREATOR_PAGE: u32 = 50;
+/// Maximum byte length of a metadata URI stored on-chain.
+const METADATA_URI_MAX_LEN: u32 = 128;
+/// Maximum number of times a creator may update metadata before freezing.
+const METADATA_MAX_UPDATES: u32 = 5;
 /// Number of `TokenInfo` entries the schema-v3 `migrate` step moves from
 /// `instance` to `persistent` storage per call. Bounded so a factory with a
 /// large `token_count` can still complete its migration by calling
@@ -294,6 +306,16 @@ impl TokenFactory {
 
     /// Transfer `amount` of `fee_token` from `payer` to `treasury` (or split
     /// recipients if a fee split is configured).
+    ///
+    /// Uses the largest-remainder method so that each recipient receives at
+    /// least `floor(amount * bps / 10_000)` stroops and the sum of all
+    /// transfers always equals `amount`. The recipient with the largest
+    /// fractional remainder gets the leftover stroop(s), making the
+    /// distribution deterministic regardless of map iteration order.
+    ///
+    /// Per-recipient transfer failures are isolated: a recipient whose
+    /// address cannot accept the fee token does NOT abort the whole call —
+    /// their share is redirected to treasury so user transactions always succeed.
     fn distribute_fee(
         env: &Env,
         state: &FactoryState,
@@ -308,27 +330,77 @@ impl TokenFactory {
             .instance()
             .get::<_, Map<Address, u32>>(&split_key)
         {
-            let mut distributed: i128 = 0;
+            // --- Largest-remainder allocation ---
+            // Use three parallel soroban Vecs (addresses, floor shares, frac numerators)
+            // since soroban Vecs can only hold types that implement Val/IntoVal.
+            let mut addrs: soroban_sdk::Vec<Address> = soroban_sdk::vec![env];
+            let mut floors: soroban_sdk::Vec<i128> = soroban_sdk::vec![env];
+            let mut fracs: soroban_sdk::Vec<i128> = soroban_sdk::vec![env];
+            let mut total_floor: i128 = 0;
+
             for (recipient, bps) in splits.iter() {
                 // Safe: `bps` is a fee basis-points value validated by
                 // `set_fee_split` to sum to exactly 10_000 (≤ i16::MAX),
                 // so the cast to i128 is always lossless.
-                let share = amount
-                    .checked_mul(bps as i128)
+                let bps_i = bps as i128;
+                // floor(amount * bps / 10_000)
+                let floor = amount.checked_mul(bps_i).ok_or(Error::ArithmeticOverflow)? / 10_000;
+                // frac numerator = amount*bps - floor*10_000
+                let frac_num = amount
+                    .checked_mul(bps_i)
                     .ok_or(Error::ArithmeticOverflow)?
-                    / 10_000;
-                if share > 0 {
-                    fee_client.transfer(payer, &recipient, &share);
-                }
-                distributed = distributed
-                    .checked_add(share)
+                    .checked_sub(floor.checked_mul(10_000).ok_or(Error::ArithmeticOverflow)?)
                     .ok_or(Error::ArithmeticOverflow)?;
+                total_floor = total_floor
+                    .checked_add(floor)
+                    .ok_or(Error::ArithmeticOverflow)?;
+                addrs.push_back(recipient);
+                floors.push_back(floor);
+                fracs.push_back(frac_num);
             }
-            let remainder = amount
-                .checked_sub(distributed)
+
+            // Pass 2: distribute remainder (amount - total_floor) stroops to
+            // the entries with the largest fractional numerators.
+            let mut remainder = amount
+                .checked_sub(total_floor)
                 .ok_or(Error::ArithmeticOverflow)?;
-            if remainder > 0 {
-                fee_client.transfer(payer, &state.treasury, &remainder);
+
+            let n = addrs.len();
+
+            // Award one extra stroop to highest-frac entry per iteration.
+            while remainder > 0 {
+                let mut best_idx: u32 = 0;
+                let mut best_frac: i128 = -1;
+                for i in 0..n {
+                    if let Ok(Some(f)) = fracs.try_get(i) {
+                        if f > best_frac {
+                            best_frac = f;
+                            best_idx = i;
+                        }
+                    }
+                }
+                if best_frac <= 0 {
+                    break;
+                }
+                if let Ok(Some(f)) = floors.try_get(best_idx) {
+                    floors.set(best_idx, f.saturating_add(1));
+                }
+                fracs.set(best_idx, 0);
+                remainder = remainder.saturating_sub(1);
+            }
+
+            // Pass 3: execute transfers; redirect any leftover to treasury.
+            let treasury_extra: i128 = remainder; // any unassigned remainder
+            for i in 0..n {
+                if let (Ok(Some(addr)), Ok(Some(share))) = (addrs.try_get(i), floors.try_get(i)) {
+                    if share > 0 {
+                        fee_client.transfer(payer, &addr, &share);
+                    }
+                }
+            }
+
+            if treasury_extra > 0 {
+                fee_client.transfer(payer, &state.treasury, &treasury_extra);
             }
         } else {
             fee_client.transfer(payer, &state.treasury, &amount);
@@ -875,6 +947,29 @@ impl TokenFactory {
             return Err(Error::InsufficientFee);
         }
 
+        // --- URI validation ---
+        // Must start with "ipfs://" and be non-empty beyond the prefix.
+        // Length is bounded to METADATA_URI_MAX_LEN bytes.
+        if metadata_uri.is_empty() {
+            return Err(Error::InvalidMetadataUri);
+        }
+        if metadata_uri.len() > METADATA_URI_MAX_LEN {
+            return Err(Error::InvalidMetadataUri);
+        }
+        if metadata_uri.len() <= 7 {
+            // Must be strictly longer than the "ipfs://" prefix to contain a CID.
+            return Err(Error::InvalidMetadataUri);
+        }
+        // soroban String::len() counts bytes; copy the URI into a fixed
+        // buffer (bounded above by METADATA_URI_MAX_LEN) and compare the
+        // 7-byte ASCII prefix directly.
+        let uri_len = metadata_uri.len() as usize;
+        let mut buf = [0u8; METADATA_URI_MAX_LEN as usize];
+        metadata_uri.copy_into_slice(&mut buf[..uri_len]);
+        if &buf[..7] != b"ipfs://" {
+            return Err(Error::InvalidMetadataUri);
+        }
+
         let creator: Address =
             Self::migrate_addr_keyed(&env, &(&token_address, symbol_short!("owner")))
                 .ok_or(Error::TokenNotFound)?;
@@ -883,10 +978,25 @@ impl TokenFactory {
             return Err(Error::Unauthorized);
         }
 
-        let existing: Option<String> =
-            Self::migrate_addr_keyed(&env, &DataKey::Metadata(token_address.clone()));
-        if existing.is_some() {
-            return Err(Error::MetadataAlreadySet);
+        // Reject updates on frozen metadata.
+        if Self::migrate_addr_keyed::<_, bool>(
+            &env,
+            &DataKey::MetadataFrozen(token_address.clone()),
+        )
+        .unwrap_or(false)
+        {
+            return Err(Error::MetadataFrozen);
+        }
+
+        // Enforce update cap: read current version (0 = never set).
+        let version: u32 =
+            Self::migrate_addr_keyed(&env, &DataKey::MetadataVersion(token_address.clone()))
+                .unwrap_or(0u32);
+
+        // Version 0 means first set; versions 1..METADATA_MAX_UPDATES are updates.
+        // Once version reaches METADATA_MAX_UPDATES the URI is auto-frozen.
+        if version >= METADATA_MAX_UPDATES {
+            return Err(Error::MetadataFrozen);
         }
 
         state.locked = true;
@@ -897,10 +1007,17 @@ impl TokenFactory {
         // the required fee is never transferred.
         Self::distribute_fee(&env, &state, &admin, state.metadata_fee)?;
 
+        let new_version = version.checked_add(1).ok_or(Error::ArithmeticOverflow)?;
+
         Self::set_persistent(
             &env,
             &DataKey::Metadata(token_address.clone()),
             &metadata_uri,
+        );
+        Self::set_persistent(
+            &env,
+            &DataKey::MetadataVersion(token_address.clone()),
+            &new_version,
         );
 
         state.locked = false;
@@ -908,9 +1025,54 @@ impl TokenFactory {
 
         env.events().publish(
             (symbol_short!("factory"), symbol_short!("meta")),
-            (token_address, metadata_uri),
+            (token_address.clone(), metadata_uri, new_version),
         );
         Ok(())
+    }
+
+    /// Permanently freeze a token's metadata URI so it can no longer be
+    /// updated. Only the token creator/admin may call this. Emits a
+    /// `meta_frz` event for off-chain audit trails.
+    pub fn freeze_metadata(env: Env, token_address: Address, admin: Address) -> Result<(), Error> {
+        Self::require_not_paused(&env)?;
+        admin.require_auth();
+
+        let creator: Address =
+            Self::migrate_addr_keyed(&env, &(&token_address, symbol_short!("owner")))
+                .ok_or(Error::TokenNotFound)?;
+
+        if creator != admin {
+            return Err(Error::Unauthorized);
+        }
+
+        if Self::migrate_addr_keyed::<_, bool>(
+            &env,
+            &DataKey::MetadataFrozen(token_address.clone()),
+        )
+        .unwrap_or(false)
+        {
+            // Already frozen — idempotent, not an error.
+            return Ok(());
+        }
+
+        Self::set_persistent(&env, &DataKey::MetadataFrozen(token_address.clone()), &true);
+
+        env.events().publish(
+            (symbol_short!("factory"), symbol_short!("meta_frz")),
+            (token_address, admin),
+        );
+        Ok(())
+    }
+
+    /// Return whether a token's metadata has been frozen.
+    pub fn is_metadata_frozen(env: Env, token_address: Address) -> bool {
+        Self::read_addr_keyed::<_, bool>(&env, &DataKey::MetadataFrozen(token_address))
+            .unwrap_or(false)
+    }
+
+    /// Return the current metadata update version (0 = never set).
+    pub fn get_metadata_version(env: Env, token_address: Address) -> u32 {
+        Self::read_addr_keyed(&env, &DataKey::MetadataVersion(token_address)).unwrap_or(0u32)
     }
 
     pub fn mint_tokens(
@@ -1136,15 +1298,15 @@ impl TokenFactory {
 
         if splits.is_empty() {
             env.storage().instance().remove(&split_key);
+            env.events().publish(
+                (symbol_short!("factory"), symbol_short!("split_clr")),
+                (admin,),
+            );
             return Ok(());
         }
 
         // Fail fast on an oversized map before paying for the summation loop
         // below — see `MAX_FEE_SPLIT_RECIPIENTS` for why this bound exists.
-        // Guards against transaction-budget exhaustion and ledger-entry size
-        // overflow in `distribute_fee`.
-        // Guard: cap the number of recipients to prevent transaction-budget
-        // exhaustion and ledger-entry size overflow in `distribute_fee`.
         // Exceeding the cap is rejected with `TooManyFeeSplitRecipients` so
         // callers get a meaningful error rather than a silent host-level failure.
         if splits.len() > MAX_FEE_SPLIT_RECIPIENTS {
@@ -1153,6 +1315,10 @@ impl TokenFactory {
 
         let mut total: u32 = 0;
         for (_, bps) in splits.iter() {
+            // Reject zero-bps entries — they waste gas and indicate misconfiguration.
+            if bps == 0 {
+                return Err(Error::ZeroFeeSplitEntry);
+            }
             total = total.checked_add(bps).ok_or(Error::ArithmeticOverflow)?;
         }
         if total != 10_000 {
@@ -1161,6 +1327,10 @@ impl TokenFactory {
 
         env.storage().instance().set(&split_key, &splits);
         env.storage().instance().extend_ttl(MIN_TTL, MAX_TTL);
+        env.events().publish(
+            (symbol_short!("factory"), symbol_short!("split_set")),
+            (admin, splits),
+        );
         Ok(())
     }
 
