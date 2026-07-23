@@ -134,7 +134,7 @@ export type ContractEventType =
   | 'fees'
   | 'pause'
   | 'unpause'
-  | 'admin_update'
+  | 'adm_upd'
 
 export interface ContractEvent {
   id: string
