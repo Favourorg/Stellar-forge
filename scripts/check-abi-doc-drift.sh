@@ -46,8 +46,14 @@ done
 echo ""
 echo ":: Checking contract.call(...) sites in stellar-impl.ts..."
 if [ -f "$STELLAR_IMPL" ]; then
-  # Extract function names from contract.call invocations
-  grep -oP "contract\.call\(\s*['\"]?\K\w+" "$STELLAR_IMPL" > "$TMP_CALLS" || true
+  # Extract function names from contract.call invocations. Only string
+  # literals name a contract function — calls like contract.call(method, ...)
+  # forward a caller-supplied name and are checked at their own call sites.
+  # The literal may sit on the same line or (prettier-wrapped) the next line.
+  {
+    grep -oP "contract\.call\(\s*['\"]\K\w+" "$STELLAR_IMPL" || true
+    grep -A1 "contract\.call($" "$STELLAR_IMPL" | grep -oP "^\s*['\"]\K\w+" || true
+  } | sort -u > "$TMP_CALLS"
   
   if [ -s "$TMP_CALLS" ]; then
     echo ":: Found contract.call invocations:"

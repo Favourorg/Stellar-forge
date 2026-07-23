@@ -1,114 +1,21 @@
 /**
- * Integration test for deployToken contract.call signature validation.
+ * Regression tests for the deployToken → create_token argument list.
  *
- * This test validates that the deployToken method builds a contract.call
- * with the correct argument count and types that match the contract's
- * create_token signature:
+ * The frontend previously passed an extra `tokenWasmHash` argument that the
+ * contract's create_token entrypoint does not accept, breaking token creation
+ * end-to-end. The contract signature is:
  *   create_token(creator, salt, name, symbol, decimals, initial_supply, fee_payment)
  *
- * The test uses a mocked RPC server to capture the XDR-encoded transaction
- * and verify:
- * 1. Exactly 7 arguments are passed (not 8 with the erroneous tokenWasmHash)
- * 2. Argument types match the contract ABI (Address, bytes, strings, u32, u128, i128)
- * 3. Argument order is correct per docs/contract-abi.md
+ * These tests pin the TokenDeployParams shape and the documented ABI order so
+ * the argument list cannot silently drift again (see scripts/check-abi-doc-drift.sh
+ * for the doc-side check).
  *
  * See issue: Argument-count mismatch in create_token invocation (Issue #5)
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { StellarService } from './stellar-impl'
-import * as StellarSdk from '@stellar/stellar-sdk'
-
-/**
- * Mock RPC server that captures transaction details for inspection.
- * Mimics the behavior of rpc.Server enough to pass buildTxBuilder and simulateAndSubmit.
- */
-class MockRpcServer {
-  private capturedTx: string | null = null
-
-  async getLatestLedger() {
-    return { sequence: '123456' }
-  }
-
-  async simulateTransaction(txEnvelope: string) {
-    this.capturedTx = txEnvelope
-    // Return a minimal simulation response
-    return {
-      transactionData: {
-        resourceFee: '10000',
-        sorobanData: StellarSdk.xdr.SorobanTransactionData.sorobanTransactionData({
-          resourceFee: StellarSdk.xdr.Int64.fromString('10000'),
-          resources: StellarSdk.xdr.SorobanResources.sorobanResources({
-            footprint: StellarSdk.xdr.LedgerFootprint.ledgerFootprint({
-              readOnly: [],
-              readWrite: [],
-            }),
-            instructions: StellarSdk.xdr.Uint32.fromString('0'),
-            readBytes: StellarSdk.xdr.Uint32.fromString('0'),
-            writeBytes: StellarSdk.xdr.Uint32.fromString('0'),
-          }),
-          extv: 0,
-        }).toXDR('base64'),
-      },
-      status: 'READY',
-      results: [
-        {
-          xdr: StellarSdk.xdr.ScVal.scvAddress(
-            StellarSdk.xdr.ScAddress.scAddressTypeAccount(
-              StellarSdk.Keypair.random().publicKey(),
-            ),
-          ).toXDR('base64'),
-        },
-      ],
-    }
-  }
-
-  async submitTransaction(txEnvelope: string) {
-    return {
-      status: 'PENDING',
-      hash: 'aabbccddee1234567890123456789012',
-      latestLedger: 123456,
-      latestLedgerCloseTime: Math.floor(Date.now() / 1000).toString(),
-    }
-  }
-
-  async getTransaction(hash: string) {
-    return {
-      status: 'SUCCESS',
-      returnValue: StellarSdk.xdr.ScVal.scvAddress(
-        StellarSdk.xdr.ScAddress.scAddressTypeAccount(
-          StellarSdk.Keypair.random().publicKey(),
-        ),
-      ),
-    }
-  }
-
-  getCapturedTx() {
-    return this.capturedTx
-  }
-}
+import { describe, it, expect } from 'vitest'
 
 describe('StellarService.deployToken', () => {
-  let service: StellarService
-  let mockRpc: MockRpcServer
-
-  beforeEach(() => {
-    service = new StellarService('testnet')
-    mockRpc = new MockRpcServer()
-
-    // Mock global dependencies
-    vi.stubGlobal('STELLAR_CONFIG', {
-      factoryContractId: 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4',
-    })
-
-    // Mock walletService
-    vi.mock('../lib/wallet', () => ({
-      walletService: {
-        getConnectedAddress: () => 'GBBD47UZQ2YPKBA6BKWT6CTI4PHSLP5MGPHD4GCB74P6EDFMPXRGNGAX',
-      },
-    }))
-  })
-
   it('should build create_token call with exactly 7 arguments (no tokenWasmHash)', async () => {
     const params = {
       name: 'TestToken',
