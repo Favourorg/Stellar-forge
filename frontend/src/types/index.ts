@@ -126,15 +126,7 @@ export interface AppError {
 
 export type SortOrder = 'newest' | 'oldest' | 'alphabetical'
 export type ContractEventType =
-  | 'init'
-  | 'created'
-  | 'meta'
-  | 'mint'
-  | 'burn'
-  | 'fees'
-  | 'pause'
-  | 'unpause'
-  | 'admin_update'
+  'init' | 'created' | 'meta' | 'mint' | 'burn' | 'fees' | 'pause' | 'unpause' | 'admin_update'
 
 export interface ContractEvent {
   id: string
