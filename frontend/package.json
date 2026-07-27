@@ -29,7 +29,7 @@
     "@tailwindcss/postcss": "^4.3.3",
     "i18next": "^26.3.6",
     "qrcode.react": "^4.2.0",
-    "react": "^19.2.7",
+    "react": "^19.2.8",
     "react-dom": "^19.2.7",
     "react-hook-form": "^7.83.0",
     "react-i18next": "^17.0.11",
