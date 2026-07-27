@@ -55,13 +55,20 @@ function clamp(value: string, max: number): string {
   return points.slice(0, max).join('') + '…'
 }
 
+// Only ipfs://CID image references are accepted — same pattern the upload
+// proxy enforces (api/_lib/schemaValidation.ts). Anything else (http(s),
+// data:, javascript:, path traversal) is rejected at parse time so it can
+// never reach an <img> src or the gateway resolver.
+const IPFS_IMAGE_URI_PATTERN = /^ipfs:\/\/[a-zA-Z0-9]+$/
+
 function isTokenMetadata(value: unknown): value is TokenMetadata {
   if (typeof value !== 'object' || value === null) return false
   const obj = value as Record<string, unknown>
   return (
     typeof obj.name === 'string' &&
     typeof obj.description === 'string' &&
-    typeof obj.image === 'string'
+    typeof obj.image === 'string' &&
+    IPFS_IMAGE_URI_PATTERN.test(obj.image)
   )
 }
 
@@ -97,7 +104,7 @@ export class IPFSService {
     onProgress?: (percent: number) => void,
     onRetry?: (attempt: number, delayMs: number) => void,
   ): Promise<string> {
-    const validation = isValidImageFile(image)
+    const validation = await isValidImageFile(image)
     if (!validation.valid) {
       throw new IPFSUploadError(validation.error ?? 'Invalid image file.')
     }
@@ -116,7 +123,12 @@ export class IPFSService {
       description,
       image: `ipfs://${imageCid}`,
     }
-    const metadataCid = await this._uploadJSON(metadata, `${tokenName}-metadata.json`, token, onRetry)
+    const metadataCid = await this._uploadJSON(
+      metadata,
+      `${tokenName}-metadata.json`,
+      token,
+      onRetry,
+    )
     onProgress?.(100)
 
     return `ipfs://${metadataCid}`
@@ -175,7 +187,7 @@ export class IPFSService {
 
     if (!isTokenMetadata(parsed)) {
       throw new IPFSUploadError(
-        'Metadata response is missing required fields (name, description, image).',
+        'Metadata response is missing required fields (name, description, image) or its image is not an ipfs:// URI.',
       )
     }
 

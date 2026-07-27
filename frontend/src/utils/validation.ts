@@ -156,7 +156,40 @@ export const isValidIPFSUri = (uri: string): boolean => {
   return CID_V0.test(cid) || CID_V1.test(cid)
 }
 
-export const isValidImageFile = (file: File): { valid: boolean; error?: string } => {
+// Full magic-byte signatures for the allowed raster formats. SVG is
+// deliberately excluded: it can carry scripts and would turn the IPFS gateway
+// into an XSS host. The serverless proxy (api/_lib/fileValidation.ts) is the
+// enforcement point; this client-side copy exists for fast feedback only.
+const IMAGE_SIGNATURES: Array<{ mimeType: string; bytes: number[] }> = [
+  { mimeType: 'image/png', bytes: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a] },
+  { mimeType: 'image/jpeg', bytes: [0xff, 0xd8, 0xff] },
+  { mimeType: 'image/gif', bytes: [0x47, 0x49, 0x46, 0x38, 0x37, 0x61] }, // GIF87a
+  { mimeType: 'image/gif', bytes: [0x47, 0x49, 0x46, 0x38, 0x39, 0x61] }, // GIF89a
+]
+
+const SIGNATURE_SNIFF_BYTES = 12
+
+// FileReader rather than Blob.arrayBuffer(): same browser support, and it
+// also works under jsdom in tests, which never implemented arrayBuffer().
+const readFileHeader = (file: File, length: number): Promise<Uint8Array> =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(new Uint8Array(reader.result as ArrayBuffer))
+    reader.onerror = () => reject(reader.error)
+    reader.readAsArrayBuffer(file.slice(0, length))
+  })
+
+/** Detect the real image type from leading file bytes; null if unrecognized. */
+export const sniffImageMimeType = (bytes: Uint8Array): string | null => {
+  for (const sig of IMAGE_SIGNATURES) {
+    if (bytes.length >= sig.bytes.length && sig.bytes.every((b, i) => bytes[i] === b)) {
+      return sig.mimeType
+    }
+  }
+  return null
+}
+
+export const isValidImageFile = async (file: File): Promise<{ valid: boolean; error?: string }> => {
   // Kept just under Vercel's 4.5MB serverless function request-body ceiling.
   const maxSize = 4 * 1024 * 1024 // 4MB
   const allowedTypes = ['image/jpeg', 'image/png', 'image/gif']
@@ -167,6 +200,29 @@ export const isValidImageFile = (file: File): { valid: boolean; error?: string }
 
   if (file.size > maxSize) {
     return { valid: false, error: 'Image size must be less than 4MB' }
+  }
+
+  // Check the file's actual content, not just the declared type. The server
+  // re-checks this (plus dimension limits); rejecting here just fails faster.
+  let header: Uint8Array
+  try {
+    header = await readFileHeader(file, SIGNATURE_SNIFF_BYTES)
+  } catch {
+    return { valid: false, error: 'Could not read the selected file' }
+  }
+
+  const sniffedType = sniffImageMimeType(header)
+  if (!sniffedType) {
+    return {
+      valid: false,
+      error: 'File content is not a recognized JPEG, PNG, or GIF image',
+    }
+  }
+  if (sniffedType !== file.type) {
+    return {
+      valid: false,
+      error: `File content (${sniffedType}) does not match its declared type (${file.type})`,
+    }
   }
 
   return { valid: true }

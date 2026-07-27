@@ -1,7 +1,8 @@
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { TosProvider } from '../context/TosContext'
 import { MetadataForm } from './MetadataForm'
+import { makeImageFile, PNG_HEADER } from '../test/imageFixtures'
 
 vi.mock('../context/StellarContext', () => ({
   useStellarContext: () => ({
@@ -57,7 +58,7 @@ describe('MetadataForm ToS gate', () => {
     localStorage.clear()
   })
 
-  it('requires accepting the terms before showing the on-chain metadata confirmation', () => {
+  it('requires accepting the terms before showing the on-chain metadata confirmation', async () => {
     const { container } = renderMetadataForm()
 
     fireEvent.change(screen.getByLabelText(/token address/i), {
@@ -68,9 +69,14 @@ describe('MetadataForm ToS gate', () => {
     expect(fileInput).not.toBeNull()
     fireEvent.change(fileInput!, {
       target: {
-        files: [new File(['token image'], 'token.png', { type: 'image/png' })],
+        // Content-based validation now runs on selection, so the fixture
+        // needs a real PNG signature.
+        files: [makeImageFile(PNG_HEADER, 'token.png', 'image/png')],
       },
     })
+
+    // Selection is validated asynchronously; wait for the accepted preview.
+    await waitFor(() => expect(screen.getByAltText(/token preview/i)).toBeInTheDocument())
 
     fireEvent.click(screen.getByRole('button', { name: /set metadata/i }))
 

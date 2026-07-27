@@ -73,6 +73,7 @@ import {
   validateTokenSymbol,
   validateDecimals,
 } from '../utils/validation'
+import { makeImageFile, makeTextFile, PNG_HEADER, JPEG_HEADER, GIF_HEADER } from './imageFixtures'
 
 // A real valid Ed25519 public key (generated via Keypair.random())
 const VALID_ACCOUNT = 'GDNQ2ULB7MXLA4GJBTAAZQON3IEO4HUCYFQMAHVAA2RTC4L4B4G5IK4C'
@@ -127,28 +128,37 @@ describe('isValidContractAddress', () => {
 })
 
 describe('isValidImageFile', () => {
-  const makeFile = (type: string, size: number) => ({ type, size }) as File
-
-  it('accepts a valid JPEG under 5MB', () => {
-    expect(isValidImageFile(makeFile('image/jpeg', 1024)).valid).toBe(true)
+  it('accepts a real JPEG under the size limit', async () => {
+    const file = makeImageFile(JPEG_HEADER, 'a.jpg', 'image/jpeg')
+    expect((await isValidImageFile(file)).valid).toBe(true)
   })
 
-  it('accepts a valid PNG under 5MB', () => {
-    expect(isValidImageFile(makeFile('image/png', 1024)).valid).toBe(true)
+  it('accepts a real PNG under the size limit', async () => {
+    const file = makeImageFile(PNG_HEADER, 'a.png', 'image/png')
+    expect((await isValidImageFile(file)).valid).toBe(true)
   })
 
-  it('accepts a valid GIF under 5MB', () => {
-    expect(isValidImageFile(makeFile('image/gif', 1024)).valid).toBe(true)
+  it('accepts a real GIF under the size limit', async () => {
+    const file = makeImageFile(GIF_HEADER, 'a.gif', 'image/gif')
+    expect((await isValidImageFile(file)).valid).toBe(true)
   })
 
-  it('rejects an unsupported file type', () => {
-    const result = isValidImageFile(makeFile('image/webp', 1024))
+  it('rejects an unsupported file type', async () => {
+    const result = await isValidImageFile(makeTextFile('RIFFxxxxWEBP', 'a.webp', 'image/webp'))
     expect(result.valid).toBe(false)
     expect(result.error).toBeDefined()
   })
 
-  it('rejects a file over 5MB', () => {
-    const result = isValidImageFile(makeFile('image/png', 6 * 1024 * 1024))
+  it('rejects content that does not match its declared image type', async () => {
+    const result = await isValidImageFile(makeTextFile('not an image', 'a.png', 'image/png'))
+    expect(result.valid).toBe(false)
+    expect(result.error).toBeDefined()
+  })
+
+  it('rejects a file over the 4MB limit', async () => {
+    const result = await isValidImageFile(
+      makeImageFile(PNG_HEADER, 'big.png', 'image/png', 4 * 1024 * 1024 + 1),
+    )
     expect(result.valid).toBe(false)
     expect(result.error).toBeDefined()
   })
