@@ -59,7 +59,6 @@ export const AdminPanel: React.FC = () => {
   // Pre-populate form once factory state loads
   useEffect(() => {
     if (state) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- syncing form fields from async-loaded factory state
       setBaseFee(stroopsToDisplay(state.baseFee))
       setMetadataFee(stroopsToDisplay(state.metadataFee))
       setWhitelistEnabled(state.whitelistEnabled ?? false)
@@ -213,9 +212,7 @@ export const AdminPanel: React.FC = () => {
               'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent',
               'transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2',
               'disabled:opacity-50 disabled:cursor-not-allowed',
-              whitelistEnabled
-                ? 'bg-blue-600 dark:bg-blue-500'
-                : 'bg-gray-200 dark:bg-gray-600',
+              whitelistEnabled ? 'bg-blue-600 dark:bg-blue-500' : 'bg-gray-200 dark:bg-gray-600',
             ].join(' ')}
           >
             <span

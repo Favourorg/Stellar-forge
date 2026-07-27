@@ -39,7 +39,6 @@ export const TokenHistory: React.FC<TokenHistoryProps> = ({ tokenAddress }) => {
   }, [stellarService, tokenAddress])
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- loadEvents sets loading state synchronously as it starts fetching; see #1002 follow-up
     loadEvents()
   }, [loadEvents])
 

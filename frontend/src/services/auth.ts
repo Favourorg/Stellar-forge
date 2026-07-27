@@ -30,7 +30,9 @@ export async function getUploadToken(walletAddress: string): Promise<string> {
 
   try {
     // Step 1: Get challenge
-    const challengeRes = await fetch(`${CHALLENGE_ENDPOINT}?address=${encodeURIComponent(walletAddress)}`)
+    const challengeRes = await fetch(
+      `${CHALLENGE_ENDPOINT}?address=${encodeURIComponent(walletAddress)}`,
+    )
     if (!challengeRes.ok) {
       throw new Error(`Failed to request challenge (HTTP ${challengeRes.status})`)
     }
@@ -84,10 +86,7 @@ export async function getUploadToken(walletAddress: string): Promise<string> {
 function cacheToken(token: string): void {
   try {
     const expiresAt = Date.now() + 4.5 * 60 * 1000 // 4.5 minutes
-    localStorage.setItem(
-      UPLOAD_TOKEN_KEY,
-      JSON.stringify({ token, expiresAt } as TokenData),
-    )
+    localStorage.setItem(UPLOAD_TOKEN_KEY, JSON.stringify({ token, expiresAt } as TokenData))
   } catch {
     // localStorage unavailable, token won't be cached but auth will still work
   }

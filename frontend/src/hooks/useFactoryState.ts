@@ -185,7 +185,6 @@ export function useFactoryState(): UseFactoryStateResult {
 
   // Initial fetch on mount
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetchState transitions to loading synchronously; a mount fetch is exactly what this effect is for. See #1002 follow-up
     fetchState(false)
   }, [fetchState])
 

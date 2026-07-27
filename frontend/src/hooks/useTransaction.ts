@@ -21,7 +21,13 @@ import { nextBackoffDelay } from '../utils/pollWithBackoff'
  */
 
 export type TransactionStatus =
-  'idle' | 'simulating' | 'signing' | 'submitting' | 'polling' | 'success' | 'error'
+  | 'idle'
+  | 'simulating'
+  | 'signing'
+  | 'submitting'
+  | 'polling'
+  | 'success'
+  | 'error'
 
 // ── Reconciliation policy ───────────────────────────────────────────────────
 //

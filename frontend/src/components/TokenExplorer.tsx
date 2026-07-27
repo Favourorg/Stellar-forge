@@ -173,7 +173,6 @@ export const TokenExplorer: React.FC = () => {
   useEffect(() => {
     let cancelled = false
 
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- entering the loading state is the first step of the page fetch this effect exists to run; see #1002 follow-up
     setLoadingTokens(true)
     setListError(null)
 
