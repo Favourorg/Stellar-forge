@@ -130,7 +130,7 @@ importers:
         specifier: ^29.1.1
         version: 29.1.1
       lint-staged:
-        specifier: ^17.1.0
+        specifier: ^17.2.0
         version: 17.2.0
       postcss:
         specifier: ^8.5.21
