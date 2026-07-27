@@ -32,7 +32,19 @@ import type { Network } from '../config/stellar'
 import { withRetry, HttpError } from '../utils/retry'
 import { fetchAllContractEvents } from '../utils/fetchAllContractEvents'
 import { parseContractError } from '../utils/contractErrors'
-import { nextBackoffDelay } from '../utils/pollWithBackoff'
+import {
+  submitAndConfirm,
+  TransactionSubmissionError,
+  type SubmitAndConfirmResult,
+  type SubmitOptions,
+  type TransactionLifecycleStatus,
+} from './transactionSubmission'
+
+export {
+  TransactionSubmissionError,
+  type TransactionFailureStatus,
+  type TransactionLifecycleStatus,
+} from './transactionSubmission'
 
 export type { FactoryState } from '../types'
 
@@ -53,6 +65,19 @@ function hexToBytes(hex: string): Uint8Array {
 function toAppError(err: unknown): AppError {
   const parsed = parseContractError(err)
   return { code: 'CONTRACT_ERROR', message: parsed.message }
+}
+
+/**
+ * Map a raw error to the one thrown to callers.
+ *
+ * A {@link TransactionSubmissionError} is passed through unchanged: its message
+ * is already user-facing and, crucially, its `status`/`safeToRetry` fields tell
+ * the UI whether re-signing could double-execute the call. Flattening it into a
+ * plain `Error` (as every write path used to) discarded exactly that.
+ */
+function toUserFacingError(err: unknown): Error {
+  if (err instanceof TransactionSubmissionError) return err
+  return new Error(toAppError(err).message)
 }
 
 /**
@@ -119,18 +144,22 @@ function getRpcServer(network: Network): rpc.Server {
 // ── Transaction lifecycle ─────────────────────────────────────────────────────
 
 /**
- * Simulate, sign via Freighter, submit, and poll until confirmed.
- * Returns the transaction hash on success.
+ * Simulate, sign via Freighter, submit, and wait for a definitive verdict.
+ * Returns the transaction hash on confirmed inclusion.
  *
- * Both simulation and submission are wrapped with retry logic so that
- * transient failures (including 429 rate-limit responses) are handled
- * with exponential backoff before the user sees an error.
+ * Simulation is wrapped with retry logic so that transient failures (including
+ * 429 rate-limit responses) are handled with exponential backoff. Submission
+ * and inclusion tracking are delegated to `transactionSubmission`, which gives
+ * every `sendTransaction` status its own path and rejects with a typed
+ * {@link TransactionSubmissionError} (`dropped` / `expired` / `failed` /
+ * `unconfirmed`) instead of a generic attempt-count timeout.
  */
-async function simulateAndSubmit(
+async function simulateAndSubmitDetailed(
   server: rpc.Server,
   tx: ReturnType<TransactionBuilder['build']>,
   network: Network,
-): Promise<string> {
+  onStatus?: (status: TransactionLifecycleStatus) => void,
+): Promise<SubmitAndConfirmResult> {
   const simResult = await withRetry(() => server.simulateTransaction(tx))
 
   if (rpc.Api.isSimulationError(simResult)) {
@@ -142,41 +171,24 @@ async function simulateAndSubmit(
 
   const assembled = rpc.assembleTransaction(tx, simResult).build()
   const signedXdr = await walletService.signTransaction(assembled.toXDR(), network)
+  const signedTx = TransactionBuilder.fromXDR(signedXdr, getNetworkPassphrase(network))
 
-  const submitResult = await withRetry(() =>
-    server.sendTransaction(TransactionBuilder.fromXDR(signedXdr, getNetworkPassphrase(network))),
-  )
-
-  if (submitResult.status === 'ERROR') {
-    throw parseContractError(
-      new Error(submitResult.errorResult?.toXDR('base64') ?? 'Submission failed'),
-    )
-  }
-
-  await pollTransaction(server, submitResult.hash)
-  return submitResult.hash
+  const options: SubmitOptions = onStatus ? { onStatus } : {}
+  return submitAndConfirm(server, signedTx, options)
 }
 
-async function pollTransaction(
+/** {@link simulateAndSubmitDetailed} for callers that only need the hash. */
+async function simulateAndSubmit(
   server: rpc.Server,
-  hash: string,
-  maxAttempts = 20,
-  initialDelayMs = 500,
-  maxDelayMs = 4_000,
-): Promise<rpc.Api.GetTransactionResponse> {
-  for (let i = 0; i < maxAttempts; i++) {
-    const result = (await withRetry(() =>
-      server.getTransaction(hash),
-    )) as rpc.Api.GetTransactionResponse
-    if (result.status === rpc.Api.GetTransactionStatus.SUCCESS) return result
-    if (result.status === rpc.Api.GetTransactionStatus.FAILED) {
-      throw parseContractError(new Error(`Transaction failed: ${hash}`))
-    }
-    const delay = nextBackoffDelay(i, { initialDelayMs, maxDelayMs })
-    await new Promise((r) => setTimeout(r, delay))
-  }
-  throw new Error(`Transaction ${hash} timed out after ${maxAttempts} attempts`)
-} // ── Fee Bump Transactions ─────────────────────────────────────────────────────
+  tx: ReturnType<TransactionBuilder['build']>,
+  network: Network,
+  onStatus?: (status: TransactionLifecycleStatus) => void,
+): Promise<string> {
+  const { hash } = await simulateAndSubmitDetailed(server, tx, network, onStatus)
+  return hash
+}
+
+// ── Fee Bump Transactions ─────────────────────────────────────────────────────
 
 /**
  * Wrap a signed inner transaction in a fee bump envelope.
@@ -200,11 +212,17 @@ export async function buildFeeBumpTransaction(
 }
 
 /**
- * Submit a signed fee bump transaction and wait for confirmation.
+ * Submit a signed fee bump transaction and wait for a definitive verdict.
+ *
+ * Shares the submission path with `simulateAndSubmit`, so a fee bump gets the
+ * same explicit handling of every `sendTransaction` status — including
+ * TRY_AGAIN_LATER resubmission of the identical signed envelope — and the same
+ * timebounds-derived expiry verdict (read from the inner transaction).
  */
 export async function submitFeeBumpTransaction(
   signedFeeBumpXdr: string,
   network: Network,
+  onStatus?: (status: TransactionLifecycleStatus) => void,
 ): Promise<string> {
   const server = getRpcServer(network)
   const feeBumpTx = TransactionBuilder.fromXDR(
@@ -212,14 +230,9 @@ export async function submitFeeBumpTransaction(
     getNetworkPassphrase(network),
   ) as FeeBumpTransaction
 
-  const submitResult = await withRetry(() => server.sendTransaction(feeBumpTx))
-  if (submitResult.status === 'ERROR') {
-    throw parseContractError(
-      new Error(submitResult.errorResult?.toXDR('base64') ?? 'Fee bump submission failed'),
-    )
-  }
-  await pollTransaction(server, submitResult.hash)
-  return submitResult.hash
+  const options: SubmitOptions = onStatus ? { onStatus } : {}
+  const { hash } = await submitAndConfirm(server, feeBumpTx, options)
+  return hash
 }
 
 // ── Shared builder helper ─────────────────────────────────────────────────────
@@ -577,18 +590,18 @@ export class StellarService {
         .setTimeout(30)
         .build()
 
-      const hash = await simulateAndSubmit(server, tx, this.network)
+      // The confirmed response is already in hand — re-fetching it by hash was
+      // a redundant round-trip that could itself fail after a successful write.
+      const { hash, response } = await simulateAndSubmitDetailed(server, tx, this.network)
 
       // Extract the returned token address from the transaction result
-      const txResult = await withRetry(() => server.getTransaction(hash))
-      let tokenAddress = ''
-      if (txResult.status === rpc.Api.GetTransactionStatus.SUCCESS && txResult.returnValue) {
-        tokenAddress = scValToNative(txResult.returnValue) as string
-      }
+      const tokenAddress = response.returnValue
+        ? (scValToNative(response.returnValue) as string)
+        : ''
 
       return { tokenAddress, transactionHash: hash, success: true }
     } catch (err) {
-      const appErr = toAppError(err)
+      const userError = toUserFacingError(err)
       const factoryContractId = STELLAR_CONFIG.factoryContractId ?? 'unknown'
       captureContractError(err instanceof Error ? err : new Error(String(err)), {
         network: this.network,
@@ -596,7 +609,7 @@ export class StellarService {
         functionName,
         params: { name: params.name, symbol: params.symbol, decimals: params.decimals },
       })
-      throw new Error(appErr.message)
+      throw userError
     }
   }
 
@@ -639,7 +652,7 @@ export class StellarService {
 
       return await simulateAndSubmit(server, tx, this.network)
     } catch (err) {
-      const appErr = toAppError(err)
+      const userError = toUserFacingError(err)
       const factoryContractId = STELLAR_CONFIG.factoryContractId ?? 'unknown'
       captureContractError(err instanceof Error ? err : new Error(String(err)), {
         network: this.network,
@@ -647,7 +660,7 @@ export class StellarService {
         functionName,
         params: { tokenAddress: params.tokenAddress, amount: params.amount },
       })
-      throw new Error(appErr.message)
+      throw userError
     }
   }
 
@@ -683,7 +696,7 @@ export class StellarService {
 
       return await simulateAndSubmit(server, tx, this.network)
     } catch (err) {
-      const appErr = toAppError(err)
+      const userError = toUserFacingError(err)
       const factoryContractId = STELLAR_CONFIG.factoryContractId ?? 'unknown'
       captureContractError(err instanceof Error ? err : new Error(String(err)), {
         network: this.network,
@@ -691,7 +704,7 @@ export class StellarService {
         functionName,
         params: { tokenAddress: params.tokenAddress, amount: params.amount },
       })
-      throw new Error(appErr.message)
+      throw userError
     }
   }
 
@@ -732,7 +745,7 @@ export class StellarService {
 
       return await simulateAndSubmit(server, tx, this.network)
     } catch (err) {
-      const appErr = toAppError(err)
+      const userError = toUserFacingError(err)
       const factoryContractId = STELLAR_CONFIG.factoryContractId ?? 'unknown'
       captureContractError(err instanceof Error ? err : new Error(String(err)), {
         network: this.network,
@@ -740,7 +753,7 @@ export class StellarService {
         functionName,
         params: { tokenAddress: params.tokenAddress, metadataUri: params.metadataUri },
       })
-      throw new Error(appErr.message)
+      throw userError
     }
   }
 
@@ -780,7 +793,7 @@ export class StellarService {
         totalSupply: native.total_supply?.toString(),
       }
     } catch (err) {
-      const appErr = toAppError(err)
+      const userError = toUserFacingError(err)
       const factoryContractId = STELLAR_CONFIG.factoryContractId ?? 'unknown'
       captureContractError(err instanceof Error ? err : new Error(String(err)), {
         network: this.network,
@@ -788,7 +801,7 @@ export class StellarService {
         functionName,
         params: { index },
       })
-      throw new Error(appErr.message)
+      throw userError
     }
   }
 
@@ -815,14 +828,14 @@ export class StellarService {
         return res.json() as Promise<Record<string, unknown>>
       })
     } catch (err) {
-      const appErr = toAppError(err)
+      const userError = toUserFacingError(err)
       captureContractError(err instanceof Error ? err : new Error(String(err)), {
         network: this.network,
         functionName,
         txHash: hash,
         params: { hash },
       })
-      throw new Error(appErr.message)
+      throw userError
     }
   }
 
@@ -864,13 +877,13 @@ export class StellarService {
           : undefined,
       }
     } catch (err) {
-      const appErr = toAppError(err)
+      const userError = toUserFacingError(err)
       captureContractError(err instanceof Error ? err : new Error(String(err)), {
         network: this.network,
         contractId,
         functionName,
       })
-      throw new Error(appErr.message)
+      throw userError
     }
   }
 
@@ -925,7 +938,7 @@ export class StellarService {
 
       return await simulateAndSubmit(server, tx, this.network)
     } catch (err) {
-      const appErr = toAppError(err)
+      const userError = toUserFacingError(err)
       const factoryContractId = STELLAR_CONFIG.factoryContractId ?? 'unknown'
       captureContractError(err instanceof Error ? err : new Error(String(err)), {
         network: this.network,
@@ -933,7 +946,7 @@ export class StellarService {
         functionName,
         params: { baseFee: params.baseFee, metadataFee: params.metadataFee },
       })
-      throw new Error(appErr.message)
+      throw userError
     }
   }
 
@@ -969,7 +982,7 @@ export class StellarService {
 
       return await simulateAndSubmit(server, tx, this.network)
     } catch (err) {
-      const appErr = toAppError(err)
+      const userError = toUserFacingError(err)
       const factoryContractId = STELLAR_CONFIG.factoryContractId ?? 'unknown'
       captureContractError(err instanceof Error ? err : new Error(String(err)), {
         network: this.network,
@@ -977,7 +990,7 @@ export class StellarService {
         functionName,
         params: { enabled },
       })
-      throw new Error(appErr.message)
+      throw userError
     }
   }
 
@@ -1123,7 +1136,7 @@ export class StellarService {
         .filter((r): r is PromiseFulfilledResult<TokenInfo> => r.status === 'fulfilled')
         .map((r) => r.value)
     } catch (err) {
-      const appErr = toAppError(err)
+      const userError = toUserFacingError(err)
       const factoryContractId = STELLAR_CONFIG.factoryContractId ?? 'unknown'
       captureContractError(err instanceof Error ? err : new Error(String(err)), {
         network: this.network,
@@ -1131,7 +1144,7 @@ export class StellarService {
         functionName: 'getTokensByCreator',
         params: { creator, offset, limit },
       })
-      throw new Error(appErr.message)
+      throw userError
     }
   }
 

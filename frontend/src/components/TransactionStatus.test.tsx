@@ -84,21 +84,71 @@ describe('TransactionStatus Component', () => {
     expect(link).toHaveAttribute('href', 'https://stellar.expert/explorer/testnet/tx/test-hash')
   })
 
-  test('shows timeout error after 60 seconds', async () => {
+  /**
+   * A transaction that has not landed within the polling window was still
+   * accepted by the network and may yet be included. Reporting it as "failed"
+   * (the old behaviour) invited the user to re-sign a transaction that could
+   * execute a second time — the double-spend hazard for mint/create.
+   */
+  test('reports an unconfirmed transaction distinctly from a failure', async () => {
     const onError = vi.fn()
+    const onUnconfirmed = vi.fn()
     ;(stellarService.getTransaction as Mock).mockResolvedValue({ status: 'pending' })
 
-    render(<TransactionStatus txHash="test-hash" onError={onError} />)
+    render(
+      <TransactionStatus
+        txHash="test-hash"
+        onError={onError}
+        onUnconfirmed={onUnconfirmed}
+        onRetry={vi.fn()}
+      />,
+    )
 
     await vi.waitFor(
       () => {
         vi.advanceTimersByTime(60000)
-        expect(screen.getByText('Transaction Failed')).toBeInTheDocument()
+        expect(screen.getByText('Not Confirmed Yet')).toBeInTheDocument()
       },
       { timeout: 5000 },
     )
 
-    expect(onError).toHaveBeenCalledWith('Timeout')
+    expect(screen.queryByText('Transaction Failed')).not.toBeInTheDocument()
+    expect(onError).not.toHaveBeenCalled()
+    expect(onUnconfirmed).toHaveBeenCalledWith(expect.stringMatching(/not been included/i))
+    // No retry affordance: resubmitting could execute the call twice.
+    expect(screen.queryByRole('button', { name: /try again/i })).not.toBeInTheDocument()
+  })
+
+  test('offers "try again" only for a definitively failed transaction', async () => {
+    const onRetry = vi.fn()
+    ;(stellarService.getTransaction as Mock).mockResolvedValue({
+      status: 'failed',
+      error: 'Contract error',
+    })
+
+    render(<TransactionStatus txHash="test-hash" onRetry={onRetry} />)
+
+    await vi.waitFor(() => {
+      expect(screen.getByText('Transaction Failed')).toBeInTheDocument()
+    })
+
+    screen.getByRole('button', { name: /try again/i }).click()
+    expect(onRetry).toHaveBeenCalled()
+  })
+
+  test('keeps polling when the hash is not indexed yet instead of failing', async () => {
+    ;(stellarService.getTransaction as Mock)
+      .mockRejectedValueOnce(new Error('Transaction not found: test-hash'))
+      .mockRejectedValueOnce(new Error('Transaction not found: test-hash'))
+      .mockResolvedValue({ status: 'success' })
+
+    render(<TransactionStatus txHash="test-hash" />)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000)
+    })
+
+    expect(screen.getByText('Transaction Successful')).toBeInTheDocument()
   })
 
   test('grows the poll interval instead of polling at a fixed cadence', async () => {

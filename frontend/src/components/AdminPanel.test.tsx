@@ -15,7 +15,8 @@ vi.mock('../hooks/useFactoryState', () => ({
   useFactoryState: vi.fn(),
 }))
 
-vi.mock('../hooks/useTransaction', () => ({
+vi.mock('../hooks/useTransaction', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../hooks/useTransaction')>()),
   useTransaction: vi.fn(),
 }))
 
@@ -55,7 +56,7 @@ const renderWithProviders = async (
   } = {},
 ) => {
   const { useFactoryState } = await import('../hooks/useFactoryState')
-  const { useTransaction } = await import('../hooks/useTransaction')
+  const { useTransaction, isTransactionInFlight } = await import('../hooks/useTransaction')
 
   vi.mocked(useFactoryState).mockReturnValue({
     state: factoryState,
@@ -69,6 +70,9 @@ const renderWithProviders = async (
     status: txStatus,
     result: null,
     error: null,
+    failure: null,
+    isInFlight: isTransactionInFlight(txStatus),
+    canRetry: false,
     reset: vi.fn(),
   })
 
