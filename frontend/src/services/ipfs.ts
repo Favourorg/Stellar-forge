@@ -116,7 +116,12 @@ export class IPFSService {
       description,
       image: `ipfs://${imageCid}`,
     }
-    const metadataCid = await this._uploadJSON(metadata, `${tokenName}-metadata.json`, token, onRetry)
+    const metadataCid = await this._uploadJSON(
+      metadata,
+      `${tokenName}-metadata.json`,
+      token,
+      onRetry,
+    )
     onProgress?.(100)
 
     return `ipfs://${metadataCid}`

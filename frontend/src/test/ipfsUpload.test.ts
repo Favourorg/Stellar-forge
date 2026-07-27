@@ -28,7 +28,6 @@ class FakeXHR {
   }
 }
 
-
 // The upload flow now authenticates via a wallet-signed JWT; stub it out so
 // these tests keep exercising only the upload transport.
 vi.mock('../services/auth', () => ({

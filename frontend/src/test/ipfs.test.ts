@@ -24,7 +24,6 @@ vi.mock('../services/ipfs-errors', () => {
   return { IPFSConfigError, IPFSUploadError }
 })
 
-
 // The upload flow now authenticates via a wallet-signed JWT; stub it out so
 // these tests keep exercising only the upload transport.
 vi.mock('../services/auth', () => ({
@@ -123,7 +122,9 @@ describe('IPFSService', () => {
         }),
       )
 
-      await expect(fresh.uploadMetadata(makeFile(), 'desc', 'Token', 'GTESTWALLETADDRESS')).resolves.toBe('ipfs://QmMeta')
+      await expect(
+        fresh.uploadMetadata(makeFile(), 'desc', 'Token', 'GTESTWALLETADDRESS'),
+      ).resolves.toBe('ipfs://QmMeta')
     })
 
     it('posts to the same-origin proxy and sends no Pinata credentials', async () => {
@@ -175,9 +176,9 @@ describe('IPFSService', () => {
       const fresh = new Fresh()
       const webp = makeFile('img.webp', 'image/webp')
 
-      await expect(fresh.uploadMetadata(webp, 'desc', 'Token', 'GTESTWALLETADDRESS')).rejects.toBeInstanceOf(
-        IPFSUploadError,
-      )
+      await expect(
+        fresh.uploadMetadata(webp, 'desc', 'Token', 'GTESTWALLETADDRESS'),
+      ).rejects.toBeInstanceOf(IPFSUploadError)
     })
 
     it('throws IPFSUploadError for file exceeding the 4MB limit', async () => {
@@ -186,9 +187,9 @@ describe('IPFSService', () => {
       const fresh = new Fresh()
       const big = makeFile('big.png', 'image/png', 6 * 1024 * 1024)
 
-      await expect(fresh.uploadMetadata(big, 'desc', 'Token', 'GTESTWALLETADDRESS')).rejects.toBeInstanceOf(
-        IPFSUploadError,
-      )
+      await expect(
+        fresh.uploadMetadata(big, 'desc', 'Token', 'GTESTWALLETADDRESS'),
+      ).rejects.toBeInstanceOf(IPFSUploadError)
     })
 
     it('error message includes the file size when too large', async () => {
@@ -199,7 +200,9 @@ describe('IPFSService', () => {
 
       // 4MB, not 5MB: the cap sits just under Vercel's 4.5MB serverless
       // request-body ceiling now that uploads are proxied through api/ipfs/*.
-      await expect(fresh.uploadMetadata(big, 'desc', 'Token', 'GTESTWALLETADDRESS')).rejects.toThrow('4MB')
+      await expect(
+        fresh.uploadMetadata(big, 'desc', 'Token', 'GTESTWALLETADDRESS'),
+      ).rejects.toThrow('4MB')
     })
 
     it('accepts JPEG files', async () => {
@@ -216,7 +219,12 @@ describe('IPFSService', () => {
         }),
       )
 
-      const result = await fresh.uploadMetadata(makeFile('img.jpg', 'image/jpeg'), 'desc', 'Token', 'GTESTWALLETADDRESS')
+      const result = await fresh.uploadMetadata(
+        makeFile('img.jpg', 'image/jpeg'),
+        'desc',
+        'Token',
+        'GTESTWALLETADDRESS',
+      )
       expect(result).toBe('ipfs://QmMetaCID')
     })
 
@@ -234,7 +242,12 @@ describe('IPFSService', () => {
         }),
       )
 
-      const result = await fresh.uploadMetadata(makeFile('img.gif', 'image/gif'), 'desc', 'Token', 'GTESTWALLETADDRESS')
+      const result = await fresh.uploadMetadata(
+        makeFile('img.gif', 'image/gif'),
+        'desc',
+        'Token',
+        'GTESTWALLETADDRESS',
+      )
       expect(result).toBe('ipfs://QmMetaCID')
     })
   })
@@ -280,7 +293,9 @@ describe('IPFSService', () => {
       )
 
       const progress: number[] = []
-      await fresh.uploadMetadata(makeFile(), 'desc', 'Token', 'GTESTWALLETADDRESS', (p) => progress.push(p))
+      await fresh.uploadMetadata(makeFile(), 'desc', 'Token', 'GTESTWALLETADDRESS', (p) =>
+        progress.push(p),
+      )
 
       expect(progress[0]).toBe(0)
       expect(progress[progress.length - 1]).toBe(100)
@@ -327,9 +342,9 @@ describe('IPFSService', () => {
       const fresh = new Fresh()
       mockXHR(401, 'Unauthorized')
 
-      await expect(fresh.uploadMetadata(makeFile(), 'desc', 'Token', 'GTESTWALLETADDRESS')).rejects.toBeInstanceOf(
-        IPFSUploadError,
-      )
+      await expect(
+        fresh.uploadMetadata(makeFile(), 'desc', 'Token', 'GTESTWALLETADDRESS'),
+      ).rejects.toBeInstanceOf(IPFSUploadError)
     })
 
     it('throws IPFSUploadError on XHR non-200 status', async () => {
@@ -338,9 +353,9 @@ describe('IPFSService', () => {
       const fresh = new Fresh()
       mockXHR(500, 'Internal Server Error')
 
-      await expect(fresh.uploadMetadata(makeFile(), 'desc', 'Token', 'GTESTWALLETADDRESS')).rejects.toBeInstanceOf(
-        IPFSUploadError,
-      )
+      await expect(
+        fresh.uploadMetadata(makeFile(), 'desc', 'Token', 'GTESTWALLETADDRESS'),
+      ).rejects.toBeInstanceOf(IPFSUploadError)
     })
 
     it('throws IPFSUploadError on XHR network error', async () => {
@@ -349,9 +364,9 @@ describe('IPFSService', () => {
       const fresh = new Fresh()
       mockXHR(0, '', true) // triggerError = true
 
-      await expect(fresh.uploadMetadata(makeFile(), 'desc', 'Token', 'GTESTWALLETADDRESS')).rejects.toBeInstanceOf(
-        IPFSUploadError,
-      )
+      await expect(
+        fresh.uploadMetadata(makeFile(), 'desc', 'Token', 'GTESTWALLETADDRESS'),
+      ).rejects.toBeInstanceOf(IPFSUploadError)
     })
 
     it('throws IPFSUploadError when Pinata returns malformed JSON for image', async () => {
@@ -360,9 +375,9 @@ describe('IPFSService', () => {
       const fresh = new Fresh()
       mockXHR(200, 'not-json')
 
-      await expect(fresh.uploadMetadata(makeFile(), 'desc', 'Token', 'GTESTWALLETADDRESS')).rejects.toBeInstanceOf(
-        IPFSUploadError,
-      )
+      await expect(
+        fresh.uploadMetadata(makeFile(), 'desc', 'Token', 'GTESTWALLETADDRESS'),
+      ).rejects.toBeInstanceOf(IPFSUploadError)
     })
 
     it('throws IPFSUploadError when image response is missing cid', async () => {
@@ -371,9 +386,9 @@ describe('IPFSService', () => {
       const fresh = new Fresh()
       mockXHR(200, JSON.stringify({ something: 'else' }))
 
-      await expect(fresh.uploadMetadata(makeFile(), 'desc', 'Token', 'GTESTWALLETADDRESS')).rejects.toBeInstanceOf(
-        IPFSUploadError,
-      )
+      await expect(
+        fresh.uploadMetadata(makeFile(), 'desc', 'Token', 'GTESTWALLETADDRESS'),
+      ).rejects.toBeInstanceOf(IPFSUploadError)
     })
 
     it('throws IPFSUploadError on fetch network error for JSON upload', async () => {
@@ -383,9 +398,9 @@ describe('IPFSService', () => {
       mockXHR(200, JSON.stringify({ cid: 'QmImg' }))
       vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')))
 
-      await expect(fresh.uploadMetadata(makeFile(), 'desc', 'Token', 'GTESTWALLETADDRESS')).rejects.toBeInstanceOf(
-        IPFSUploadError,
-      )
+      await expect(
+        fresh.uploadMetadata(makeFile(), 'desc', 'Token', 'GTESTWALLETADDRESS'),
+      ).rejects.toBeInstanceOf(IPFSUploadError)
     })
 
     it('throws IPFSUploadError on 401 from JSON upload', async () => {
@@ -405,7 +420,9 @@ describe('IPFSService', () => {
       // Credentials now live server-side, so a 401 from our own proxy is not a
       // user-actionable "check your API key" case — it surfaces as a generic
       // upload failure carrying the status.
-      await expect(fresh.uploadMetadata(makeFile(), 'desc', 'Token', 'GTESTWALLETADDRESS')).rejects.toThrow('HTTP 401')
+      await expect(
+        fresh.uploadMetadata(makeFile(), 'desc', 'Token', 'GTESTWALLETADDRESS'),
+      ).rejects.toThrow('HTTP 401')
     })
 
     it('throws IPFSUploadError on non-ok fetch response for JSON upload', async () => {
@@ -422,9 +439,9 @@ describe('IPFSService', () => {
         }),
       )
 
-      await expect(fresh.uploadMetadata(makeFile(), 'desc', 'Token', 'GTESTWALLETADDRESS')).rejects.toBeInstanceOf(
-        IPFSUploadError,
-      )
+      await expect(
+        fresh.uploadMetadata(makeFile(), 'desc', 'Token', 'GTESTWALLETADDRESS'),
+      ).rejects.toBeInstanceOf(IPFSUploadError)
     })
 
     it('retries image upload on transient 503 and succeeds on second attempt', async () => {
@@ -482,8 +499,13 @@ describe('IPFSService', () => {
       )
 
       const retryCalls: number[] = []
-      const promise = fresh.uploadMetadata(makeFile(), 'desc', 'Token', 'GTESTWALLETADDRESS', undefined, (attempt) =>
-        retryCalls.push(attempt),
+      const promise = fresh.uploadMetadata(
+        makeFile(),
+        'desc',
+        'Token',
+        'GTESTWALLETADDRESS',
+        undefined,
+        (attempt) => retryCalls.push(attempt),
       )
 
       await vi.runAllTimersAsync()
@@ -510,9 +532,9 @@ describe('IPFSService', () => {
         }),
       )
 
-      await expect(fresh.uploadMetadata(makeFile(), 'desc', 'Token', 'GTESTWALLETADDRESS')).rejects.toBeInstanceOf(
-        IPFSUploadError,
-      )
+      await expect(
+        fresh.uploadMetadata(makeFile(), 'desc', 'Token', 'GTESTWALLETADDRESS'),
+      ).rejects.toBeInstanceOf(IPFSUploadError)
     })
   })
 

@@ -29,8 +29,7 @@ const FACTORY_TOPIC = 'AAAADwAAAAdmYWN0b3J5AA=='
 const XDR = {
   init: {
     topic1: 'AAAADwAAAARpbml0',
-    value:
-      'AAAAEAAAAAEAAAABAAAAEgAAAAAAAAAA/7SpxpEMV33pXktl+ZP53F+vX2pv4CdwdZDOdAw7Z/k=',
+    value: 'AAAAEAAAAAEAAAABAAAAEgAAAAAAAAAA/7SpxpEMV33pXktl+ZP53F+vX2pv4CdwdZDOdAw7Z/k=',
   },
   created: {
     topic1: 'AAAADwAAAAdjcmVhdGVkAA==',
@@ -54,18 +53,15 @@ const XDR = {
   },
   fees: {
     topic1: 'AAAADwAAAARmZWVz',
-    value:
-      'AAAAEAAAAAEAAAACAAAACgAAAAAAAAAAAAAAAAX14QAAAAAKAAAAAAAAAAAAAAAAAvrwgA==',
+    value: 'AAAAEAAAAAEAAAACAAAACgAAAAAAAAAAAAAAAAX14QAAAAAKAAAAAAAAAAAAAAAAAvrwgA==',
   },
   pause: {
     topic1: 'AAAADwAAAAVwYXVzZQAAAA==',
-    value:
-      'AAAAEAAAAAEAAAABAAAAEgAAAAAAAAAA/7SpxpEMV33pXktl+ZP53F+vX2pv4CdwdZDOdAw7Z/k=',
+    value: 'AAAAEAAAAAEAAAABAAAAEgAAAAAAAAAA/7SpxpEMV33pXktl+ZP53F+vX2pv4CdwdZDOdAw7Z/k=',
   },
   unpause: {
     topic1: 'AAAADwAAAAd1bnBhdXNlAA==',
-    value:
-      'AAAAEAAAAAEAAAABAAAAEgAAAAAAAAAA/7SpxpEMV33pXktl+ZP53F+vX2pv4CdwdZDOdAw7Z/k=',
+    value: 'AAAAEAAAAAEAAAABAAAAEgAAAAAAAAAA/7SpxpEMV33pXktl+ZP53F+vX2pv4CdwdZDOdAw7Z/k=',
   },
   adm_upd: {
     topic1: 'AAAADwAAAAdhZG1fdXBkAA==',
@@ -76,7 +72,10 @@ const XDR = {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function makeRaw(key: keyof typeof XDR, overrides: Partial<RpcEventResponse> = {}): RpcEventResponse {
+function makeRaw(
+  key: keyof typeof XDR,
+  overrides: Partial<RpcEventResponse> = {},
+): RpcEventResponse {
   return {
     id: `evt-${key}`,
     type: 'contract',
@@ -185,9 +184,7 @@ describe('parseRpcEvent – meta', () => {
     expect(result).not.toBeNull()
     expect(result!.type).toBe('meta')
     expect(result!.data.tokenAddress).toBe(ADDR2)
-    expect(result!.data.metadataUri).toBe(
-      'ipfs://QmXoypizjW3WknFiJnKLwHCnL72vedxjQkDDP1mXWo6uco',
-    )
+    expect(result!.data.metadataUri).toBe('ipfs://QmXoypizjW3WknFiJnKLwHCnL72vedxjQkDDP1mXWo6uco')
   })
 })
 
