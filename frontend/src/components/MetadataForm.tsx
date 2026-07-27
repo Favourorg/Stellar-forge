@@ -81,11 +81,11 @@ export const MetadataForm: React.FC<MetadataFormProps> = ({ initialTokenAddress 
     },
   ]
 
-  const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImageChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
 
-    const validation = isValidImageFile(file)
+    const validation = await isValidImageFile(file)
     if (!validation.valid) {
       addToast(validation.error ?? 'Invalid image file', 'error')
       if (fileInputRef.current) fileInputRef.current.value = ''

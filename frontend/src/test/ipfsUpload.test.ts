@@ -55,7 +55,13 @@ describe('IPFSService.uploadMetadata', () => {
   })
 
   it('uploads the image and metadata through the local serverless proxy, never Pinata directly', async () => {
-    const file = new File(['fake image bytes'], 'token.png', { type: 'image/png' })
+    // Content validation now sniffs magic bytes, so the fixture needs a real
+    // PNG signature.
+    const file = new File(
+      [new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0])],
+      'token.png',
+      { type: 'image/png' },
+    )
 
     const uri = await service.uploadMetadata(file, 'A cool token', 'MyToken', 'GTESTWALLETADDRESS')
 

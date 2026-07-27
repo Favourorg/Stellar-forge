@@ -33,8 +33,19 @@ vi.mock('../services/auth', () => ({
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+// isValidImageFile now checks magic bytes, so fixtures need real signatures
+// matching their declared type.
+const MAGIC_BYTES: Record<string, number[]> = {
+  'image/png': [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a],
+  'image/jpeg': [0xff, 0xd8, 0xff, 0xe0],
+  'image/gif': [0x47, 0x49, 0x46, 0x38, 0x39, 0x61],
+}
+
 function makeFile(name = 'token.png', type = 'image/png', size = 1024): File {
-  const blob = new Blob([new Uint8Array(size)], { type })
+  const bytes = new Uint8Array(size)
+  const signature = MAGIC_BYTES[type]
+  if (signature) bytes.set(signature)
+  const blob = new Blob([bytes], { type })
   return new File([blob], name, { type })
 }
 
@@ -178,6 +189,19 @@ describe('IPFSService', () => {
 
       await expect(
         fresh.uploadMetadata(webp, 'desc', 'Token', 'GTESTWALLETADDRESS'),
+      ).rejects.toBeInstanceOf(IPFSUploadError)
+    })
+
+    it('throws IPFSUploadError when the content is not a real image (spoofed MIME type)', async () => {
+      vi.resetModules()
+      const { IPFSService: Fresh } = await import('../services/ipfs')
+      const fresh = new Fresh()
+      const spoofed = new File(['<html><script>alert(1)</script></html>'], 'innocent.png', {
+        type: 'image/png',
+      })
+
+      await expect(
+        fresh.uploadMetadata(spoofed, 'desc', 'Token', 'GTESTWALLETADDRESS'),
       ).rejects.toBeInstanceOf(IPFSUploadError)
     })
 
@@ -612,6 +636,28 @@ describe('IPFSService', () => {
       )
 
       await expect(service.getMetadata('ipfs://QmCID')).rejects.toBeInstanceOf(IPFSUploadError)
+    })
+
+    it('rejects metadata whose image is not an ipfs:// URI', async () => {
+      const badImages = [
+        'https://evil.example/payload.png',
+        'http://evil.example/payload.png',
+        'data:text/html,<script>alert(1)</script>',
+        'javascript:alert(1)',
+        'ipfs://../../secret',
+      ]
+      for (const image of badImages) {
+        vi.stubGlobal(
+          'fetch',
+          vi.fn().mockResolvedValue({
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({ name: 'MyToken', description: 'A token', image }),
+          }),
+        )
+
+        await expect(service.getMetadata('ipfs://QmCID')).rejects.toBeInstanceOf(IPFSUploadError)
+      }
     })
 
     it('throws IPFSUploadError when metadata is missing name field', async () => {

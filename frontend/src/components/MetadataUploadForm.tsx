@@ -32,8 +32,8 @@ export const MetadataUploadForm: React.FC<MetadataUploadFormProps> = ({
 
   const [imagePreview, setImagePreview] = useState<string | null>(null)
 
-  const handleImageSelect = (file: File) => {
-    const validation = isValidImageFile(file)
+  const handleImageSelect = async (file: File) => {
+    const validation = await isValidImageFile(file)
     if (!validation.valid) {
       addToast(validation.error || 'Invalid image file', 'error')
       setImageFile(null)
