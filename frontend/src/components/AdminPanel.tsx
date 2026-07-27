@@ -59,6 +59,7 @@ export const AdminPanel: React.FC = () => {
   // Pre-populate form once factory state loads
   useEffect(() => {
     if (state) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- syncing form fields from async-loaded factory state
       setBaseFee(stroopsToDisplay(state.baseFee))
       setMetadataFee(stroopsToDisplay(state.metadataFee))
       setWhitelistEnabled(state.whitelistEnabled ?? false)

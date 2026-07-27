@@ -68,6 +68,7 @@ export const BurnForm: React.FC<BurnFormProps> = ({
     },
   })
 
+  // eslint-disable-next-line react-hooks/incompatible-library -- react-hook-form's watch() is intentionally non-memoizable; the React Compiler skips this component rather than miscompiling it. See #1002 follow-up
   const tokenSelect = watch('tokenSelect')
   const tokenManual = watch('tokenManual')
   const amount = watch('amount')
