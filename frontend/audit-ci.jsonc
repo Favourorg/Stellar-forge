@@ -29,5 +29,30 @@
   "package-manager": "npm",
 
   // Advisory IDs waived after triage. Keep this list empty whenever possible.
-  "allowlist": [],
+  "allowlist": [
+    // WAIVER: GHSA-mh99-v99m-4gvg
+    // Justification: dev/build-only DoS in brace-expansion, reachable only via
+    // eslint tooling (minimatch@3.1.5, CommonJS) and the PWA build's
+    // ejs/jake/filelist chain. The one instance on a maintained ESM branch is
+    // bumped to 5.0.8 by an override; the remaining copies are 1.1.16 pulled by
+    // minimatch@3, which require()s brace-expansion and so cannot take the
+    // ESM-only 5.0.8. The advisory's single <=5.0.7 range has no per-branch
+    // patch, false-flagging the maintained 1.x line. The DoS needs an
+    // attacker-controlled brace pattern; these tools only ever expand
+    // first-party config globs and source paths at build time.
+    // Link: https://github.com/Favourorg/Stellar-forge/issues/1056
+    // Review-by: 2026-10-27
+    "GHSA-mh99-v99m-4gvg",
+
+    // WAIVER: GHSA-qwww-vcr4-c8h2
+    // Justification: react-router CSRF is specific to RSC (React Server
+    // Components) mode, where a server action can run before a 400 response.
+    // StellarForge is a client-side Vite SPA using BrowserRouter only — no RSC
+    // mode, no server actions, no server request pipeline for this vector to
+    // bypass. The sole patch is a major 7.x -> 8.3.0 upgrade, disproportionate
+    // for a precondition we never satisfy.
+    // Link: https://github.com/Favourorg/Stellar-forge/issues/1057
+    // Review-by: 2026-10-27
+    "GHSA-qwww-vcr4-c8h2",
+  ],
 }
