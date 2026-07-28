@@ -171,7 +171,11 @@ Mint `amount` of `token_address` to `to`. Requires `fee_payment >= base_fee`; ch
 
 ### `burn(token_address, from, amount)`
 
-Burn `amount` of `token_address` from `from`'s balance. Honors `burn_enabled`; rejects when disabled.
+Burn `amount` of `token_address` from `from`'s balance.
+
+`token_address` **must** be a token this factory deployed. The factory resolves it through the `TokenIndex(address)` mapping _before_ making any cross-contract call; an address the factory never registered is rejected with `Error::TokenNotFound` and the factory never invokes it. This closes an open-proxy hole where `burn` would otherwise forward the call to (and emit an official-looking `burn` event for) an arbitrary external contract. Holders of non-factory tokens can always burn directly on those tokens' own contracts.
+
+Because the registration lookup is mandatory, the `burn_enabled` gate is unconditional: burning is rejected with `Error::Unauthorized` whenever the token's `burn_enabled` flag is `false`, with no bypass. Other errors: `Error::InvalidBurnAmount` for a zero or negative `amount`, and `Error::BurnAmountExceedsBalance` when `amount` exceeds `from`'s balance.
 
 ### `set_metadata(token_address, admin, metadata_uri, fee_payment)`
 
@@ -181,12 +185,12 @@ The contract stores the URI opaquely and does not validate the document it point
 
 **URI validation (enforced on-chain):**
 
-| Rule | Error |
-|---|---|
-| `metadata_uri` is empty | `InvalidMetadataUri` |
+| Rule                          | Error                |
+| ----------------------------- | -------------------- |
+| `metadata_uri` is empty       | `InvalidMetadataUri` |
 | Does not start with `ipfs://` | `InvalidMetadataUri` |
-| No CID after the prefix | `InvalidMetadataUri` |
-| `len > 128` bytes | `InvalidMetadataUri` |
+| No CID after the prefix       | `InvalidMetadataUri` |
+| `len > 128` bytes             | `InvalidMetadataUri` |
 
 **Mutability:** Metadata is no longer write-once. A creator may update the URI up to `METADATA_MAX_UPDATES` (currently **5**) times total. Once the update count is exhausted the URI is automatically frozen (`MetadataFrozen`). Creators may also explicitly freeze at any time via `freeze_metadata`.
 
@@ -286,11 +290,11 @@ Set a fee split where `splits` is a `Map<Address, u32>` of basis-point recipient
 
 **Constraints enforced at configuration time:**
 
-| Rule | Error |
-|---|---|
-| `splits.len() > 10` | `TooManyFeeSplitRecipients` |
-| Any entry has `bps == 0` | `ZeroFeeSplitEntry` |
-| `sum(bps) != 10_000` | `InvalidFeeSplit` |
+| Rule                     | Error                       |
+| ------------------------ | --------------------------- |
+| `splits.len() > 10`      | `TooManyFeeSplitRecipients` |
+| Any entry has `bps == 0` | `ZeroFeeSplitEntry`         |
+| `sum(bps) != 10_000`     | `InvalidFeeSplit`           |
 
 **Cap:** Maximum `10` recipients per split (`MAX_FEE_SPLIT_RECIPIENTS`). This bounds the number of cross-contract transfer calls per user transaction and keeps per-transaction gas predictable.
 
@@ -342,60 +346,60 @@ These operations are only available to existing token creators (the `owner` of a
 
 Read-only: returns `true` if `address` is on the whitelist.
 
-| Param | Type | Description |
-|---|---|---|
+| Param     | Type      | Description       |
+| --------- | --------- | ----------------- |
 | `address` | `Address` | Address to query. |
 
 ## Errors
 
-| Code | Symbol | When |
-|---|---|---|
-| 1 | `InsufficientFee` | `fee_payment < required_fee` |
-| 2 | `Unauthorized` | caller is not allowed for this operation |
-| 3 | `InvalidParameters` | argument out of range or malformed |
-| 4 | `TokenNotFound` | unknown token index or address |
-| 5 | `MetadataAlreadySet` | _(deprecated — retained for ABI compatibility; no longer returned by `set_metadata`)_ |
-| 6 | `AlreadyInitialized` | double-initialize attempt |
-| 7 | `BurnAmountExceedsBalance` | `burn` > balance |
-| 8 | `BurnNotEnabled` | burning on a token that has been disabled |
-| 9 | `InvalidBurnAmount` | zero or negative burn |
-| 10 | `ContractPaused` | operation blocked because factory is paused |
-| 11 | `Reentrancy` | concurrent reentrant call detected |
-| 12 | `ArithmeticOverflow` | checked-op failed |
-| 13 | `StateNotFound` | factory not yet initialized |
-| 14 | `InvalidTokenParams` | name/symbol validation failed during token creation |
-| 15 | `InvalidDecimals` | decimals outside `[0, 18]` |
-| 16 | `MaxSupplyExceeded` | mint would exceed cap |
-| 17 | `InvalidFeeSplit` | `set_fee_split` map bps do not sum to 10_000 |
-| 18 | `TooManyFeeSplitRecipients` | `set_fee_split` map has more than `MAX_FEE_SPLIT_RECIPIENTS` (10) recipients |
-| 19 | `AlreadyBackfilled` | `backfill_capped_supply` already applied for this token |
-| 20 | `NotWhitelisted` | creator is not on the whitelist when enforcement is enabled |
-| 21 | `InvalidMetadataUri` | URI is empty, missing `ipfs://` prefix, exceeds 128 bytes, or has no CID |
-| 22 | `ZeroFeeSplitEntry` | `set_fee_split` map contains an entry with `bps == 0` |
-| 23 | `MetadataFrozen` | metadata is frozen (via `freeze_metadata` or auto-freeze after max updates) |
+| Code | Symbol                      | When                                                                                  |
+| ---- | --------------------------- | ------------------------------------------------------------------------------------- |
+| 1    | `InsufficientFee`           | `fee_payment < required_fee`                                                          |
+| 2    | `Unauthorized`              | caller is not allowed for this operation                                              |
+| 3    | `InvalidParameters`         | argument out of range or malformed                                                    |
+| 4    | `TokenNotFound`             | unknown token index or address                                                        |
+| 5    | `MetadataAlreadySet`        | _(deprecated — retained for ABI compatibility; no longer returned by `set_metadata`)_ |
+| 6    | `AlreadyInitialized`        | double-initialize attempt                                                             |
+| 7    | `BurnAmountExceedsBalance`  | `burn` > balance                                                                      |
+| 8    | `BurnNotEnabled`            | burning on a token that has been disabled                                             |
+| 9    | `InvalidBurnAmount`         | zero or negative burn                                                                 |
+| 10   | `ContractPaused`            | operation blocked because factory is paused                                           |
+| 11   | `Reentrancy`                | concurrent reentrant call detected                                                    |
+| 12   | `ArithmeticOverflow`        | checked-op failed                                                                     |
+| 13   | `StateNotFound`             | factory not yet initialized                                                           |
+| 14   | `InvalidTokenParams`        | name/symbol validation failed during token creation                                   |
+| 15   | `InvalidDecimals`           | decimals outside `[0, 18]`                                                            |
+| 16   | `MaxSupplyExceeded`         | mint would exceed cap                                                                 |
+| 17   | `InvalidFeeSplit`           | `set_fee_split` map bps do not sum to 10_000                                          |
+| 18   | `TooManyFeeSplitRecipients` | `set_fee_split` map has more than `MAX_FEE_SPLIT_RECIPIENTS` (10) recipients          |
+| 19   | `AlreadyBackfilled`         | `backfill_capped_supply` already applied for this token                               |
+| 20   | `NotWhitelisted`            | creator is not on the whitelist when enforcement is enabled                           |
+| 21   | `InvalidMetadataUri`        | URI is empty, missing `ipfs://` prefix, exceeds 128 bytes, or has no CID              |
+| 22   | `ZeroFeeSplitEntry`         | `set_fee_split` map contains an entry with `bps == 0`                                 |
+| 23   | `MetadataFrozen`            | metadata is frozen (via `freeze_metadata` or auto-freeze after max updates)           |
 
 ## Events
 
 The contract emits Soroban events on a `(factory, action)` topic. The frontend parses them via `frontend/src/services/stellar-impl.ts`. Events:
 
-| Action    | Payload                                  | Trigger                                |
-| --------- | ---------------------------------------- | -------------------------------------- |
-| `init`    | `(admin)`                                | `initialize`                           |
-| `init`    | `(admin)`                                | `__constructor`                        |
-| `created` | `(token_address, creator, name, symbol)` | `create_token` / `create_tokens_batch` |
-| `meta` | `(token_address, metadata_uri, version)` | `set_metadata` (every update) |
-| `meta_frz` | `(token_address, admin)` | `freeze_metadata` |
-| `mint` | `(token_address, to, amount)` | `mint_tokens` |
-| `burn` | `(token_address, from, amount)` | `burn` |
-| `fees` | `(base_fee, metadata_fee)` | `update_fees` |
-| `split_set` | `(admin, splits)` | `set_fee_split` (non-empty) |
-| `split_clr` | `(admin)` | `set_fee_split` (empty — clears split) |
-| `pause` | `(admin)` | `pause` |
-| `unpause` | `(admin)` | `unpause` |
-| `adm_upd` | `(current_admin, new_admin)` | `update_admin` |
-| `wl_add` | `(address)` | `add_to_whitelist` |
-| `wl_rm` | `(address)` | `remove_from_whitelist` |
-| `wl_tog` | `(enabled)` | `set_whitelist_enabled` |
+| Action      | Payload                                  | Trigger                                |
+| ----------- | ---------------------------------------- | -------------------------------------- |
+| `init`      | `(admin)`                                | `initialize`                           |
+| `init`      | `(admin)`                                | `__constructor`                        |
+| `created`   | `(token_address, creator, name, symbol)` | `create_token` / `create_tokens_batch` |
+| `meta`      | `(token_address, metadata_uri, version)` | `set_metadata` (every update)          |
+| `meta_frz`  | `(token_address, admin)`                 | `freeze_metadata`                      |
+| `mint`      | `(token_address, to, amount)`            | `mint_tokens`                          |
+| `burn`      | `(token_address, from, amount)`          | `burn`                                 |
+| `fees`      | `(base_fee, metadata_fee)`               | `update_fees`                          |
+| `split_set` | `(admin, splits)`                        | `set_fee_split` (non-empty)            |
+| `split_clr` | `(admin)`                                | `set_fee_split` (empty — clears split) |
+| `pause`     | `(admin)`                                | `pause`                                |
+| `unpause`   | `(admin)`                                | `unpause`                              |
+| `adm_upd`   | `(current_admin, new_admin)`             | `update_admin`                         |
+| `wl_add`    | `(address)`                              | `add_to_whitelist`                     |
+| `wl_rm`     | `(address)`                              | `remove_from_whitelist`                |
+| `wl_tog`    | `(enabled)`                              | `set_whitelist_enabled`                |
 
 ## Batch creation UI
 

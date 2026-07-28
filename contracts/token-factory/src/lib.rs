@@ -1161,20 +1161,36 @@ impl TokenFactory {
             return Err(Error::InvalidBurnAmount);
         }
 
+        // Trust boundary: the factory must only ever invoke token contracts it
+        // deployed. `token_address` MUST resolve to a registered factory token
+        // *before* we touch it — otherwise `burn` would act as an open proxy,
+        // letting anyone point the factory at an arbitrary contract, have it
+        // invoke that contract (running attacker code with the factory as the
+        // caller) and emit an official-looking factory `burn` event referencing
+        // a token the factory never created — polluting the indexed history the
+        // Transaction History view renders. Holders of external (non-factory)
+        // tokens can always burn directly on those contracts; there is no
+        // legitimate factory-burn path for them, so an unregistered address is
+        // an error, not a pass-through.
+        //
+        // The lookup is performed before any external call (including
+        // `balance`), so an unregistered address is rejected without the
+        // factory ever invoking it. Making the lookup mandatory also makes the
+        // `burn_enabled` gate unconditional: no code path reaches the burn call
+        // without having verified the flag.
+        let index: u32 =
+            Self::migrate_addr_keyed(&env, &DataKey::TokenIndex(token_address.clone()))
+                .ok_or(Error::TokenNotFound)?;
+        let info: TokenInfo = Self::migrate_addr_keyed(&env, &DataKey::TokenInfo(index))
+            .ok_or(Error::TokenNotFound)?;
+        if !info.burn_enabled {
+            return Err(Error::Unauthorized);
+        }
+
         let token = token::TokenClient::new(&env, &token_address);
         let balance = token.balance(&from);
         if amount > balance {
             return Err(Error::BurnAmountExceedsBalance);
-        }
-
-        if let Some(index) =
-            Self::migrate_addr_keyed::<_, u32>(&env, &DataKey::TokenIndex(token_address.clone()))
-        {
-            let info: TokenInfo = Self::migrate_addr_keyed(&env, &DataKey::TokenInfo(index))
-                .ok_or(Error::TokenNotFound)?;
-            if !info.burn_enabled {
-                return Err(Error::Unauthorized);
-            }
         }
 
         // Acquire the reentrancy lock before the external burn call.

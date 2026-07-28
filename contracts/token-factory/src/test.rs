@@ -4,7 +4,7 @@ extern crate std;
 
 use super::*;
 use soroban_sdk::{
-    testutils::Address as _,
+    testutils::{Address as _, Events as _},
     token::{StellarAssetClient, TokenClient},
     Address, BytesN, Env, Map, String,
 };
@@ -127,6 +127,26 @@ fn test_initialize() {
     assert_eq!(state.metadata_fee, 500);
     assert!(!state.paused);
     assert_eq!(state.token_count, 0);
+}
+
+/// Number of events the factory contract itself emitted during the **most
+/// recent** contract invocation (soroban's test env reports events per
+/// invocation, not cumulatively). Events emitted by the token contracts
+/// (transfer/burn under *their* own address) are excluded by
+/// `filter_by_contract`.
+///
+/// Call this immediately after the `burn`/`try_burn` under test, before any
+/// other contract call (a later `balance()` read would reset the reported
+/// events to that read's invocation). Used to prove the trust-boundary
+/// invariant: a rejected burn emits no factory event, and a successful factory
+/// burn emits exactly one.
+fn factory_event_count(s: &Setup) -> usize {
+    s.env
+        .events()
+        .all()
+        .filter_by_contract(&s.client.address)
+        .events()
+        .len()
 }
 
 #[test]
@@ -1150,6 +1170,158 @@ fn test_set_burn_enabled_unauthorized() {
         s.client
             .try_set_burn_enabled(&token_addr, &stranger, &false),
         Err(Ok(Error::Unauthorized))
+    );
+}
+
+// ── burn trust boundary (issue #1021) ─────────────────────────────────────────
+//
+// `burn` must only ever act on tokens the factory deployed. An address that was
+// never registered with the factory must be rejected with `TokenNotFound`
+// *before* the factory makes any cross-contract call to it — otherwise `burn`
+// is an open proxy that lets anyone make the factory invoke an arbitrary
+// contract and emit an official-looking `burn` event for it.
+
+/// A never-registered address cannot be burned through the factory, even when
+/// the caller genuinely holds a balance of that (external) token. The factory
+/// rejects it with `TokenNotFound` and emits no `burn` event referencing it.
+#[test]
+fn test_burn_unregistered_token_fails() {
+    let s = Setup::new();
+    let holder = Address::generate(&s.env);
+    // A real token contract that the factory did NOT deploy.
+    let external = s.new_token(&holder);
+    StellarAssetClient::new(&s.env, &external).mint(&holder, &1_000);
+
+    assert_eq!(
+        s.client.try_burn(&external, &holder, &100),
+        Err(Ok(Error::TokenNotFound))
+    );
+    // No factory event was emitted (checked before any other invocation).
+    assert_eq!(factory_event_count(&s), 0, "no factory event on reject");
+    // The external balance is untouched.
+    assert_eq!(TokenClient::new(&s.env, &external).balance(&holder), 1_000);
+}
+
+/// A registered `TokenIndex` whose `TokenInfo` entry is missing must surface as
+/// `TokenNotFound` from `burn` rather than proceeding to the external call.
+#[test]
+fn test_burn_registered_index_missing_info_fails() {
+    let s = Setup::new();
+    let holder = Address::generate(&s.env);
+    let token_addr = s.new_token(&holder);
+    StellarAssetClient::new(&s.env, &token_addr).mint(&holder, &1_000);
+    s.env.as_contract(&s.client.address, || {
+        s.env
+            .storage()
+            .instance()
+            .set(&DataKey::TokenIndex(token_addr.clone()), &99u32);
+    });
+    assert_eq!(
+        s.client.try_burn(&token_addr, &holder, &100),
+        Err(Ok(Error::TokenNotFound))
+    );
+    assert_eq!(factory_event_count(&s), 0, "no factory event on reject");
+}
+
+/// A factory `burn` event is only ever emitted for a factory token: burning a
+/// registered token emits exactly one new factory event, while an interleaved
+/// attempt on an unregistered address adds none.
+#[test]
+fn test_burn_event_only_emitted_for_factory_token() {
+    let s = Setup::new();
+    let creator = Address::generate(&s.env);
+    let factory_token = seed_token(&s, &creator, true, None);
+    let burner = Address::generate(&s.env);
+    StellarAssetClient::new(&s.env, &factory_token).mint(&burner, &1_000);
+
+    // A never-registered external token the caller also holds.
+    let external = s.new_token(&burner);
+    StellarAssetClient::new(&s.env, &external).mint(&burner, &1_000);
+
+    // Attempt on the unregistered token → rejected, no factory event emitted.
+    assert_eq!(
+        s.client.try_burn(&external, &burner, &100),
+        Err(Ok(Error::TokenNotFound))
+    );
+    assert_eq!(
+        factory_event_count(&s),
+        0,
+        "unregistered token must not produce a factory event"
+    );
+
+    // Successful burn on the factory token → exactly one factory event, and it
+    // is emitted for the factory token (the only factory call in this frame).
+    s.client.burn(&factory_token, &burner, &400);
+    assert_eq!(
+        factory_event_count(&s),
+        1,
+        "factory burn must emit exactly one factory event"
+    );
+    assert_eq!(
+        TokenClient::new(&s.env, &factory_token).balance(&burner),
+        600
+    );
+}
+
+/// `burn_enabled = false` blocks burning for a factory token with no bypass:
+/// balance is untouched and no burn event is emitted.
+#[test]
+fn test_burn_disabled_no_bypass() {
+    let s = Setup::new();
+    let creator = Address::generate(&s.env);
+    let token_addr = seed_token(&s, &creator, false, None);
+    let burner = Address::generate(&s.env);
+    StellarAssetClient::new(&s.env, &token_addr).mint(&burner, &500);
+
+    assert_eq!(
+        s.client.try_burn(&token_addr, &burner, &100),
+        Err(Ok(Error::Unauthorized))
+    );
+    assert_eq!(factory_event_count(&s), 0, "no factory event on reject");
+    assert_eq!(TokenClient::new(&s.env, &token_addr).balance(&burner), 500);
+}
+
+// ── trust boundary for the owner-gated entrypoints (issue #1021) ──────────────
+//
+// mint_tokens / set_metadata / set_burn_enabled already gate on the per-token
+// owner key and reject unknown tokens; these tests lock that invariant in so a
+// future refactor cannot silently reopen the boundary.
+
+#[test]
+fn test_mint_tokens_unregistered_token_fails() {
+    let s = Setup::new();
+    let admin = Address::generate(&s.env);
+    let external = s.new_token(&admin);
+    let to = Address::generate(&s.env);
+    s.fund(&admin, 10_000);
+    assert_eq!(
+        s.client
+            .try_mint_tokens(&external, &admin, &to, &100, &1_000),
+        Err(Ok(Error::TokenNotFound))
+    );
+}
+
+#[test]
+fn test_set_metadata_unregistered_token_fails() {
+    let s = Setup::new();
+    let admin = Address::generate(&s.env);
+    let external = s.new_token(&admin);
+    s.fund(&admin, 10_000);
+    let uri = String::from_str(&s.env, "ipfs://bafyunregistered");
+    assert_eq!(
+        s.client.try_set_metadata(&external, &admin, &uri, &1_000),
+        Err(Ok(Error::TokenNotFound))
+    );
+}
+
+#[test]
+fn test_set_burn_enabled_unregistered_token_fails() {
+    let s = Setup::new();
+    let admin = Address::generate(&s.env);
+    let external = s.new_token(&admin);
+    assert_eq!(
+        s.client.try_set_burn_enabled(&external, &admin, &false),
+        Err(Ok(Error::TokenNotFound))
     );
 }
 
