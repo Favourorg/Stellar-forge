@@ -108,13 +108,34 @@ This matters because clients conventionally pad `fee_payment` above the currentl
 
 **Fee-update race:** if the admin raises the required fee between when a caller signs a transaction and when it lands, and the caller's `fee_payment` no longer covers the new fee, the call fails cleanly with `Error::InsufficientFee` and **no** value moves — not at the old rate, not at the new rate, not partially. The fee-gate check happens before any transfer.
 
-### `create_token(creator, salt, name, symbol, decimals, initial_supply, fee_payment)`
+### `create_token(creator, salt, name, symbol, decimals, initial_supply, max_supply, fee_payment)`
 
 Deploy a new token contract under the factory. Requires `fee_payment >= base_fee`; charges exactly `base_fee`. Returns the deployed contract address.
 
+| Param            | Type            | Description                                                                                                   |
+| ---------------- | --------------- | ------------------------------------------------------------------------------------------------------------ |
+| `creator`        | `Address`       | Token creator; must authorize the call and pays the fee.                                                     |
+| `salt`           | `BytesN<32>`    | Deterministic-deploy salt.                                                                                    |
+| `name`           | `String`        | 1–32 bytes.                                                                                                   |
+| `symbol`         | `String`        | 1–12 bytes.                                                                                                   |
+| `decimals`       | `u32`           | 0–18.                                                                                                         |
+| `initial_supply` | `i128`          | Amount minted to `creator` at creation. **Must be ≥ 0** (`0` mints nothing).                                  |
+| `max_supply`     | `Option<i128>`  | Optional supply cap. `Some(cap)` requires `cap > 0` and `cap >= initial_supply`; `None` creates an uncapped token. |
+| `fee_payment`    | `i128`          | Caller-authorized fee upper bound (see fee semantics above).                                                  |
+
+> **ABI change (issue #1022):** `initial_supply` was widened/retyped from `u128` to **`i128`** (matching the SDK's `mint` signature and the batch path), and the **`max_supply: Option<i128>`** parameter was added so single-token creation can cap supply with the same Issue #1006 accounting as the batch path. This changes the on-chain argument list; the frontend wrapper (`frontend/src/services/stellar.ts → deployToken`) was updated in the same change.
+
+The single (`create_token`) and batch (`create_tokens_batch`) paths share one validation routine and one bookkeeping routine, so a given invalid parameter set is rejected with the **same error code** on either path:
+
+| Fault | Error |
+| --- | --- |
+| `name` empty or > 32 bytes, or `symbol` empty or > 12 bytes | `Error::InvalidTokenParams` |
+| `decimals` > 18 | `Error::InvalidDecimals` |
+| `initial_supply` < 0, or `max_supply` ≤ 0, or `max_supply` < `initial_supply` | `Error::InvalidParameters` |
+
 ### `create_tokens_batch(creator, tokens, fee_payment)`
 
-Atomically deploy `tokens` (a `Vec<BatchTokenParams>`). Requires `fee_payment >= base_fee * tokens.len()`; charges exactly `base_fee * tokens.len()`. All parameter validation (name, symbol, decimals, initial supply, and total `token_count` arithmetic overflow checks) is front-loaded before any contract deployment or state locking begins. Furthermore, Soroban's per-invocation transaction atomicity guarantees that if any failure or host error occurs during execution, all state changes, sub-token deployments, and supply mints within the transaction are completely reverted at the ledger level.
+Atomically deploy `tokens` (a `Vec<BatchTokenParams>`, each with the same `name`/`symbol`/`decimals`/`initial_supply`/`max_supply` fields validated identically to `create_token`). Requires `fee_payment >= base_fee * tokens.len()`; charges exactly `base_fee * tokens.len()`. All parameter validation (name, symbol, decimals, initial supply, `max_supply`, and total `token_count` arithmetic overflow checks) is front-loaded before any contract deployment or state locking begins, using the same shared `validate_token_params` routine as the single path — so the two entrypoints accept and reject exactly the same parameter sets with the same error codes. Furthermore, Soroban's per-invocation transaction atomicity guarantees that if any failure or host error occurs during execution, all state changes, sub-token deployments, and supply mints within the transaction are completely reverted at the ledger level.
 
 #### Batch size limits and resource costs
 
@@ -156,9 +177,9 @@ Mint `amount` of `token_address` to `to`. Requires `fee_payment >= base_fee`; ch
 
 #### Supply cap accounting
 
-`max_supply` (set per-token via `create_tokens_batch`'s `BatchTokenParams.max_supply`) is enforced against a running counter stored under the persistent key `(token_address, "supply")`, not against the token's live balance. Every successful `mint_tokens` call adds `amount` to this counter and rejects the call if the result would exceed the cap.
+`max_supply` (set per-token via `create_token`'s `max_supply` argument or `create_tokens_batch`'s `BatchTokenParams.max_supply`) is enforced against a running counter stored under the persistent key `(token_address, "supply")`, not against the token's live balance. Every successful `mint_tokens` call adds `amount` to this counter and rejects the call if the result would exceed the cap.
 
-**What counts toward the cap:** the token's `initial_supply` (minted at creation, before the token even has a `TokenInfo` entry to check against) **plus** every amount minted afterward via `mint_tokens`. As of the fix for issue #1006, `deploy_one` seeds the counter with `initial_supply` at creation time whenever `max_supply` is set, so a token created with `initial_supply == max_supply` can never be minted again — any `mint_tokens` call on it fails with `MaxSupplyExceeded`.
+**What counts toward the cap:** the token's `initial_supply` (minted at creation, before the token even has a `TokenInfo` entry to check against) **plus** every amount minted afterward via `mint_tokens`. As of the fix for issue #1006, the shared `record_token` routine (used by both creation paths) seeds the counter with `initial_supply` at creation time whenever `max_supply` is set, so a token created with `initial_supply == max_supply` can never be minted again — any `mint_tokens` call on it fails with `MaxSupplyExceeded`.
 
 `burn` does **not** decrement this counter — burning tokens frees up balance for the holder but does not restore headroom under the cap. The cap therefore bounds _cumulative_ mints (initial + all `mint_tokens` calls), not net circulating supply.
 

@@ -243,7 +243,7 @@ The authoritative, field-by-field reference — including parameter tables, ever
 
 ### Token Lifecycle
 
-- `create_token(creator, salt, name, symbol, decimals, initial_supply, fee_payment)`: Deploy a single new token contract at a deterministic `(creator, salt)` address; optionally mint `initial_supply` to `creator`.
+- `create_token(creator, salt, name, symbol, decimals, initial_supply, max_supply, fee_payment)`: Deploy a single new token contract at a deterministic `(creator, salt)` address; optionally mint `initial_supply` to `creator`, and optionally cap total supply with `max_supply` (`Option<i128>`). Single-token creation shares one validation and bookkeeping routine with the batch path, so both accept/reject identical parameters with identical error codes and enforce `max_supply` with the same accounting (issue #1022).
 - `create_tokens_batch(creator, tokens, fee_payment)`: Atomically deploy a `Vec<BatchTokenParams>` (each with its own name/symbol/decimals/initial_supply and optional `max_supply` cap) in one transaction. `fee_payment` must cover `base_fee * tokens.len()`; a failure partway through the batch aborts the whole call.
 - `mint_tokens(token_address, admin, to, amount, fee_payment)`: Mint additional supply. Only the token's original creator may call this. Rejected with `MaxSupplyExceeded` if the token was created with a `max_supply` cap that minting would exceed.
 - `burn(token_address, from, amount)`: Burn `amount` from the caller's own balance. Honors the token's `burn_enabled` flag; ignores the factory-wide pause.

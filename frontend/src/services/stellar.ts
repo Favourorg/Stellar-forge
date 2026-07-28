@@ -29,6 +29,7 @@ export class StellarService {
     symbol: string
     decimals: number
     initialSupply: string
+    maxSupply?: string | null
     salt: string
     feePayment: string
   }) {

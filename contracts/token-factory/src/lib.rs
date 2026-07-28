@@ -622,7 +622,8 @@ impl TokenFactory {
         name: String,
         symbol: String,
         decimals: u32,
-        initial_supply: u128,
+        initial_supply: i128,
+        max_supply: Option<i128>,
         fee_payment: i128,
     ) -> Result<Address, Error> {
         Self::require_not_paused(&env)?;
@@ -633,18 +634,43 @@ impl TokenFactory {
         if state.locked {
             return Err(Error::Reentrancy);
         }
+
+        // Validate up-front — before any state mutation, lock, or fee charge —
+        // using the same shared routine and the same ordering as
+        // `create_tokens_batch`, so both paths reject identical inputs with
+        // identical error codes.
+        Self::validate_token_params(&name, &symbol, decimals, initial_supply, max_supply)?;
+
+        if fee_payment < state.base_fee {
+            return Err(Error::InsufficientFee);
+        }
+
+        // Whitelist gate: when enabled, only whitelisted addresses may create tokens.
+        if state.whitelist_enabled {
+            let wl_key = Self::whitelist_key(&creator);
+            let is_wl: bool = env.storage().instance().get(&wl_key).unwrap_or(false);
+            if !is_wl {
+                return Err(Error::NotWhitelisted);
+            }
+        }
+
+        // Fail fast if token count would overflow before charging any fee.
+        if state.token_count.checked_add(1).is_none() {
+            return Err(Error::ArithmeticOverflow);
+        }
+
         state.locked = true;
         Self::save_state(&env, &state);
 
         let result = Self::create_token_inner(
             &env,
-            creator,
+            &creator,
             salt,
             name,
             symbol,
             decimals,
             initial_supply,
-            fee_payment,
+            max_supply,
             &mut state,
         );
 
@@ -657,76 +683,111 @@ impl TokenFactory {
     #[allow(clippy::too_many_arguments)]
     fn create_token_inner(
         env: &Env,
-        creator: Address,
+        creator: &Address,
         salt: BytesN<32>,
         name: String,
         symbol: String,
         decimals: u32,
-        initial_supply: u128,
-        fee_payment: i128,
+        initial_supply: i128,
+        max_supply: Option<i128>,
         state: &mut FactoryState,
     ) -> Result<Address, Error> {
-        if name.is_empty() || name.len() > 32 {
-            state.locked = false;
-            return Err(Error::InvalidTokenParams);
-        }
-        if symbol.is_empty() || symbol.len() > 12 {
-            state.locked = false;
-            return Err(Error::InvalidTokenParams);
-        }
-        if decimals > 18 {
-            state.locked = false;
-            return Err(Error::InvalidParameters);
-        }
-        if fee_payment < state.base_fee {
-            state.locked = false;
-            return Err(Error::InsufficientFee);
-        }
-        // Whitelist gate: when enabled, only whitelisted addresses may create tokens.
-        if state.whitelist_enabled {
-            let wl_key = Self::whitelist_key(&creator);
-            let is_wl: bool = env.storage().instance().get(&wl_key).unwrap_or(false);
-            if !is_wl {
-                state.locked = false;
-                return Err(Error::NotWhitelisted);
-            }
-        }
-        // initial_supply is u128 but token::mint accepts i128.
-        // Values > i128::MAX silently wrap via `as i128`; reject them early.
-        if initial_supply > i128::MAX as u128 {
-            state.locked = false;
-            return Err(Error::InvalidParameters);
-        }
-        // Fail fast if token count would overflow
-        if state.token_count.checked_add(1).is_none() {
-            state.locked = false;
-            return Err(Error::ArithmeticOverflow);
-        }
-        // Guard: u128 values above i128::MAX would wrap silently to a negative
-        // number when cast to i128, allowing a negative mint.  Reject them
-        // with InvalidParameters before the cast so the invariant
-        // "minted supply ≥ 0" is always upheld.
-        if initial_supply > i128::MAX as u128 {
-            state.locked = false;
-            return Err(Error::InvalidParameters);
-        }
-
         // Charge exactly `base_fee` — `fee_payment` is only the caller's
         // authorized upper bound (see issue #1008), so any surplus above
         // the required fee is never transferred.
-        Self::distribute_fee(env, state, &creator, state.base_fee)?;
+        Self::distribute_fee(env, state, creator, state.base_fee)?;
 
+        Self::record_token(
+            env,
+            creator,
+            salt,
+            name,
+            symbol,
+            decimals,
+            initial_supply,
+            max_supply,
+            state,
+        )
+    }
+
+    /// Validate the user-supplied parameters for a single token. Shared by
+    /// both `create_token` and `create_tokens_batch` so the two paths accept
+    /// and reject exactly the same inputs with exactly the same error codes.
+    ///
+    /// Error codes — one per fault class, identical across both paths:
+    /// - name empty or > 32 bytes, or symbol empty or > 12 bytes →
+    ///   `InvalidTokenParams`
+    /// - decimals > 18 → `InvalidDecimals`
+    /// - initial_supply < 0, or a `max_supply` that is ≤ 0 or below
+    ///   `initial_supply` → `InvalidParameters`
+    fn validate_token_params(
+        name: &String,
+        symbol: &String,
+        decimals: u32,
+        initial_supply: i128,
+        max_supply: Option<i128>,
+    ) -> Result<(), Error> {
+        if name.is_empty() || name.len() > 32 {
+            return Err(Error::InvalidTokenParams);
+        }
+        if symbol.is_empty() || symbol.len() > 12 {
+            return Err(Error::InvalidTokenParams);
+        }
+        if decimals > 18 {
+            return Err(Error::InvalidDecimals);
+        }
+        if initial_supply < 0 {
+            return Err(Error::InvalidParameters);
+        }
+        if let Some(cap) = max_supply {
+            if cap <= 0 || initial_supply > cap {
+                return Err(Error::InvalidParameters);
+            }
+        }
+        Ok(())
+    }
+
+    /// Deploy one token contract and write all of its factory bookkeeping.
+    /// Shared by both creation paths so the on-chain record is byte-for-byte
+    /// identical regardless of which entrypoint created the token.
+    ///
+    /// Assumes parameters have already passed `validate_token_params` and that
+    /// the caller holds the reentrancy lock. Bumps `token_count`, mints
+    /// `initial_supply` to the creator, seeds the tracked-supply counter for
+    /// capped tokens (issue #1006), writes `TokenInfo`/`TokenIndex`/owner,
+    /// appends to the creator's page, and emits the `created` event.
+    #[allow(clippy::too_many_arguments)]
+    fn record_token(
+        env: &Env,
+        creator: &Address,
+        salt: BytesN<32>,
+        name: String,
+        symbol: String,
+        decimals: u32,
+        initial_supply: i128,
+        max_supply: Option<i128>,
+        state: &mut FactoryState,
+    ) -> Result<Address, Error> {
         let token_address = env
             .deployer()
             .with_address(creator.clone(), salt)
             .deploy(state.token_wasm_hash.clone());
 
-        TokenInitClient::new(env, &token_address).initialize(&creator, &decimals, &name, &symbol);
+        TokenInitClient::new(env, &token_address).initialize(creator, &decimals, &name, &symbol);
 
         if initial_supply > 0 {
-            // Safe: value is guaranteed ≤ i128::MAX by the guard above.
-            token::StellarAssetClient::new(env, &token_address)
-                .mint(&creator, &(initial_supply as i128));
+            token::StellarAssetClient::new(env, &token_address).mint(creator, &initial_supply);
+        }
+
+        // Seed the tracked-supply counter with `initial_supply` so
+        // `mint_tokens`'s cap check accounts for tokens already minted at
+        // creation time. Without this, a capped token created with
+        // `initial_supply == max_supply` could still be minted for another
+        // full `max_supply`, since the counter (which `mint_tokens` reads via
+        // `.unwrap_or(0)`) would otherwise start at zero (issue #1006).
+        if max_supply.is_some() {
+            let supply_key = (&token_address, symbol_short!("supply"));
+            Self::set_persistent(env, &supply_key, &initial_supply);
         }
 
         state.token_count = state
@@ -747,95 +808,7 @@ impl TokenFactory {
                 creator: creator.clone(),
                 created_at: env.ledger().timestamp(),
                 burn_enabled: true,
-                max_supply: None,
-            },
-        );
-
-        Self::append_creator_token(env, &creator, index)?;
-
-        Self::set_persistent(env, &DataKey::TokenIndex(token_address.clone()), &index);
-        Self::set_persistent(env, &(&token_address, symbol_short!("owner")), &creator);
-
-        env.events().publish(
-            (symbol_short!("factory"), symbol_short!("created")),
-            (token_address.clone(), creator, token_name, token_symbol),
-        );
-        Ok(token_address)
-    }
-
-    fn validate_batch_params(p: &BatchTokenParams) -> Result<(), Error> {
-        if p.name.is_empty() || p.name.len() > 32 {
-            return Err(Error::InvalidParameters);
-        }
-        if p.symbol.is_empty() || p.symbol.len() > 12 {
-            return Err(Error::InvalidParameters);
-        }
-        if p.decimals > 18 {
-            return Err(Error::InvalidParameters);
-        }
-        if p.initial_supply < 0 {
-            return Err(Error::InvalidParameters);
-        }
-        if let Some(cap) = p.max_supply {
-            if cap <= 0 || p.initial_supply > cap {
-                return Err(Error::InvalidParameters);
-            }
-        }
-        Ok(())
-    }
-
-    fn deploy_one(
-        env: &Env,
-        creator: &Address,
-        p: BatchTokenParams,
-        state: &mut FactoryState,
-    ) -> Result<Address, Error> {
-        let token_address = env
-            .deployer()
-            .with_address(creator.clone(), p.salt)
-            .deploy(state.token_wasm_hash.clone());
-
-        TokenInitClient::new(env, &token_address).initialize(
-            creator,
-            &p.decimals,
-            &p.name,
-            &p.symbol,
-        );
-
-        if p.initial_supply > 0 {
-            token::StellarAssetClient::new(env, &token_address).mint(creator, &p.initial_supply);
-        }
-
-        // Seed the tracked-supply counter with `initial_supply` so `mint_tokens`'s
-        // cap check accounts for tokens already minted at creation time.
-        // Without this, a capped token created with `initial_supply == max_supply`
-        // could still be minted for another full `max_supply`, since the counter
-        // (which `mint_tokens` reads via `.unwrap_or(0)`) would otherwise start
-        // at zero regardless of how much was minted here (issue #1006).
-        if p.max_supply.is_some() {
-            let supply_key = (&token_address, symbol_short!("supply"));
-            Self::set_persistent(env, &supply_key, &p.initial_supply);
-        }
-
-        state.token_count = state
-            .token_count
-            .checked_add(1)
-            .ok_or(Error::ArithmeticOverflow)?;
-        let index = state.token_count;
-
-        let token_name = p.name.clone();
-        let token_symbol = p.symbol.clone();
-        Self::set_persistent(
-            env,
-            &DataKey::TokenInfo(index),
-            &TokenInfo {
-                name: p.name,
-                symbol: p.symbol,
-                decimals: p.decimals,
-                creator: creator.clone(),
-                created_at: env.ledger().timestamp(),
-                burn_enabled: true,
-                max_supply: p.max_supply,
+                max_supply,
             },
         );
 
@@ -880,7 +853,13 @@ impl TokenFactory {
         }
 
         for p in tokens.iter() {
-            Self::validate_batch_params(&p)?;
+            Self::validate_token_params(
+                &p.name,
+                &p.symbol,
+                p.decimals,
+                p.initial_supply,
+                p.max_supply,
+            )?;
         }
 
         // Front-load token count overflow check for the entire batch before any deployment happens.
@@ -914,7 +893,17 @@ impl TokenFactory {
         // or Err occurs during deployment or fee transfer, the entire invocation transaction
         // (including all deployed sub-tokens, storage updates, and mints) is automatically reverted.
         for p in tokens.into_iter() {
-            let addr = Self::deploy_one(&env, &creator, p, &mut state)?;
+            let addr = Self::record_token(
+                &env,
+                &creator,
+                p.salt,
+                p.name,
+                p.symbol,
+                p.decimals,
+                p.initial_supply,
+                p.max_supply,
+                &mut state,
+            )?;
             addresses.push_back(addr);
         }
 
@@ -1414,7 +1403,7 @@ impl TokenFactory {
 
         if on_chain_version < 2 {
             // Version 2: fixes the max-supply accounting bug (issue #1006) where
-            // `deploy_one` never seeded the tracked-supply counter with
+            // the creation path never seeded the tracked-supply counter with
             // `initial_supply`, letting a capped token be minted past its
             // advertised cap. This step only bumps the version marker — it does
             // NOT loop over every stored `TokenInfo`, because `token_count` is
@@ -1514,7 +1503,7 @@ impl TokenFactory {
     }
 
     /// One-time back-fill of the tracked-supply counter for a capped token
-    /// created before `deploy_one` began seeding it with `initial_supply`
+    /// created before the creation path began seeding it with `initial_supply`
     /// (issue #1006). See docs/contract-abi.md for the full procedure.
     ///
     /// `verified_supply` must be independently reconstructed off-chain — the

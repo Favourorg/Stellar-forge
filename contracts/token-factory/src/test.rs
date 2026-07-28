@@ -156,31 +156,18 @@ fn test_initialize_already_initialized() {
     assert!(result.is_err());
 }
 
-// ── supply boundary tests (issue #909) ───────────────────────────────────────
+// ── supply boundary tests (issue #909, updated for i128 ABI in #1022) ─────────
+//
+// `create_token`'s `initial_supply` is now `i128` (unified with the batch
+// path — issue #1022), so a value cannot be expressed above `i128::MAX`. The
+// "would wrap negative" hazard the earlier `u128` guards protected against is
+// now impossible to construct at the ABI boundary, and a genuinely negative
+// supply is rejected by the shared `validate_token_params` before any mint.
 
-/// u128 value just above i128::MAX wraps to a negative i128 without a guard.
-/// The fix must reject this with InvalidParameters before any mint occurs.
+/// A negative `initial_supply` is rejected with `InvalidParameters` before any
+/// mint occurs — matching the batch path exactly.
 #[test]
-fn test_create_token_supply_above_i128_max_rejected() {
-    let s = Setup::new();
-    let creator = Address::generate(&s.env);
-    s.fund(&creator, 1_000);
-    let overflow_supply: u128 = (i128::MAX as u128).saturating_add(1); // i128::MAX + 1
-    let result = s.client.try_create_token(
-        &creator,
-        &s.salt(0),
-        &String::from_str(&s.env, "MyToken"),
-        &String::from_str(&s.env, "MTK"),
-        &7,
-        &overflow_supply,
-        &1_000,
-    );
-    assert_eq!(result, Err(Ok(Error::InvalidParameters)));
-}
-
-/// u128::MAX is the largest possible overflow value — must also be rejected.
-#[test]
-fn test_create_token_supply_u128_max_rejected() {
+fn test_create_token_negative_supply_rejected() {
     let s = Setup::new();
     let creator = Address::generate(&s.env);
     s.fund(&creator, 1_000);
@@ -190,13 +177,33 @@ fn test_create_token_supply_u128_max_rejected() {
         &String::from_str(&s.env, "MyToken"),
         &String::from_str(&s.env, "MTK"),
         &7,
-        &u128::MAX,
+        &-1_i128,
+        &None,
         &1_000,
     );
     assert_eq!(result, Err(Ok(Error::InvalidParameters)));
 }
 
-/// i128::MAX is the largest value that fits exactly — must pass validation.
+/// `i128::MIN` is the most-negative supply — must also be rejected.
+#[test]
+fn test_create_token_min_supply_rejected() {
+    let s = Setup::new();
+    let creator = Address::generate(&s.env);
+    s.fund(&creator, 1_000);
+    let result = s.client.try_create_token(
+        &creator,
+        &s.salt(0),
+        &String::from_str(&s.env, "MyToken"),
+        &String::from_str(&s.env, "MTK"),
+        &7,
+        &i128::MIN,
+        &None,
+        &1_000,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidParameters)));
+}
+
+/// i128::MAX is the largest value that fits — must pass validation.
 /// The test will reach the deploy step and fail there because the hash is a
 /// dummy, but the error must NOT be InvalidParameters (supply is valid).
 #[test]
@@ -204,14 +211,14 @@ fn test_create_token_supply_i128_max_passes_validation() {
     let s = Setup::new();
     let creator = Address::generate(&s.env);
     s.fund(&creator, 1_000);
-    let max_valid: u128 = i128::MAX as u128;
     let result = s.client.try_create_token(
         &creator,
         &s.salt(0),
         &String::from_str(&s.env, "MyToken"),
         &String::from_str(&s.env, "MTK"),
         &7,
-        &max_valid,
+        &i128::MAX,
+        &None,
         &1_000,
     );
     // Supply is valid, so we must not get InvalidParameters.
@@ -233,7 +240,8 @@ fn test_create_token_supply_zero_passes_validation() {
         &String::from_str(&s.env, "MyToken"),
         &String::from_str(&s.env, "MTK"),
         &7,
-        &0_u128,
+        &0_i128,
+        &None,
         &1_000,
     );
     // Must not be rejected for supply reasons.
@@ -242,56 +250,43 @@ fn test_create_token_supply_zero_passes_validation() {
 
 // ── create_token (error paths only — deploy requires real wasm) ───────────────
 
-/// Regression test for initial_supply overflow when casting u128 → i128.
-/// Discovered via fuzz_targets::fuzz_create_token.
-///
-/// The `create_token` function accepts `initial_supply: u128` but internally
-/// casts it to `i128` with `as`. Values > i128::MAX silently wrap to negative
-/// numbers, which would then be passed to `token::mint`. This test locks in
-/// the fix: the contract MUST reject initial_supply > i128::MAX before the
-/// cast.
+/// A `max_supply` below `initial_supply` is rejected with `InvalidParameters`,
+/// identically to the batch path (single-path `max_supply` parity — #1022).
 #[test]
-fn test_create_token_initial_supply_exceeds_i128_max() {
+fn test_create_token_max_supply_below_initial_rejected() {
     let s = Setup::new();
     let creator = Address::generate(&s.env);
     s.fund(&creator, 1_000);
-    // i128::MAX = 170141183460469231731687303715884105727
-    // u128 value one greater than i128::MAX
-    let overflow_supply = (i128::MAX as u128).checked_add(1).unwrap();
     let result = s.client.try_create_token(
         &creator,
         &s.salt(0),
         &String::from_str(&s.env, "Token"),
         &String::from_str(&s.env, "TKN"),
         &7,
-        &overflow_supply,
+        &1_000_i128,
+        &Some(500_i128),
         &1_000,
     );
     assert_eq!(result, Err(Ok(Error::InvalidParameters)));
 }
 
-/// Value exactly at i128::MAX must be accepted.
+/// A non-positive `max_supply` cap is rejected with `InvalidParameters`.
 #[test]
-fn test_create_token_initial_supply_at_i128_max() {
+fn test_create_token_nonpositive_max_supply_rejected() {
     let s = Setup::new();
     let creator = Address::generate(&s.env);
     s.fund(&creator, 1_000);
-    // i128::MAX is the largest safe u128 → i128 value.
-    // The contract cannot deploy real WASM in tests, so inner deployment
-    // will fail with a host error — but the overflow guard must pass first.
-    let max_supply = i128::MAX as u128;
     let result = s.client.try_create_token(
         &creator,
         &s.salt(0),
         &String::from_str(&s.env, "Token"),
         &String::from_str(&s.env, "TKN"),
         &7,
-        &max_supply,
+        &0_i128,
+        &Some(0_i128),
         &1_000,
     );
-    // The overflow guard should NOT trigger — the error should be something
-    // other than InvalidParameters (deploy failure).
-    assert!(result != Err(Ok(Error::InvalidParameters)));
+    assert_eq!(result, Err(Ok(Error::InvalidParameters)));
 }
 
 #[test]
@@ -476,7 +471,8 @@ fn test_create_token_insufficient_fee() {
         &String::from_str(&s.env, "MyToken"),
         &String::from_str(&s.env, "MTK"),
         &7,
-        &0_u128,
+        &0_i128,
+        &None,
         &999,
     );
 
@@ -494,7 +490,8 @@ fn test_create_token_blocked_when_paused() {
         &String::from_str(&s.env, "T"),
         &String::from_str(&s.env, "T"),
         &7,
-        &0_u128,
+        &0_i128,
+        &None,
         &1_000,
     );
     assert_eq!(result, Err(Ok(Error::ContractPaused)));
@@ -511,10 +508,11 @@ fn test_create_token_invalid_decimals() {
         &String::from_str(&s.env, "MyToken"),
         &String::from_str(&s.env, "MTK"),
         &19,
-        &0_u128,
+        &0_i128,
+        &None,
         &1_000,
     );
-    assert_eq!(result, Err(Ok(Error::InvalidParameters)));
+    assert_eq!(result, Err(Ok(Error::InvalidDecimals)));
 }
 
 #[test]
@@ -528,10 +526,11 @@ fn test_create_token_invalid_decimals_large() {
         &String::from_str(&s.env, "MyToken"),
         &String::from_str(&s.env, "MTK"),
         &255,
-        &0_u128,
+        &0_i128,
+        &None,
         &1_000,
     );
-    assert_eq!(result, Err(Ok(Error::InvalidParameters)));
+    assert_eq!(result, Err(Ok(Error::InvalidDecimals)));
 }
 
 #[test]
@@ -545,7 +544,8 @@ fn test_create_token_invalid_name_empty() {
         &String::from_str(&s.env, ""),
         &String::from_str(&s.env, "MTK"),
         &7,
-        &0_u128,
+        &0_i128,
+        &None,
         &1_000,
     );
     assert_eq!(result, Err(Ok(Error::InvalidTokenParams)));
@@ -562,7 +562,8 @@ fn test_create_token_invalid_symbol_empty() {
         &String::from_str(&s.env, "MyToken"),
         &String::from_str(&s.env, ""),
         &7,
-        &0_u128,
+        &0_i128,
+        &None,
         &1_000,
     );
     assert_eq!(result, Err(Ok(Error::InvalidTokenParams)));
@@ -583,7 +584,8 @@ fn test_create_token_reentrancy_guard() {
         &String::from_str(&s.env, "T"),
         &String::from_str(&s.env, "T"),
         &7,
-        &0_u128,
+        &0_i128,
+        &None,
         &1_000,
     );
     assert_eq!(result, Err(Ok(Error::Reentrancy)));
@@ -605,7 +607,8 @@ fn test_create_token_overflow_protection() {
         &String::from_str(&s.env, "T"),
         &String::from_str(&s.env, "T"),
         &7,
-        &0_u128,
+        &0_i128,
+        &None,
         &1_000,
     );
     assert_eq!(result, Err(Ok(Error::ArithmeticOverflow)));
@@ -622,7 +625,8 @@ fn test_reentrancy_lock_released_after_error() {
         &String::from_str(&s.env, "T"),
         &String::from_str(&s.env, "T"),
         &7,
-        &0_u128,
+        &0_i128,
+        &None,
         &1,
     );
     s.env.as_contract(&s.client.address, || {
@@ -2365,8 +2369,135 @@ fn test_batch_invalid_name_rejects_entire_batch() {
     bad.name = String::from_str(&s.env, "");
     let params = batch_vec(&s, &[batch_param(&s, 1, "TokenA", "TKA"), bad]);
     let result = s.client.try_create_tokens_batch(&creator, &params, &2_000);
-    assert_eq!(result, Err(Ok(Error::InvalidParameters)));
+    // Empty name is an InvalidTokenParams fault — same code as the single path.
+    assert_eq!(result, Err(Ok(Error::InvalidTokenParams)));
     assert_eq!(s.client.get_state().token_count, 0);
+}
+
+// ── single-path / batch-path parity (issue #1022) ─────────────────────────────
+//
+// Both creation paths must accept and reject exactly the same parameter sets
+// with exactly the same error codes. The property test below drives both
+// entrypoints with identical, randomly generated parameters and asserts they
+// agree with each other and with a documented reference oracle.
+
+/// Build a soroban `String` of exactly `n` ASCII bytes.
+fn str_of_len(env: &Env, n: usize) -> String {
+    let rust: std::string::String = "a".repeat(n);
+    String::from_str(env, &rust)
+}
+
+/// Reference oracle: the canonical error code for a parameter set, per the
+/// documented validation rules shared by `create_token` and
+/// `create_tokens_batch`. `None` means the parameters are valid (validation
+/// passes; the call then proceeds to deployment).
+fn expected_param_error(
+    name_len: usize,
+    symbol_len: usize,
+    decimals: u32,
+    initial_supply: i128,
+    max_supply: Option<i128>,
+) -> Option<Error> {
+    if name_len == 0 || name_len > 32 {
+        return Some(Error::InvalidTokenParams);
+    }
+    if symbol_len == 0 || symbol_len > 12 {
+        return Some(Error::InvalidTokenParams);
+    }
+    if decimals > 18 {
+        return Some(Error::InvalidDecimals);
+    }
+    if initial_supply < 0 {
+        return Some(Error::InvalidParameters);
+    }
+    if let Some(cap) = max_supply {
+        if cap <= 0 || initial_supply > cap {
+            return Some(Error::InvalidParameters);
+        }
+    }
+    None
+}
+
+/// Extract the contract-level `Error` from a `try_*` result, or `None` if the
+/// call did not fail with a contract error (i.e. it validated successfully and
+/// then failed later — e.g. the dummy-WASM deploy trap surfaces as a host
+/// error, not a contract error).
+fn contract_err<T, C>(
+    r: Result<Result<T, C>, Result<Error, soroban_sdk::InvokeError>>,
+) -> Option<Error> {
+    match r {
+        Err(Ok(e)) => Some(e),
+        _ => None,
+    }
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig { cases: 48, ..proptest::prelude::ProptestConfig::default() })]
+
+    /// For every generated parameter set, `create_token` and
+    /// `create_tokens_batch` return the identical contract-error outcome, and
+    /// that outcome matches the documented oracle. Covers valid sets (both
+    /// pass validation → no contract error) and every invalid fault class.
+    #[test]
+    fn prop_single_and_batch_paths_agree(
+        name_len in 0usize..40,
+        symbol_len in 0usize..20,
+        decimals in 0u32..30,
+        initial_supply in -5i128..1_000_000,
+        max_supply in proptest::option::of(-5i128..1_000_000),
+    ) {
+        let s = Setup::new();
+        let creator = Address::generate(&s.env);
+        // Fund and fee generously so neither path trips InsufficientFee or an
+        // unfunded fee transfer for the *valid* cases — the only differences we
+        // want to observe are in parameter validation.
+        s.fund(&creator, 1_000_000_000);
+        let big_fee: i128 = 1_000_000;
+
+        let name = str_of_len(&s.env, name_len);
+        let symbol = str_of_len(&s.env, symbol_len);
+
+        let single = contract_err(s.client.try_create_token(
+            &creator,
+            &s.salt(1),
+            &name,
+            &symbol,
+            &decimals,
+            &initial_supply,
+            &max_supply,
+            &big_fee,
+        ));
+
+        let batch_params = batch_vec(
+            &s,
+            &[BatchTokenParams {
+                salt: s.salt(2),
+                name: name.clone(),
+                symbol: symbol.clone(),
+                decimals,
+                initial_supply,
+                max_supply,
+            }],
+        );
+        let batch = contract_err(
+            s.client.try_create_tokens_batch(&creator, &batch_params, &big_fee),
+        );
+
+        let expected = expected_param_error(
+            name_len, symbol_len, decimals, initial_supply, max_supply,
+        );
+
+        proptest::prop_assert_eq!(
+            single, batch,
+            "single and batch disagree for name_len={}, symbol_len={}, decimals={}, initial_supply={}, max_supply={:?}",
+            name_len, symbol_len, decimals, initial_supply, max_supply
+        );
+        proptest::prop_assert_eq!(
+            single, expected,
+            "path result does not match oracle for name_len={}, symbol_len={}, decimals={}, initial_supply={}, max_supply={:?}",
+            name_len, symbol_len, decimals, initial_supply, max_supply
+        );
+    }
 }
 
 #[test]
@@ -2618,7 +2749,8 @@ fn test_cross_function_reentrancy_lock_blocks_all_entrypoints() {
             &String::from_str(&s.env, "T"),
             &String::from_str(&s.env, "T"),
             &7,
-            &0_u128,
+            &0_i128,
+            &None,
             &1_000,
         ),
         Err(Ok(Error::Reentrancy)),
@@ -2817,7 +2949,8 @@ fn test_create_token_allowed_when_whitelist_disabled() {
         &String::from_str(&s.env, "T"),
         &String::from_str(&s.env, "T"),
         &7,
-        &0_u128,
+        &0_i128,
+        &None,
         &1, // intentionally insufficient so the call fails predictably
     );
     assert_eq!(result, Err(Ok(Error::InsufficientFee)));
@@ -2838,7 +2971,8 @@ fn test_create_token_blocked_when_not_whitelisted() {
         &String::from_str(&s.env, "T"),
         &String::from_str(&s.env, "T"),
         &7,
-        &0_u128,
+        &0_i128,
+        &None,
         &1_000,
     );
     assert_eq!(result, Err(Ok(Error::NotWhitelisted)));
@@ -2861,7 +2995,8 @@ fn test_create_token_whitelisted_creator_passes_whitelist_gate() {
         &String::from_str(&s.env, "T"),
         &String::from_str(&s.env, "T"),
         &7,
-        &0_u128,
+        &0_i128,
+        &None,
         &1, // insufficient
     );
     // If this were NotWhitelisted the whitelist gate would have fired first;
@@ -2885,7 +3020,8 @@ fn test_whitelist_add_remove_create_sequence() {
             &String::from_str(&s.env, "T"),
             &String::from_str(&s.env, "T"),
             &7,
-            &0_u128,
+            &0_i128,
+            &None,
             &1_000,
         ),
         Err(Ok(Error::NotWhitelisted))
@@ -2900,7 +3036,8 @@ fn test_whitelist_add_remove_create_sequence() {
             &String::from_str(&s.env, "T"),
             &String::from_str(&s.env, "T"),
             &7,
-            &0_u128,
+            &0_i128,
+            &None,
             &1, // insufficient on purpose
         ),
         Err(Ok(Error::InsufficientFee))
@@ -2915,7 +3052,8 @@ fn test_whitelist_add_remove_create_sequence() {
             &String::from_str(&s.env, "T"),
             &String::from_str(&s.env, "T"),
             &7,
-            &0_u128,
+            &0_i128,
+            &None,
             &1_000,
         ),
         Err(Ok(Error::NotWhitelisted))
@@ -2939,7 +3077,8 @@ fn test_whitelist_disable_reopens_factory() {
             &String::from_str(&s.env, "T"),
             &String::from_str(&s.env, "T"),
             &7,
-            &0_u128,
+            &0_i128,
+            &None,
             &1_000,
         ),
         Err(Ok(Error::NotWhitelisted))
@@ -2954,7 +3093,8 @@ fn test_whitelist_disable_reopens_factory() {
             &String::from_str(&s.env, "T"),
             &String::from_str(&s.env, "T"),
             &7,
-            &0_u128,
+            &0_i128,
+            &None,
             &1, // underfunded
         ),
         Err(Ok(Error::InsufficientFee))

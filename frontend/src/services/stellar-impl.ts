@@ -560,6 +560,13 @@ export class StellarService {
     symbol: string
     decimals: number
     initialSupply: string
+    /**
+     * Optional supply cap. When provided, the token is created with a
+     * `max_supply` and `mint_tokens` will reject mints that would exceed it.
+     * Omit (or pass null/undefined) to create an uncapped token — the contract
+     * receives `Option::None`.
+     */
+    maxSupply?: string | null
     salt: string
     feePayment: string
   }): Promise<DeploymentResult> {
@@ -583,7 +590,11 @@ export class StellarService {
             nativeToScVal(params.name, { type: 'string' }),
             nativeToScVal(params.symbol, { type: 'string' }),
             nativeToScVal(params.decimals, { type: 'u32' }),
-            nativeToScVal(BigInt(params.initialSupply), { type: 'u128' }),
+            nativeToScVal(BigInt(params.initialSupply), { type: 'i128' }),
+            // Option<i128>: None → scvVoid, Some(cap) → i128.
+            params.maxSupply == null
+              ? xdr.ScVal.scvVoid()
+              : nativeToScVal(BigInt(params.maxSupply), { type: 'i128' }),
             nativeToScVal(BigInt(params.feePayment), { type: 'i128' }),
           ),
         )
