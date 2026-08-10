@@ -74,7 +74,7 @@
     "husky": "^9.1.7",
     "jsdom": "^29.1.1",
     "lint-staged": "^17.2.0",
-    "postcss": "^8.5.23",
+    "postcss": "^8.5.26",
     "prettier": "^3.9.6",
     "storybook": "^10.5.2",
     "tailwindcss": "^4.1.18",
