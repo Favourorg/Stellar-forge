@@ -244,11 +244,11 @@ export const TokenDetail: React.FC = () => {
               )}
             </dd>
           </div>
-          {/* TODO: fetch per-token admin via direct token contract call once a
-              getTokenAdmin(tokenAddress) RPC method is available. For now the
-              token creator and the Soroban token admin are the same at deploy time. */}
+          {/* Resolved: Admin field relabeled to "Deployed by" since the actual
+              on-chain admin may differ from the deploy-time creator. A live
+              SEP-41 admin() read is tracked as follow-up per audit issue #1109. */}
           <div>
-            <dt className="text-gray-500 dark:text-gray-400">Admin</dt>
+            <dt className="text-gray-500 dark:text-gray-400">Deployed by</dt>
             <dd className="flex items-center gap-1 font-mono text-xs break-all text-gray-900 dark:text-gray-100 mt-1">
               {token.creator ? (
                 <ExplorerLink
@@ -256,7 +256,7 @@ export const TokenDetail: React.FC = () => {
                   value={token.creator}
                   network={network}
                   label={formatAddress(token.creator)}
-                  ariaLabel={`View admin account ${token.creator} on Stellar Expert`}
+                  ariaLabel={`View account ${token.creator} on Stellar Expert`}
                   className="text-indigo-500 hover:underline"
                 />
               ) : (
