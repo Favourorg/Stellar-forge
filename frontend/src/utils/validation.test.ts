@@ -52,7 +52,7 @@ describe('validateTokenParams', () => {
     expect(errors.name).toBeDefined()
   })
 
-  it('rejects name longer than 32 characters', () => {
+  it('rejects name longer than 32 bytes', () => {
     const { valid, errors } = validateTokenParams({ ...BASE, name: 'A'.repeat(33) })
     expect(valid).toBe(false)
     expect(errors.name).toBeDefined()
@@ -64,7 +64,7 @@ describe('validateTokenParams', () => {
     expect(errors.symbol).toBeDefined()
   })
 
-  it('rejects symbol longer than 12 characters', () => {
+  it('rejects symbol longer than 12 bytes', () => {
     const { valid, errors } = validateTokenParams({ ...BASE, symbol: 'A'.repeat(13) })
     expect(valid).toBe(false)
     expect(errors.symbol).toBeDefined()

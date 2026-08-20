@@ -75,29 +75,85 @@ export const isValidContractAddress = (address: string): boolean => {
   }
 }
 
-// Single source of truth for token field rules
+// ── Character policy ──────────────────────────────────────────────────
+//
+// The contract (validate_token_params in lib.rs:749) places no
+// restriction on which characters a name or symbol may contain.  It
+// only enforces non-empty, name ≤ 32 UTF-8 bytes, symbol ≤ 12 UTF-8
+// bytes (with UTF-8 length measured by String::len() on Soroban).
+//
+// For symbols the frontend additionally enforces ASCII alphanumeric +
+// hyphens — a common convention for ticker symbols that avoids
+// display/rendering surprises.  This is a UI convention, not a
+// contract-boundary restriction; the contract will accept any symbol
+// the UI allows.
+//
+// For names the frontend blocks only characters that are dangerous in
+// display or input contexts (control characters, zero-width spaces,
+// bidirectional overrides, BOM) and permits everything else, including
+// non-Latin scripts.  The contract accepts the same set.
+//
+// These constants are the single source of truth for the frontend.
+// Any change to the numeric bounds MUST also update the corresponding
+// literals in contracts/token-factory/src/lib.rs's
+// validate_token_params.  The CI check in scripts/check-validation-drift.sh
+// verifies they stay in sync.
+// ──────────────────────────────────────────────────────────────────────
+
 const TOKEN_NAME_MIN_LENGTH = 1
 const TOKEN_NAME_MAX_LENGTH = 32
-const TOKEN_NAME_PATTERN = /^[A-Za-z0-9 _-]+$/
-
 const TOKEN_SYMBOL_MIN_LENGTH = 1
 const TOKEN_SYMBOL_MAX_LENGTH = 12
-const TOKEN_SYMBOL_PATTERN = /^[A-Za-z0-9-]+$/
-
 const TOKEN_DECIMALS_MIN = 0
 const TOKEN_DECIMALS_MAX = 18
 
-const isTokenNameLengthValid = (trimmedName: string): boolean =>
-  trimmedName.length >= TOKEN_NAME_MIN_LENGTH && trimmedName.length <= TOKEN_NAME_MAX_LENGTH
+// Matches control characters (Cc) and Unicode format characters (Cf)
+// that should never appear in a token name: C0 controls excluding
+// tab/newline/carriage-return, C1 controls, zero-width characters,
+// bidirectional overrides, BOM, and other invisible formatting chars.
+const DANGEROUS_CHARS = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F\u200B-\u200F\u2028-\u202F\u2060-\u2069\uFEFF]/
 
-const isTokenNamePatternValid = (trimmedName: string): boolean =>
-  TOKEN_NAME_PATTERN.test(trimmedName)
+// Symbol pattern: ASCII alphanumeric + hyphens (ticker convention)
+const TOKEN_SYMBOL_PATTERN = /^[A-Za-z0-9-]+$/
+
+/** Count UTF-8 bytes as String::len() does on Soroban. */
+const utf8ByteLength = (s: string): number => new TextEncoder().encode(s).length
+
+/**
+ * True when the string contains an unpaired (lone) UTF-16 surrogate.
+ * TextEncoder silently replaces lone surrogates with U+FFFD, so bytes
+ * counted by the client would not match the bytes the contract sees;
+ * reject such input outright.
+ */
+const hasUnpairedSurrogate = (s: string): boolean => {
+  for (let i = 0; i < s.length; i++) {
+    const code = s.charCodeAt(i)
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = s.charCodeAt(i + 1)
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return true
+      i++ // skip the low half of a valid pair
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      return true
+    }
+  }
+  return false
+}
+
+const isTokenNameLengthValid = (trimmedName: string): boolean => {
+  const bytes = utf8ByteLength(trimmedName)
+  return bytes >= TOKEN_NAME_MIN_LENGTH && bytes <= TOKEN_NAME_MAX_LENGTH
+}
+
+const isTokenNameCharValid = (trimmedName: string): boolean =>
+  !DANGEROUS_CHARS.test(trimmedName) && !hasUnpairedSurrogate(trimmedName)
 
 const isValidTokenNameValue = (trimmedName: string): boolean =>
-  isTokenNameLengthValid(trimmedName) && isTokenNamePatternValid(trimmedName)
+  isTokenNameLengthValid(trimmedName) && isTokenNameCharValid(trimmedName)
 
-const isTokenSymbolLengthValid = (trimmedSymbol: string): boolean =>
-  trimmedSymbol.length >= TOKEN_SYMBOL_MIN_LENGTH && trimmedSymbol.length <= TOKEN_SYMBOL_MAX_LENGTH
+const isTokenSymbolLengthValid = (trimmedSymbol: string): boolean => {
+  const bytes = utf8ByteLength(trimmedSymbol)
+  return bytes >= TOKEN_SYMBOL_MIN_LENGTH && bytes <= TOKEN_SYMBOL_MAX_LENGTH
+}
 
 const isTokenSymbolPatternValid = (trimmedSymbol: string): boolean =>
   TOKEN_SYMBOL_PATTERN.test(trimmedSymbol)
@@ -121,13 +177,13 @@ export const validateTokenParams = (params: {
   const trimmedSymbol = params.symbol?.trim() || ''
 
   if (!isTokenNameLengthValid(trimmedName)) {
-    errors.name = `Token name must be ${TOKEN_NAME_MIN_LENGTH}-${TOKEN_NAME_MAX_LENGTH} characters`
-  } else if (!isTokenNamePatternValid(trimmedName)) {
-    errors.name = 'Token name can only contain letters, digits, spaces, hyphens, and underscores'
+    errors.name = `Token name must be ${TOKEN_NAME_MIN_LENGTH}-${TOKEN_NAME_MAX_LENGTH} bytes`
+  } else if (!isTokenNameCharValid(trimmedName)) {
+    errors.name = 'Token name contains unsupported control characters'
   }
 
   if (!isTokenSymbolLengthValid(trimmedSymbol)) {
-    errors.symbol = `Token symbol must be ${TOKEN_SYMBOL_MIN_LENGTH}-${TOKEN_SYMBOL_MAX_LENGTH} characters`
+    errors.symbol = `Token symbol must be ${TOKEN_SYMBOL_MIN_LENGTH}-${TOKEN_SYMBOL_MAX_LENGTH} bytes`
   } else if (!isTokenSymbolPatternValid(trimmedSymbol)) {
     errors.symbol = 'Token symbol can only contain alphanumeric characters and hyphens'
   }
@@ -254,6 +310,12 @@ export const sanitizeTokenInput = (input: string): string => {
 }
 
 export const validateDecimals = (decimals: number): boolean => isValidDecimalsValue(decimals)
+
+// Exported for drift detection — scripts/check-validation-drift.sh parses
+// these constants and compares them against validate_token_params in lib.rs.
+export const TOKEN_NAME_MAX_BYTES = 32
+export const TOKEN_SYMBOL_MAX_BYTES = 12
+export const TOKEN_DECIMALS_MAX_VALUE = 18
 
 /**
  * Maximum recommended batch size for `create_tokens_batch`.
