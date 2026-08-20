@@ -8,6 +8,7 @@
     "prepare": "husky",
     "release": "semantic-release",
     "audit:waivers": "node scripts/check-audit-waivers.mjs",
+    "check:kiro-specs": "node scripts/check-kiro-specs.mjs",
     "test:api": "vitest run",
     "contract:compile": "cd contracts/token-factory && cargo build --target wasm32v1-none --release",
     "frontend:dev": "cd frontend && npm run dev",
