@@ -4,11 +4,93 @@ extern crate std;
 
 use super::*;
 use soroban_sdk::{
+    contract, contractimpl,
     testutils::{Address as _, Events as _},
     token::{StellarAssetClient, TokenClient},
-    Address, BytesN, Env, Map, String,
+    Address, BytesN, Env, Map, MuxedAddress, String,
 };
 use std::panic::{catch_unwind, AssertUnwindSafe};
+
+// ── Malicious re-entrant fee token (issue #1095) ─────────────────────────────
+//
+// The state-injection reentrancy tests below prove that a *pre-set* `locked`
+// flag is honoured, but they prove nothing about whether the flag is actually
+// acquired *before* the external call that a malicious contract could use to
+// re-enter. This contract is the real thing: the factory calls SEP-41
+// `transfer` on it (via `distribute_fee` during `create_token` / `mint_tokens`
+// / `set_metadata`), and it synchronously calls back into the factory to
+// attempt a re-entrant `create_token`, recording whether the guard rejected
+// that nested call.
+//
+// It is deliberately NOT a real on-chain contract: it is a native in-process
+// test contract registered with `env.register`, which is the only way to make
+// a genuine *nested* cross-contract call against the factory without compiling
+// a separate malicious WASM (see `fuzz/README.md` for the documented
+// limitation). This exercises the real `locked` acquisition/check code path
+// end-to-end, unlike the `locked = true` state-injection tests.
+#[contract]
+pub struct ReentrantToken;
+
+#[contractimpl]
+impl ReentrantToken {
+    /// Remember the factory to call back into, plus an address to act as the
+    /// "attacker" on the re-entrant `create_token` call.
+    pub fn __constructor(env: Env, factory: Address, attacker: Address) {
+        env.storage()
+            .instance()
+            .set(&symbol_short!("factory"), &factory);
+        env.storage()
+            .instance()
+            .set(&symbol_short!("attacker"), &attacker);
+        env.storage()
+            .instance()
+            .set(&symbol_short!("rejected"), &false);
+    }
+
+    /// SEP-41 `transfer`. Invoked by the factory's `distribute_fee` while the
+    /// factory holds the reentrancy lock. Re-enters `create_token` and records
+    /// whether the guard rejected the nested call.
+    pub fn transfer(env: Env, _from: Address, _to: MuxedAddress, _amount: i128) {
+        let factory: Address = env
+            .storage()
+            .instance()
+            .get(&symbol_short!("factory"))
+            .unwrap();
+        let attacker: Address = env
+            .storage()
+            .instance()
+            .get(&symbol_short!("attacker"))
+            .unwrap();
+        let client = TokenFactoryClient::new(&env, &factory);
+        let salt = BytesN::from_array(&env, &[0xEE; 32]);
+        let result = client.try_create_token(
+            &attacker,
+            &salt,
+            &String::from_str(&env, "Reentry"),
+            &String::from_str(&env, "RENTRY"),
+            &7,
+            &0_i128,
+            &None,
+            &1_000,
+        );
+        // The guard is checked before any other validation, so a correctly
+        // locked factory returns `Error::Reentrancy` here. If the lock were
+        // acquired *after* the external call, the nested `create_token` would
+        // proceed past the guard and the result would differ.
+        let rejected = matches!(result, Err(Ok(Error::Reentrancy)));
+        env.storage()
+            .instance()
+            .set(&symbol_short!("rejected"), &rejected);
+    }
+
+    /// View: whether the most recent re-entrant call was rejected by the guard.
+    pub fn reentrant_rejected(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&symbol_short!("rejected"))
+            .unwrap_or(false)
+    }
+}
 
 // ── Test setup helper ─────────────────────────────────────────────────────────
 
@@ -2708,7 +2790,12 @@ fn test_batch_reentrancy_guard() {
 // environment does not support running a malicious re-entrant WASM in-process,
 // we simulate the mid-execution state by injecting `locked = true` directly
 // into storage (the same mechanism used for `create_token` above). This proves
-// that the guard is present and wired up correctly for each entrypoint.
+// that the guard is present and wired up correctly for each entrypoint — but
+// NOT that the lock is acquired *before* the vulnerable external call in the
+// real control flow. That gap is closed by
+// `test_mint_tokens_rejects_real_reentrant_call` below, which drives a genuine
+// nested cross-contract re-entry through the malicious `ReentrantToken`
+// fee-token contract defined at the top of this file.
 //
 // The cross-function reentrancy test additionally verifies that a lock set by
 // *one* entrypoint (mint_tokens) also blocks a concurrent call to a *different*
@@ -2733,6 +2820,89 @@ fn test_mint_tokens_reentrancy_guard() {
         .client
         .try_mint_tokens(&token_addr, &admin, &recipient, &100, &1_000);
     assert_eq!(result, Err(Ok(Error::Reentrancy)));
+}
+
+/// End-to-end reentrancy: a real nested cross-contract call, not a pre-injected
+/// lock. The factory is deployed with a malicious SEP-41 fee token
+/// (`ReentrantToken`) whose `transfer` re-enters `create_token` from inside
+/// `distribute_fee`. The re-entrant call must be rejected by the guard even
+/// though no `locked = true` was ever injected into storage.
+///
+/// This is the test the state-injection tests *cannot* be: if the
+/// `state.locked = true` line in `mint_tokens` were moved after the
+/// `distribute_fee` call, the nested `create_token` would observe `locked ==
+/// false`, the malicious contract would record `rejected == false`, and this
+/// test would fail — while every state-injection test would still pass.
+#[test]
+fn test_mint_tokens_rejects_real_reentrant_call() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let factory_addr = Address::generate(&env);
+
+    // Register the malicious fee token, wired to re-enter the (pre-generated)
+    // factory address. It must know the factory address up front, so we
+    // pre-generate the factory address rather than letting `register` pick one.
+    let fee_token = env.register(ReentrantToken, (factory_addr.clone(), admin.clone()));
+
+    env.register_at(
+        &factory_addr,
+        TokenFactory,
+        TokenFactoryArgs::__constructor(
+            &admin,
+            &treasury,
+            &fee_token,
+            &dummy_hash(&env),
+            &1_000,
+            &500,
+        ),
+    );
+    let client = TokenFactoryClient::new(&env, &factory_addr);
+    let client: TokenFactoryClient<'static> = unsafe { core::mem::transmute(client) };
+
+    // Seed a factory token owned by `admin` so `mint_tokens` has a real token
+    // to mint (mirrors `seed_token`, which assumes the shared `Setup` env).
+    let token_addr = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
+    env.as_contract(&factory_addr, || {
+        let mut state: FactoryState = env.storage().instance().get(&DataKey::State).unwrap();
+        state.token_count = state.token_count.checked_add(1).unwrap();
+        let index = state.token_count;
+        let info = TokenInfo {
+            name: String::from_str(&env, "T"),
+            symbol: String::from_str(&env, "T"),
+            decimals: 7,
+            creator: admin.clone(),
+            created_at: 0,
+            burn_enabled: true,
+            max_supply: None,
+        };
+        TokenFactory::set_persistent(&env, &DataKey::TokenInfo(index), &info);
+        env.storage().instance().set(&DataKey::State, &state);
+        TokenFactory::set_persistent(&env, &DataKey::TokenIndex(token_addr.clone()), &index);
+        TokenFactory::set_persistent(&env, &DataKey::TokenAddress(index), &token_addr);
+        TokenFactory::append_creator_token(&env, &admin, index).unwrap();
+        TokenFactory::set_persistent(&env, &(&token_addr, symbol_short!("owner")), &admin);
+    });
+
+    let recipient = Address::generate(&env);
+
+    // The outer call must succeed: the malicious `transfer` swallows the
+    // (rejected) re-entrant call and returns normally, so `mint_tokens`
+    // completes its mint and releases the lock.
+    client.mint_tokens(&token_addr, &admin, &recipient, &100, &1_000);
+
+    // The malicious contract must have observed `Error::Reentrancy` on its
+    // nested call — proving the lock was already held before the external
+    // `distribute_fee` transfer happened.
+    let malicious = ReentrantTokenClient::new(&env, &fee_token);
+    assert!(
+        malicious.reentrant_rejected(),
+        "re-entrant create_token must be rejected by the guard"
+    );
 }
 
 #[test]

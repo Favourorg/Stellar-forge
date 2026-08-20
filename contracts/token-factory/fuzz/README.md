@@ -271,6 +271,7 @@ cp my_edge_case.bin corpus/fuzz_create_token/
 1. **Simplified Targets**: Fuzz targets focus on pure Rust logic, not full contract interaction
 2. **No WASM Execution**: Contract WASM execution is tested separately via integration tests
 3. **Mock Environment**: Contract setup uses mocked Soroban environment
+4. **No real reentrancy coverage here**: The fuzz targets exercise fee/arithmetic logic in isolation, and the majority of the `test.rs` reentrancy tests simulate a mid-execution state by injecting `locked = true` directly into storage. Those tests prove the guard *rejects when already locked*, not that the lock is acquired *before* the vulnerable external call. Real reentrancy — a genuine nested cross-contract call that re-enters the factory — is covered end-to-end by `test_mint_tokens_rejects_real_reentrant_call` in `contracts/token-factory/src/test.rs`, which deploys the factory with a malicious SEP-41 fee-token contract (`ReentrantToken`) whose `transfer` calls back into the factory. A separate malicious WASM is not compiled for the in-process harness; see that test for the rationale and the mechanism.
 
 ## Future Improvements
 
