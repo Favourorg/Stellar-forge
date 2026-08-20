@@ -1082,12 +1082,31 @@ export class StellarService {
   async getAllTokens(
     offset = 0,
     limit = DEFAULT_TOKEN_PAGE_LIMIT,
+    /**
+     * Optional session-scoped token-count snapshot.
+     *
+     * When provided, `getFactoryState()` is **not** called and the snapshot
+     * value is used directly as `total`. This pins all page-index windows for
+     * a browsing session to the same baseline so that tokens created between
+     * page fetches cannot shift windows and produce duplicates or gaps.
+     *
+     * Callers are responsible for obtaining the snapshot once (e.g. on
+     * Explorer mount or on an explicit "refresh") via `getFactoryState()`, and
+     * for discarding it when the user deliberately refreshes the list.
+     *
+     * When omitted (or `undefined`), behaviour is unchanged: the live count is
+     * fetched from the chain on every call.
+     */
+    tokenCountSnapshot?: number,
   ): Promise<{ tokens: TokenInfo[]; total: number }> {
     const contractId = STELLAR_CONFIG.factoryContractId
     if (!contractId) throw new Error('Factory contract ID is not configured')
 
-    const { tokenCount } = await this.getFactoryState()
-    const total = Math.max(0, tokenCount)
+    const rawCount =
+      tokenCountSnapshot !== undefined
+        ? tokenCountSnapshot
+        : (await this.getFactoryState()).tokenCount
+    const total = Math.max(0, rawCount)
     if (total === 0 || limit <= 0) return { tokens: [], total }
 
     // Newest-first window over the 1-based index range [1, total].

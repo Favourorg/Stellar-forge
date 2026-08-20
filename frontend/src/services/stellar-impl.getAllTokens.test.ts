@@ -160,4 +160,50 @@ describe('StellarService.getAllTokens', () => {
     // GET_ALL_TOKENS_CONCURRENCY is 5 — the window is fetched in bounded batches.
     expect(maxInFlight).toBeLessThanOrEqual(5)
   })
+
+  test('snapshot pins page windows — no duplicate or skipped token when a new token is created between page fetches', async () => {
+    // Simulate a factory that starts with 20 tokens. The user fetches page 1
+    // using a snapshot of tokenCount=20. Between page 1 and page 2, a new token
+    // (index 21) is created, making tokenCount=21.
+    //
+    // Without a snapshot, page 2 would compute:
+    //   highIndex = 21 - 10 = 11  → window [11..2]
+    // which overlaps with page 1's window [20..11] at index 11 (duplicate).
+    //
+    // With the snapshot (tokenCount=20), page 2 computes:
+    //   highIndex = 20 - 10 = 10  → window [10..1]
+    // which is exactly non-overlapping: pages cover [20..11] then [10..1].
+
+    const snapshot = 20
+
+    // Page 1: pass snapshot=20, factory would report 20 anyway (not called).
+    const getFactoryState = vi.spyOn(service, 'getFactoryState')
+    vi.spyOn(service, 'getTokenInfo').mockImplementation(async (i: number) => tokenAt(i))
+
+    const page1 = await service.getAllTokens(0, 10, snapshot)
+
+    // getFactoryState must NOT have been called — the snapshot bypasses it.
+    expect(getFactoryState).not.toHaveBeenCalled()
+    expect(page1.total).toBe(20)
+    expect(page1.tokens.map((t) => t.index)).toEqual([20, 19, 18, 17, 16, 15, 14, 13, 12, 11])
+
+    // A new token is now created on-chain (tokenCount becomes 21).
+    // getAllTokens must still use the caller-supplied snapshot=20, not re-read
+    // the chain, so the page 2 window remains anchored to the same baseline.
+
+    const page2 = await service.getAllTokens(10, 10, snapshot)
+
+    expect(getFactoryState).not.toHaveBeenCalled()
+    expect(page2.total).toBe(20)
+    expect(page2.tokens.map((t) => t.index)).toEqual([10, 9, 8, 7, 6, 5, 4, 3, 2, 1])
+
+    // Verify: no index appears in both pages (no duplicates).
+    const page1Indices = new Set(page1.tokens.map((t) => t.index))
+    const page2Indices = page2.tokens.map((t) => t.index)
+    expect(page2Indices.every((i) => !page1Indices.has(i))).toBe(true)
+
+    // Verify: together they cover every index from 1 to 20 exactly once (no gaps).
+    const allIndices = [...page1.tokens, ...page2.tokens].map((t) => t.index).sort((a, b) => a! - b!)
+    expect(allIndices).toEqual(Array.from({ length: 20 }, (_, k) => k + 1))
+  })
 })
