@@ -186,6 +186,11 @@ pub enum Error {
     ZeroFeeSplitEntry = 22,
     /// Metadata has been frozen and can no longer be updated
     MetadataFrozen = 23,
+    /// A fee transfer to `treasury` itself failed (either the direct
+    /// non-split payment, or the redirect of a bad split recipient's share
+    /// / rounding remainder). There is no further fallback recipient, so
+    /// this is a hard error that aborts the call.
+    TreasuryTransferFailed = 24,
 }
 
 #[contract]
@@ -324,8 +329,18 @@ impl TokenFactory {
     /// distribution deterministic regardless of map iteration order.
     ///
     /// Per-recipient transfer failures are isolated: a recipient whose
-    /// address cannot accept the fee token does NOT abort the whole call —
-    /// their share is redirected to treasury so user transactions always succeed.
+    /// address cannot accept the fee token (frozen account, revoked
+    /// trustline, clawback-locked balance, misbehaving contract, ...) does
+    /// NOT abort the whole call. Each recipient transfer uses
+    /// `try_transfer` rather than the panicking `transfer`; a failure is
+    /// caught and that recipient's share is redirected to `treasury`
+    /// instead, and a `(factory, fee_redir)` event is emitted so admins can
+    /// detect a broken split recipient without reading contract logs.
+    ///
+    /// `treasury` itself has no further fallback: if the redirect transfer
+    /// (or the direct non-split payment) to `treasury` fails, `distribute_fee`
+    /// returns `Error::TreasuryTransferFailed` and the whole call reverts,
+    /// since there is nowhere else to safely park the funds.
     fn distribute_fee(
         env: &Env,
         state: &FactoryState,
@@ -399,21 +414,39 @@ impl TokenFactory {
                 remainder = remainder.saturating_sub(1);
             }
 
-            // Pass 3: execute transfers; redirect any leftover to treasury.
-            let treasury_extra: i128 = remainder; // any unassigned remainder
+            // Pass 3: execute transfers. A recipient whose transfer fails
+            // (frozen account, revoked trustline, clawback-locked balance,
+            // misbehaving contract, ...) does NOT abort the call — their
+            // share is redirected to treasury instead, per the isolation
+            // guarantee documented on `distribute_fee` above.
+            let mut treasury_extra: i128 = remainder; // any unassigned rounding remainder
             for i in 0..n {
                 if let (Ok(Some(addr)), Ok(Some(share))) = (addrs.try_get(i), floors.try_get(i)) {
                     if share > 0 {
-                        fee_client.transfer(payer, &addr, &share);
+                        if fee_client.try_transfer(payer, &addr, &share).is_err() {
+                            treasury_extra = treasury_extra
+                                .checked_add(share)
+                                .ok_or(Error::ArithmeticOverflow)?;
+                            env.events().publish(
+                                (symbol_short!("factory"), symbol_short!("fee_redir")),
+                                (addr, share),
+                            );
+                        }
                     }
                 }
             }
 
-            if treasury_extra > 0 {
-                fee_client.transfer(payer, &state.treasury, &treasury_extra);
+            // The redirect target itself has no further fallback — if the
+            // treasury can't accept the fee token, that's a hard error.
+            if treasury_extra > 0
+                && fee_client
+                    .try_transfer(payer, &state.treasury, &treasury_extra)
+                    .is_err()
+            {
+                return Err(Error::TreasuryTransferFailed);
             }
-        } else {
-            fee_client.transfer(payer, &state.treasury, &amount);
+        } else if fee_client.try_transfer(payer, &state.treasury, &amount).is_err() {
+            return Err(Error::TreasuryTransferFailed);
         }
         Ok(())
     }
