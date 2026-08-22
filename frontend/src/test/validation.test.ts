@@ -256,3 +256,88 @@ describe('validateDecimals', () => {
     expect(validateDecimals(19)).toBe(false)
   })
 })
+
+// ── validateTokenParams — maxSupply (issue #1022) ─────────────────────────────
+//
+// These tests mirror the contract's own validate_token_params guards so the
+// frontend and the on-chain logic stay in sync:
+//   - a positive cap >= initial_supply is valid
+//   - a cap of 0 or negative is rejected
+//   - a cap below initial_supply is rejected
+//   - an empty/absent maxSupply means "uncapped" and is always valid
+//
+// Corresponds to the contract-side tests in test.rs:
+//   test_create_token_max_supply_below_initial_rejected (test.rs:277)
+//   test_create_token_nonpositive_max_supply_rejected (test.rs:296)
+
+const baseWithSupply = { name: 'Token', symbol: 'TKN', decimals: 7, initialSupply: '1000' }
+
+describe('validateTokenParams — maxSupply', () => {
+  it('accepts an empty maxSupply (uncapped token)', () => {
+    const { valid, errors } = validateTokenParams({ ...baseWithSupply, maxSupply: '' })
+    expect(valid).toBe(true)
+    expect(errors.maxSupply).toBeUndefined()
+  })
+
+  it('accepts an absent maxSupply (uncapped token)', () => {
+    const { valid, errors } = validateTokenParams({ ...baseWithSupply })
+    expect(valid).toBe(true)
+    expect(errors.maxSupply).toBeUndefined()
+  })
+
+  it('accepts a cap equal to initial supply', () => {
+    const { valid, errors } = validateTokenParams({
+      ...baseWithSupply,
+      maxSupply: '1000',
+    })
+    expect(valid).toBe(true)
+    expect(errors.maxSupply).toBeUndefined()
+  })
+
+  it('accepts a cap greater than initial supply', () => {
+    const { valid, errors } = validateTokenParams({
+      ...baseWithSupply,
+      maxSupply: '5000',
+    })
+    expect(valid).toBe(true)
+    expect(errors.maxSupply).toBeUndefined()
+  })
+
+  it('rejects a cap of zero (mirrors test_create_token_nonpositive_max_supply_rejected)', () => {
+    const { valid, errors } = validateTokenParams({
+      ...baseWithSupply,
+      initialSupply: '0',
+      maxSupply: '0',
+    })
+    expect(valid).toBe(false)
+    expect(errors.maxSupply).toBeDefined()
+  })
+
+  it('rejects a negative cap', () => {
+    const { valid, errors } = validateTokenParams({
+      ...baseWithSupply,
+      maxSupply: '-1',
+    })
+    expect(valid).toBe(false)
+    expect(errors.maxSupply).toBeDefined()
+  })
+
+  it('rejects a cap below initial supply (mirrors test_create_token_max_supply_below_initial_rejected)', () => {
+    const { valid, errors } = validateTokenParams({
+      ...baseWithSupply,
+      initialSupply: '1000',
+      maxSupply: '500',
+    })
+    expect(valid).toBe(false)
+    expect(errors.maxSupply).toBeDefined()
+  })
+
+  it('rejects a non-numeric maxSupply', () => {
+    const { valid, errors } = validateTokenParams({
+      ...baseWithSupply,
+      maxSupply: 'not-a-number',
+    })
+    expect(valid).toBe(false)
+    expect(errors.maxSupply).toBeDefined()
+  })
+})
