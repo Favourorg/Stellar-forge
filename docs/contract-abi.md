@@ -237,7 +237,7 @@ Toggle the burn flag for a token.
 
 ### `get_state() → FactoryState`
 
-Inspect factory configuration and aggregate counts.
+Inspect factory configuration and aggregate counts. As of schema version 4, the returned `FactoryState` also includes `pending_admin: Option<Address>` (the proposed-but-not-yet-accepted admin, or `None`) and `pending_admin_expiry: Option<u64>` (the ledger sequence at which the proposal lapses, or `None`). Callers can use these fields to detect a pending rotation before it completes.
 
 ### `get_base_fee() → i128`
 
@@ -345,11 +345,42 @@ The cap is conservative: typical treasury + referral + protocol-fund structures 
 
 Read the current split (empty map means no split).
 
-### `update_admin(current_admin, new_admin)` / `transfer_admin(admin, new_admin)`
+### `propose_admin(current_admin, new_admin)` — step 1
 
-Hand the admin privilege to `new_admin`. The two names are aliases for one operation: both delegate to the same internal implementation, so both require the current admin's auth, both reject a self-transfer with `Error::InvalidParameters`, and **both emit `adm_upd`**.
+Propose a new admin address. The current admin calls this to name a successor. The proposal is stored in `FactoryState` and expires after `ADMIN_PROPOSAL_TTL_LEDGERS` ledgers (~28 hours at 6 seconds/ledger). If a second proposal is issued before the first is accepted or cancelled, it **overwrites** the first, resetting the expiry.
 
-Before the fix for issue #916 these were independently written copies that had drifted apart — only `update_admin` emitted the event, so a rotation performed through `transfer_admin` left no on-chain trace and indexers following the event stream kept reporting the previous admin indefinitely. `transfer_admin` is retained only for callers built against the older ABI; new integrations should use `update_admin`.
+| Param           | Type      | Description                                                   |
+| --------------- | --------- | ------------------------------------------------------------- |
+| `current_admin` | `Address` | Current admin; must authorize this call.                      |
+| `new_admin`     | `Address` | Proposed successor. Must differ from `current_admin`.         |
+
+Emits `adm_prop` with `(current_admin, new_admin, expiry_ledger)`.
+
+Errors: `Unauthorized` if caller is not the current admin; `InvalidParameters` for self-proposal.
+
+### `accept_admin(new_admin)` — step 2
+
+Complete a pending rotation. **The proposed admin** calls this, proving they control the proposed key. Only succeeds when a live (non-expired) proposal exists for `new_admin`.
+
+| Param       | Type      | Description                                                          |
+| ----------- | --------- | -------------------------------------------------------------------- |
+| `new_admin` | `Address` | The address that was named in the most recent `propose_admin` call.  |
+
+Emits `adm_acc` with `(old_admin, new_admin)` on success.
+
+Errors:
+- `NoPendingProposal` (code 24) — no proposal is pending, or `new_admin` does not match the proposed address.
+- `ProposalExpired` (code 25) — the proposal's expiry ledger has passed. The expired proposal is cleared from state; the current admin must issue a new `propose_admin` call.
+
+### `cancel_admin_proposal(current_admin)`
+
+Cancel a live proposal. Only the current admin may cancel. Idempotent when no proposal is pending. Emits `adm_can` with `(current_admin, cancelled_address)`.
+
+### `transfer_admin(admin, new_admin)` / `update_admin(current_admin, new_admin)` — legacy aliases
+
+These names are retained for ABI compatibility with tooling built before the two-step model was introduced. **Both now delegate entirely to `propose_admin`** — neither completes the rotation on its own. Callers using these names will get a proposal recorded; the proposed admin must still call `accept_admin` to take effect.
+
+Before this change both entrypoints performed an immediate, unverified single-step rotation. There is now **no single-step rotation path** in the contract. All admin rotations require two transactions: one from the current admin (propose) and one from the new admin (accept).
 
 ### `upgrade(admin, new_wasm_hash)`
 
@@ -361,6 +392,7 @@ Incrementally upgrades state between schema versions. Idempotent — safe to cal
 
 - Version 2: bumps the version marker for the issue #1006 max-supply fix — it does not automatically back-fill any capped token's supply counter (see `backfill_capped_supply` below and "Supply cap accounting" above).
 - Version 3: moves `TokenInfo` entries from `instance` to `persistent` storage (issue #1007 — see "Storage architecture" above), walking `token_count` in bounded chunks per call. If `token_count` is large enough that one call can't finish the walk, `schema_version` stays at 2 and a subsequent `migrate` call resumes from where the last one left off; every other affected key (`TokenIndex`, `Metadata`, `owner`, `supply`, `CreatorTokens`) migrates lazily on next access regardless of whether this step has completed.
+- Version 4: adds `pending_admin: Option<Address>` and `pending_admin_expiry: Option<u64>` to `FactoryState` for two-step admin rotation. Both fields default to `None` — no behavioral change until `propose_admin` is first called. Call `migrate` once after upgrading to this version; subsequent calls are idempotent.
 
 ### `backfill_capped_supply(admin, token_address, verified_supply)`
 
@@ -414,6 +446,8 @@ Read-only: returns `true` if `address` is on the whitelist.
 | 21   | `InvalidMetadataUri`        | URI is empty, missing `ipfs://` prefix, exceeds 128 bytes, or has no CID              |
 | 22   | `ZeroFeeSplitEntry`         | `set_fee_split` map contains an entry with `bps == 0`                                 |
 | 23   | `MetadataFrozen`            | metadata is frozen (via `freeze_metadata` or auto-freeze after max updates)           |
+| 24   | `NoPendingProposal`         | `accept_admin` called with no live proposal, or the caller is not the proposed address |
+| 25   | `ProposalExpired`           | the pending proposal's expiry ledger has passed; current admin must re-propose         |
 
 ## Events
 
@@ -433,7 +467,9 @@ The contract emits Soroban events on a `(factory, action)` topic. The frontend p
 | `split_clr` | `(admin)`                                | `set_fee_split` (empty — clears split) |
 | `pause`     | `(admin)`                                | `pause`                                |
 | `unpause`   | `(admin)`                                | `unpause`                              |
-| `adm_upd`   | `(current_admin, new_admin)`             | `update_admin`                         |
+| `adm_prop`  | `(current_admin, new_admin, expiry_ledger)` | `propose_admin` / `transfer_admin` / `update_admin` |
+| `adm_acc`   | `(old_admin, new_admin)`                    | `accept_admin`                                      |
+| `adm_can`   | `(current_admin, cancelled_admin)`          | `cancel_admin_proposal`                             |
 | `wl_add`    | `(address)`                              | `add_to_whitelist`                     |
 | `wl_rm`     | `(address)`                              | `remove_from_whitelist`                |
 | `wl_tog`    | `(enabled)`                              | `set_whitelist_enabled`                |
