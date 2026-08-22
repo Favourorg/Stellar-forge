@@ -87,7 +87,17 @@ pub struct TokenInfo {
 
 /// Current schema version written by `initialize` and bumped by `migrate`.
 /// Increment this constant whenever `FactoryState` gains new fields.
-pub const CURRENT_SCHEMA_VERSION: u32 = 3;
+pub const CURRENT_SCHEMA_VERSION: u32 = 4;
+
+/// Number of ledgers a pending admin proposal remains valid before it expires.
+///
+/// At ~6 seconds per ledger, 17,280 ledgers ≈ 28.8 hours — long enough for
+/// the proposed admin to notice and sign, short enough that a stale proposal
+/// from a key that has since changed hands cannot be accepted years later.
+/// The current admin may always cancel a proposal early via
+/// `cancel_admin_proposal`; an expired proposal is treated the same as a
+/// cancelled one.
+pub const ADMIN_PROPOSAL_TTL_LEDGERS: u64 = 17_280;
 
 #[contracttype]
 #[derive(Clone)]
@@ -150,6 +160,14 @@ pub struct FactoryState {
     /// When true, only addresses on the whitelist may call `create_token` or
     /// `create_tokens_batch`.
     pub whitelist_enabled: bool,
+    /// The proposed next admin address, pending acceptance. `None` when no
+    /// proposal is live. Written by `propose_admin`, cleared by `accept_admin`
+    /// or `cancel_admin_proposal`.
+    pub pending_admin: Option<Address>,
+    /// Ledger number at which the pending proposal expires. `None` when no
+    /// proposal is live. A proposal is live iff `pending_admin.is_some()` AND
+    /// the current ledger sequence has not yet reached this value.
+    pub pending_admin_expiry: Option<u64>,
 }
 
 #[contracterror]
@@ -186,6 +204,12 @@ pub enum Error {
     ZeroFeeSplitEntry = 22,
     /// Metadata has been frozen and can no longer be updated
     MetadataFrozen = 23,
+    /// `accept_admin` called when no proposal is pending, or the proposed
+    /// address does not match the caller
+    NoPendingProposal = 24,
+    /// The pending admin proposal has passed its expiry ledger and can no
+    /// longer be accepted; the current admin must open a new proposal
+    ProposalExpired = 25,
 }
 
 #[contract]
@@ -290,6 +314,8 @@ impl TokenFactory {
             token_count: 0,
             whitelist_enabled: false,
             schema_version: CURRENT_SCHEMA_VERSION,
+            pending_admin: None,
+            pending_admin_expiry: None,
         };
 
         env.storage().instance().set(&DataKey::State, &state);
@@ -1539,6 +1565,22 @@ impl TokenFactory {
         // a contract that is K versions behind will walk through every pending
         // step in a single `migrate` call, arriving at CURRENT_SCHEMA_VERSION.
 
+        if on_chain_version < 4 {
+            // Version 4: add `pending_admin` and `pending_admin_expiry` fields
+            // to `FactoryState` for two-step admin rotation (issue #1095 /
+            // two-step-admin-rotation PR). Both fields default to `None` so
+            // existing deployments remain in "no pending proposal" state after
+            // migration — there is no behavioral change until `propose_admin`
+            // is first called.
+            let mut s = Self::load_state(&env)?;
+            s.pending_admin = None;
+            s.pending_admin_expiry = None;
+            s.schema_version = 4;
+            Self::save_state(&env, &s);
+            on_chain_version = 4;
+            env.storage().instance().set(&sv_key, &on_chain_version);
+        }
+
         let _ = on_chain_version; // suppress unused-variable warning when no further steps exist
         Ok(())
     }
@@ -1596,43 +1638,132 @@ impl TokenFactory {
         Ok(())
     }
 
-    /// Single implementation of admin rotation, shared by both public
-    /// entrypoints (issue #916).
+    /// Propose a new admin for the factory (step 1 of two-step rotation).
     ///
-    /// `transfer_admin` and `update_admin` were independently written copies
-    /// of the same operation that had drifted apart: only `update_admin`
-    /// emitted `adm_upd`, so a rotation performed via `transfer_admin` left
-    /// no on-chain trace and any indexer following the event stream kept
-    /// reporting the previous admin indefinitely. Both entrypoints now
-    /// delegate here so authorization, the self-transfer guard, the state
-    /// write and the event are identical whichever name a caller uses.
-    fn rotate_admin(env: &Env, current_admin: Address, new_admin: Address) -> Result<(), Error> {
+    /// The current admin names `new_admin` as the proposed successor. The
+    /// proposal is recorded in `FactoryState` and expires after
+    /// `ADMIN_PROPOSAL_TTL_LEDGERS` ledgers (~28 hours). Until then the
+    /// proposed admin can accept (via `accept_admin`) or the current admin
+    /// can cancel (via `cancel_admin_proposal`). Issuing a second proposal
+    /// **overwrites** the first, resetting the expiry window and allowing the
+    /// current admin to correct a typo without waiting for the old proposal to
+    /// expire.
+    ///
+    /// Emits `adm_prop` so a watcher can detect a pending rotation before it
+    /// takes effect.
+    ///
+    /// Does **not** complete the rotation — only `accept_admin` does that.
+    /// There is no single-step rotation path: `transfer_admin` and
+    /// `update_admin` both delegate here.
+    pub fn propose_admin(env: Env, current_admin: Address, new_admin: Address) -> Result<(), Error> {
         current_admin.require_auth();
-        let mut state = Self::load_state(env)?;
+        let mut state = Self::load_state(&env)?;
         if state.admin != current_admin {
             return Err(Error::Unauthorized);
         }
         if current_admin == new_admin {
             return Err(Error::InvalidParameters);
         }
-        state.admin = new_admin.clone();
-        Self::save_state(env, &state);
+        let expiry = env
+            .ledger()
+            .sequence()
+            .checked_add(ADMIN_PROPOSAL_TTL_LEDGERS as u32)
+            .ok_or(Error::ArithmeticOverflow)? as u64;
+        state.pending_admin = Some(new_admin.clone());
+        state.pending_admin_expiry = Some(expiry);
+        Self::save_state(&env, &state);
         env.events().publish(
-            (symbol_short!("factory"), symbol_short!("adm_upd")),
-            (current_admin, new_admin),
+            (symbol_short!("factory"), symbol_short!("adm_prop")),
+            (current_admin, new_admin, expiry),
         );
         Ok(())
     }
 
-    /// Rotate the factory admin. Retained as an alias of `update_admin` for
-    /// callers built against the older ABI; both emit `adm_upd`.
-    pub fn transfer_admin(env: Env, admin: Address, new_admin: Address) -> Result<(), Error> {
-        Self::rotate_admin(&env, admin, new_admin)
+    /// Complete a pending admin-rotation proposal (step 2 of two-step rotation).
+    ///
+    /// The **proposed** admin — the address that was named in the most recent
+    /// `propose_admin` call — must call this and supply their own auth. This
+    /// cryptographically proves the proposed key can sign, eliminating the risk
+    /// of locking the factory to an uncontrolled address.
+    ///
+    /// Fails with:
+    /// - `Error::NoPendingProposal` — no proposal is pending, or the caller
+    ///   is not the proposed admin.
+    /// - `Error::ProposalExpired` — the proposal's expiry ledger has passed.
+    ///
+    /// Emits `adm_acc` on success.
+    pub fn accept_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        new_admin.require_auth();
+        let mut state = Self::load_state(&env)?;
+        let proposed = match state.pending_admin.as_ref() {
+            Some(p) => p.clone(),
+            None => return Err(Error::NoPendingProposal),
+        };
+        if proposed != new_admin {
+            return Err(Error::NoPendingProposal);
+        }
+        let expiry = state.pending_admin_expiry.take().unwrap_or(0);
+        // Clear the proposal now — whether expired or accepted we don't want it live.
+        state.pending_admin = None;
+        if (env.ledger().sequence() as u64) >= expiry {
+            // Proposal expired — clear it and report.
+            Self::save_state(&env, &state);
+            return Err(Error::ProposalExpired);
+        }
+        let old_admin = state.admin.clone();
+        state.admin = new_admin.clone();
+        Self::save_state(&env, &state);
+        env.events().publish(
+            (symbol_short!("factory"), symbol_short!("adm_acc")),
+            (old_admin, new_admin),
+        );
+        Ok(())
     }
 
-    /// Rotate the factory admin, emitting `adm_upd`.
+    /// Cancel a pending admin-rotation proposal.
+    ///
+    /// Only the **current** admin may cancel. Calling this when no proposal
+    /// is pending is a no-op (idempotent). Emits `adm_can` when a live
+    /// proposal is cancelled.
+    pub fn cancel_admin_proposal(env: Env, current_admin: Address) -> Result<(), Error> {
+        current_admin.require_auth();
+        let mut state = Self::load_state(&env)?;
+        if state.admin != current_admin {
+            return Err(Error::Unauthorized);
+        }
+        if state.pending_admin.is_none() {
+            // Nothing to cancel — idempotent.
+            return Ok(());
+        }
+        let cancelled = match state.pending_admin.take() {
+            Some(addr) => addr,
+            None => return Ok(()), // already cleared — idempotent
+        };
+        state.pending_admin_expiry = None;
+        Self::save_state(&env, &state);
+        env.events().publish(
+            (symbol_short!("factory"), symbol_short!("adm_can")),
+            (current_admin, cancelled),
+        );
+        Ok(())
+    }
+
+    /// Initiate an admin rotation via the legacy `transfer_admin` name.
+    ///
+    /// Delegates to `propose_admin` so **no single-step rotation path
+    /// remains**. Callers using this name get step-1 (proposal) only;
+    /// the proposed admin must still call `accept_admin` to complete the
+    /// handover. Retained for ABI compatibility with tooling built before the
+    /// two-step model was introduced.
+    pub fn transfer_admin(env: Env, admin: Address, new_admin: Address) -> Result<(), Error> {
+        Self::propose_admin(env, admin, new_admin)
+    }
+
+    /// Initiate an admin rotation via the legacy `update_admin` name.
+    ///
+    /// Delegates to `propose_admin` — see `transfer_admin` note above.
     pub fn update_admin(env: Env, current_admin: Address, new_admin: Address) -> Result<(), Error> {
-        Self::rotate_admin(&env, current_admin, new_admin)
+        Self::propose_admin(env, current_admin, new_admin)
     }
 
     pub fn get_state(env: Env) -> Result<FactoryState, Error> {
