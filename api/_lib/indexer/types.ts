@@ -63,6 +63,30 @@ export interface ListTokensResult {
   nextCursor: string | null
 }
 
+/** A contract event as persisted by the indexer. */
+export interface StoredEvent {
+  tokenAddress: string
+  ledgerSeq: number
+  topic: string
+  payload: unknown
+  txHash: string | null
+}
+
+/** Options for paginated event listing. */
+export interface ListEventsOptions {
+  tokenAddress: string
+  /** Keyset cursor: return events with `ledgerSeq` strictly below this value. */
+  cursor?: number | undefined
+  /** Clamped to `[1, MAX_PAGE_LIMIT]` by the store. */
+  limit: number
+}
+
+export interface ListEventsResult {
+  events: StoredEvent[]
+  /** Cursor for the next page, or `null` when no older events exist. */
+  nextCursor: string | null
+}
+
 /**
  * Persistence seam. Ingest and the read API are written against this interface
  * so both are testable without a live database, and so the Postgres driver
@@ -82,6 +106,10 @@ export interface TokenStore {
   getState(): Promise<IndexerState>
   /** Merge the provided fields into the checkpoint row. */
   saveState(patch: Partial<IndexerState>): Promise<void>
+  /** Insert or replace events; must be idempotent on (tokenAddress, ledgerSeq, topic). */
+  upsertEvents(events: StoredEvent[]): Promise<void>
+  /** Keyset-paginated events for a token, newest-first by ledger. */
+  listEvents(options: ListEventsOptions): Promise<ListEventsResult>
 }
 
 /** Server-side clamp on `limit`, per design.md. */
