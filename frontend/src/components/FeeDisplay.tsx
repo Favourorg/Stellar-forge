@@ -71,9 +71,8 @@ export const FeeDisplay: React.FC<FeeDisplayProps> = ({
   const stroopsBig = BigInt(stroops)
   const totalStroops = stroopsBig * BigInt(Math.max(1, count))
   const xlm = stroopsToXLM(totalStroops.toString())
-  const usdAmount = xlmUsdPrice !== null
-    ? (xlm * xlmUsdPrice * Math.max(1, count)).toFixed(2)
-    : null
+  const usdAmount =
+    xlmUsdPrice !== null ? (xlm * xlmUsdPrice * Math.max(1, count)).toFixed(2) : null
 
   // ── Recipient split ─────────────────────────────────────────────────────────
   // When the admin has configured a split, show every recipient and its share.
@@ -119,7 +118,7 @@ export const FeeDisplay: React.FC<FeeDisplayProps> = ({
           >
             {row.address === state.treasury && !showSplit
               ? 'Treasury'
-              : formatAddress(row.address) ?? row.address}
+              : (formatAddress(row.address) ?? row.address)}
             {' — '}
             {row.share}
             {count > 1 && (

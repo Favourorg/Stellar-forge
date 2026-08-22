@@ -25,5 +25,14 @@ export const ProgressBar: React.FC<ProgressBarProps> = ({
     }
   }, [progress])
 
-  return <div ref={fillRef} className={className} role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.max(0, Math.min(progress, 100))} />
+  return (
+    <div
+      ref={fillRef}
+      className={className}
+      role="progressbar"
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={Math.max(0, Math.min(progress, 100))}
+    />
+  )
 }

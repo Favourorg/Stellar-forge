@@ -82,9 +82,7 @@ export const SetMetadataForm: React.FC<Props> = ({
         <div className="rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 p-3">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm font-medium text-blue-900 dark:text-blue-300">
-                Estimated fee
-              </p>
+              <p className="text-sm font-medium text-blue-900 dark:text-blue-300">Estimated fee</p>
               <p className="text-xs text-blue-700 dark:text-blue-400 mt-1">
                 Fee required to set metadata on-chain
               </p>

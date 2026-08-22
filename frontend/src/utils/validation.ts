@@ -111,7 +111,13 @@ const TOKEN_DECIMALS_MAX = 18
 // that should never appear in a token name: C0 controls excluding
 // tab/newline/carriage-return, C1 controls, zero-width characters,
 // bidirectional overrides, BOM, and other invisible formatting chars.
-const DANGEROUS_CHARS = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F\u200B-\u200F\u2028-\u202F\u2060-\u2069\uFEFF]/
+//
+// `no-control-regex` fires here by design: matching control characters is the
+// entire point of this pattern, and dropping them would silently reopen the
+// invisible-character injection this rejects.
+const DANGEROUS_CHARS =
+  // eslint-disable-next-line no-control-regex
+  /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F\u200B-\u200F\u2028-\u202F\u2060-\u2069\uFEFF]/
 
 // Symbol pattern: ASCII alphanumeric + hyphens (ticker convention)
 const TOKEN_SYMBOL_PATTERN = /^[A-Za-z0-9-]+$/

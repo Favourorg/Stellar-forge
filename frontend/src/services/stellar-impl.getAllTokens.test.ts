@@ -203,7 +203,9 @@ describe('StellarService.getAllTokens', () => {
     expect(page2Indices.every((i) => !page1Indices.has(i))).toBe(true)
 
     // Verify: together they cover every index from 1 to 20 exactly once (no gaps).
-    const allIndices = [...page1.tokens, ...page2.tokens].map((t) => t.index).sort((a, b) => a! - b!)
+    const allIndices = [...page1.tokens, ...page2.tokens]
+      .map((t) => t.index)
+      .sort((a, b) => a! - b!)
     expect(allIndices).toEqual(Array.from({ length: 20 }, (_, k) => k + 1))
   })
 })

@@ -1,5 +1,11 @@
 import React, { useState, useRef } from 'react'
-import { Button, ConfirmModal, InsufficientBalanceWarning, ProgressIndicator, ProgressBar } from './UI'
+import {
+  Button,
+  ConfirmModal,
+  InsufficientBalanceWarning,
+  ProgressIndicator,
+  ProgressBar,
+} from './UI'
 import type { ProgressStep } from './UI'
 import { Input } from './UI/Input'
 import { isValidImageFile } from '../utils/validation'
@@ -254,7 +260,10 @@ export const MetadataForm: React.FC<MetadataFormProps> = ({ initialTokenAddress 
               <span>{uploadProgress}%</span>
             </div>
             <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-1.5">
-              <ProgressBar progress={uploadProgress} className="bg-blue-600 h-1.5 rounded-full transition-all duration-300" />
+              <ProgressBar
+                progress={uploadProgress}
+                className="bg-blue-600 h-1.5 rounded-full transition-all duration-300"
+              />
             </div>
           </div>
         )}
