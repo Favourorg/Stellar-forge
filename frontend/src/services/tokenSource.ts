@@ -26,7 +26,7 @@ export interface TokenPage {
 }
 
 export interface TokenSource {
-  getAllTokens(offset: number, limit: number): Promise<TokenPage>
+  getAllTokens(offset: number, limit: number, tokenCountSnapshot?: number): Promise<TokenPage>
   getTokenInfoByAddress(address: string): Promise<TokenInfo>
 }
 
@@ -117,12 +117,12 @@ export function createFallbackTokenSource(
   }
 
   return {
-    async getAllTokens(offset: number, limit: number): Promise<TokenPage> {
+    async getAllTokens(offset: number, limit: number, tokenCountSnapshot?: number): Promise<TokenPage> {
       try {
-        return await withTimeout(indexer.getAllTokens(offset, limit), timeoutMs)
+        return await withTimeout(indexer.getAllTokens(offset, limit, tokenCountSnapshot), timeoutMs)
       } catch (err) {
         downgrade(classify(err), err)
-        return rpc.getAllTokens(offset, limit)
+        return rpc.getAllTokens(offset, limit, tokenCountSnapshot)
       }
     },
 
@@ -192,7 +192,7 @@ export function createIndexerTokenSource(options: IndexerSourceOptions = {}): To
   }
 
   return {
-    async getAllTokens(offset: number, limit: number): Promise<TokenPage> {
+    async getAllTokens(offset: number, limit: number, _tokenCountSnapshot?: number): Promise<TokenPage> {
       // The read API is keyset-paginated, but the existing callers are
       // offset-based. Request one page of `limit` starting at the cursor
       // implied by `offset`; `total` comes from the indexed count.

@@ -189,24 +189,15 @@ describe('validateTokenName', () => {
     expect(validateTokenName('')).toBe(false)
   })
 
-  it('rejects a name over 32 characters', () => {
+  it('rejects a name over 32 bytes', () => {
     expect(validateTokenName('A'.repeat(33))).toBe(false)
   })
 
-  it('rejects a name with HTML tags', () => {
-    expect(validateTokenName('<script>alert(1)</script>')).toBe(false)
-  })
-
-  it('rejects a name with angle brackets', () => {
-    expect(validateTokenName('Token<Name>')).toBe(false)
-  })
-
-  it('rejects a name with ampersand', () => {
-    expect(validateTokenName('Token&Name')).toBe(false)
-  })
-
-  it('rejects a name with quotes', () => {
-    expect(validateTokenName('Token"Name')).toBe(false)
+  it('accepts a name with special characters (contract accepts all non-control chars)', () => {
+    expect(validateTokenName('<script>alert(1)</script>')).toBe(true)
+    expect(validateTokenName('Token<Name>')).toBe(true)
+    expect(validateTokenName('Token&Name')).toBe(true)
+    expect(validateTokenName('Token"Name')).toBe(true)
   })
 })
 
@@ -219,7 +210,7 @@ describe('validateTokenSymbol', () => {
     expect(validateTokenSymbol('X')).toBe(true)
   })
 
-  it('accepts a 12-character symbol', () => {
+  it('accepts a 12-byte symbol', () => {
     expect(validateTokenSymbol('A'.repeat(12))).toBe(true)
   })
 
@@ -231,7 +222,7 @@ describe('validateTokenSymbol', () => {
     expect(validateTokenSymbol('')).toBe(false)
   })
 
-  it('rejects a symbol over 12 characters', () => {
+  it('rejects a symbol over 12 bytes', () => {
     expect(validateTokenSymbol('A'.repeat(13))).toBe(false)
   })
 

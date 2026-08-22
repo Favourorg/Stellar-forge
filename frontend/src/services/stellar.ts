@@ -109,7 +109,8 @@ export class StellarService {
 
     // RPC is always the fallback, and the only source when the flag is off.
     const rpc: TokenSource = {
-      getAllTokens: (offset, limit) => impl.getAllTokens(offset, limit),
+      getAllTokens: (offset, limit, tokenCountSnapshot) =>
+        impl.getAllTokens(offset, limit, tokenCountSnapshot),
       getTokenInfoByAddress: (address) => impl.getTokenInfoByAddress(address),
     }
 
@@ -129,9 +130,9 @@ export class StellarService {
    */
   onIndexerDowngrade?: (reason: DowngradeReason) => void
 
-  async getAllTokens(offset = 0, limit = 10) {
+  async getAllTokens(offset = 0, limit = 10, tokenCountSnapshot?: number) {
     const source = await this.getTokenSource()
-    return source.getAllTokens(offset, limit)
+    return source.getAllTokens(offset, limit, tokenCountSnapshot)
   }
 
   async getTokensByCreator(creator: string, offset: number, limit: number) {
