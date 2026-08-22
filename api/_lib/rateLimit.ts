@@ -1,4 +1,5 @@
 import type { VercelRequest } from '@vercel/node'
+import { isKvConfigured, kvGet, kvSet } from './kv'
 
 const WINDOW_MS = 15 * 60 * 1000 // 15 minutes
 const MAX_REQUESTS_PER_WINDOW = parseInt(process.env.RATE_LIMIT_WINDOW ?? '10', 10)
@@ -8,12 +9,20 @@ const MAX_REQUESTS_PER_DAY = parseInt(process.env.RATE_LIMIT_DAY ?? '100', 10)
  * Check if a wallet address has exceeded rate limits (window or daily).
  * Uses Vercel KV for durable, cross-instance limits.
  * Falls back to in-memory tracking if KV is unavailable.
+ *
+ * The KV REST helpers moved to `./kv` when the challenge store (issue #1091)
+ * needed the same durable path. Two behavioural notes from that move, both of
+ * which make this function match the intent its own comment already stated
+ * ("On error, deny the request (fail closed)"):
+ *
+ *   - A non-2xx read used to be indistinguishable from an empty bucket, so a
+ *     KV outage silently reset every counter and let traffic through. It now
+ *     throws and is caught below.
+ *   - A failed write used to be ignored, leaving the limiter running against
+ *     counters that were never incremented. It now throws too.
  */
 export async function isRateLimited(address: string): Promise<boolean> {
-  const kvUrl = process.env.VERCEL_KV_REST_API_URL
-  const kvToken = process.env.VERCEL_KV_REST_API_TOKEN
-
-  if (!kvUrl || !kvToken) {
+  if (!isKvConfigured()) {
     // Fallback: use in-memory (not production-safe)
     return isRateLimitedInMemory(address)
   }
@@ -24,37 +33,31 @@ export async function isRateLimited(address: string): Promise<boolean> {
     const dayKey = `ratelimit:${address}:day`
 
     // Window bucket (15 min rolling)
-    const windowData = await kvGet(kvUrl, kvToken, windowKey)
+    const windowData = await kvGet(windowKey)
     if (windowData) {
       const { count, windowStart } = JSON.parse(windowData)
       if (now - windowStart > WINDOW_MS) {
         // Window expired, reset
-        await kvSet(kvUrl, kvToken, windowKey, JSON.stringify({ count: 1, windowStart: now }), 900)
+        await kvSet(windowKey, JSON.stringify({ count: 1, windowStart: now }), 900)
       } else {
         // Window still active
         if (count >= MAX_REQUESTS_PER_WINDOW) return true
-        await kvSet(
-          kvUrl,
-          kvToken,
-          windowKey,
-          JSON.stringify({ count: count + 1, windowStart }),
-          900,
-        )
+        await kvSet(windowKey, JSON.stringify({ count: count + 1, windowStart }), 900)
       }
     } else {
       // First request in this window
-      await kvSet(kvUrl, kvToken, windowKey, JSON.stringify({ count: 1, windowStart: now }), 900)
+      await kvSet(windowKey, JSON.stringify({ count: 1, windowStart: now }), 900)
     }
 
     // Day bucket (24 hr)
-    const dayData = await kvGet(kvUrl, kvToken, dayKey)
+    const dayData = await kvGet(dayKey)
     if (dayData) {
       const { count } = JSON.parse(dayData)
       if (count >= MAX_REQUESTS_PER_DAY) return true
-      await kvSet(kvUrl, kvToken, dayKey, JSON.stringify({ count: count + 1 }), 86400)
+      await kvSet(dayKey, JSON.stringify({ count: count + 1 }), 86400)
     } else {
       // First request in this day
-      await kvSet(kvUrl, kvToken, dayKey, JSON.stringify({ count: 1 }), 86400)
+      await kvSet(dayKey, JSON.stringify({ count: 1 }), 86400)
     }
 
     return false
@@ -102,28 +105,4 @@ export function clientIp(req: VercelRequest): string {
     return forwarded[forwarded.length - 1]
   }
   return req.socket?.remoteAddress ?? 'unknown'
-}
-
-// Vercel KV REST API helpers
-async function kvGet(url: string, token: string, key: string): Promise<string | null> {
-  const response = await fetch(`${url}/get/${encodeURIComponent(key)}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  })
-  if (!response.ok) return null
-  const data = (await response.json()) as { result: string | null }
-  return data.result
-}
-
-async function kvSet(
-  url: string,
-  token: string,
-  key: string,
-  value: string,
-  exSeconds: number,
-): Promise<void> {
-  await fetch(`${url}/set/${encodeURIComponent(key)}`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ ex: exSeconds, value }),
-  })
 }

@@ -181,7 +181,21 @@ be inlined into the client bundle and shipped to every visitor:
 ```env
 PINATA_API_KEY=<pinata-api-key>
 PINATA_API_SECRET=<pinata-api-secret>
+JWT_SECRET=<random-32-byte-secret>
+VERCEL_KV_REST_API_URL=<vercel-kv-rest-url>
+VERCEL_KV_REST_API_TOKEN=<vercel-kv-rest-token>
 ```
+
+> **The KV variables are required in production.** Uploads are gated on a
+> wallet-signature login whose challenge is issued by one request and verified
+> by another. On Vercel those are separate invocations with no routing
+> affinity, so without a shared store the second one lands on an instance that
+> has never seen the challenge, and correct clients are told to "request a new
+> challenge" at whatever rate the platform happens to scale at (issue #1091).
+> The same store backs rate limiting, which is likewise per-instance without
+> it. `GET /api/health/auth` reports which store is live: `durable: true` for
+> Vercel KV, or `503` with `store: "in-memory"` for the local-dev fallback.
+> Local development needs neither variable.
 
 > **Note:** `VITE_FACTORY_CONTRACT_ID` and `VITE_TOKEN_WASM_HASH` are required. The app will display a misconfiguration screen if either is missing, rather than failing silently at runtime.
 >
