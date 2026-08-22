@@ -3,7 +3,7 @@ import { useForm } from 'react-hook-form'
 import { Input, Button, ConfirmModal, InsufficientBalanceWarning, Select } from './UI'
 import { useDebounce } from '../hooks/useDebounce'
 import { useTokenBalance } from '../hooks/useTokenBalance'
-import { useTransaction } from '../hooks/useTransaction'
+import { useTransaction, isTransactionInFlight } from '../hooks/useTransaction'
 import { useWalletContext } from '../context/WalletContext'
 import { useTos } from '../context/TosContext'
 import { useStellarContext } from '../context/StellarContext'
@@ -68,6 +68,7 @@ export const BurnForm: React.FC<BurnFormProps> = ({
     },
   })
 
+  // eslint-disable-next-line react-hooks/incompatible-library -- react-hook-form's watch() is intentionally non-memoizable; the React Compiler skips this component rather than miscompiling it. See #1002 follow-up
   const tokenSelect = watch('tokenSelect')
   const tokenManual = watch('tokenManual')
   const amount = watch('amount')
@@ -101,11 +102,7 @@ export const BurnForm: React.FC<BurnFormProps> = ({
   )
 
   const { execute: executeBurn, status: txStatus } = useTransaction(burnBuilder)
-  const isSubmitting =
-    txStatus === 'simulating' ||
-    txStatus === 'signing' ||
-    txStatus === 'submitting' ||
-    txStatus === 'polling'
+  const isSubmitting = isTransactionInFlight(txStatus)
 
   const onValid = () => {
     if (!wallet.isConnected) {

@@ -5,7 +5,6 @@ import { isValidIPFSUri } from '../utils/validation'
 import { useToast } from '../context/ToastContext'
 import { useBalanceCheck } from '../hooks/useBalanceCheck'
 import { useNetworkGuard } from '../hooks/useNetworkGuard'
-import { isIpfsConfigured } from '../config/env'
 
 const ESTIMATED_FEE = '0.01' // XLM
 const ESTIMATED_FEE_XLM = 0.01
@@ -25,7 +24,11 @@ export const SetMetadataForm: React.FC<Props> = ({
   const [loading, setLoading] = useState(false)
   const [pending, setPending] = useState(false)
   const { addToast } = useToast()
-  const ipfsReady = isIpfsConfigured()
+  // No IPFS readiness gate here: this form takes an ipfs:// URI that is
+  // already pinned and passes it to the contract's `set_metadata`. It never
+  // uploads, so pinning credentials are irrelevant to whether it can be used —
+  // gating it on them just disabled a working form on deployments that pin
+  // elsewhere.
   const { blocked: networkBlocked, reason: networkReason } = useNetworkGuard()
   const { hasSufficientBalance, shortfall, isTestnet } = useBalanceCheck(ESTIMATED_FEE_XLM)
 
@@ -53,17 +56,6 @@ export const SetMetadataForm: React.FC<Props> = ({
 
   return (
     <>
-      {!ipfsReady && (
-        <div
-          className="mb-4 rounded-lg bg-yellow-50 border border-yellow-300 px-4 py-3 text-yellow-800 text-sm"
-          role="alert"
-        >
-          IPFS upload is disabled. Set{' '}
-          <code className="font-mono bg-yellow-100 px-1 rounded">VITE_IPFS_API_KEY</code> and{' '}
-          <code className="font-mono bg-yellow-100 px-1 rounded">VITE_IPFS_API_SECRET</code> to
-          enable metadata uploads.
-        </div>
-      )}
       <form onSubmit={handleSubmit} className="space-y-4">
         <Input
           label="Token Address"
@@ -78,16 +70,10 @@ export const SetMetadataForm: React.FC<Props> = ({
           onChange={(e) => setMetadataUri(e.target.value)}
           placeholder="ipfs://Qm..."
           required
-          disabled={!ipfsReady}
         />
-        <div title={!ipfsReady ? 'IPFS credentials are not configured' : undefined}>
-          <Button
-            type="submit"
-            disabled={loading || !ipfsReady || !hasSufficientBalance || networkBlocked}
-          >
-            {loading ? 'Submitting...' : 'Set Metadata'}
-          </Button>
-        </div>
+        <Button type="submit" disabled={loading || !hasSufficientBalance || networkBlocked}>
+          {loading ? 'Submitting...' : 'Set Metadata'}
+        </Button>
         {networkBlocked && networkReason && (
           <p className="text-sm text-red-600 dark:text-red-400" role="alert">
             {networkReason}

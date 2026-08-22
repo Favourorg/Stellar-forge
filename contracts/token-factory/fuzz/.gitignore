@@ -1,3 +1,8 @@
 # Fuzz testing artifacts
 /artifacts/
 /target/
+
+# Corpus seeds are committed — do NOT ignore corpus/
+# The CI workflow caches the runtime corpus but starts from committed seeds.
+# Add new seeds via:  node scripts/generate_seeds.mjs
+# or by copying a crash artifact into the appropriate corpus/<target>/ directory.
