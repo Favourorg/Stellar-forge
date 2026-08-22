@@ -1811,6 +1811,63 @@ impl TokenFactory {
     }
 }
 
+/// Test/fuzz-only helper for registering a token in factory storage without
+/// going through `create_token`'s WASM-deploy path — no real token WASM is
+/// available to `cargo test` or fuzz targets (see `mod bench`'s note below).
+/// Compiled only when the `testutils` feature is enabled, so it never ships
+/// in the production WASM build (the release build does not enable it).
+///
+/// This is a plain associated function, not a `#[contractimpl]` entrypoint,
+/// so it never appears in the contract's on-chain ABI. It exists so external
+/// crates that depend on this one as an ordinary library (e.g. the fuzz
+/// targets in `fuzz/`, which cannot reach this crate's private `DataKey`/
+/// `TokenInfo` types any other way) can register a real token — typically a
+/// Stellar Asset Contract — and then exercise genuine public entrypoints
+/// like `burn` against it, mirroring what `record_token` writes for a
+/// deployed token.
+#[cfg(feature = "testutils")]
+impl TokenFactory {
+    pub fn fuzz_seed_token(
+        env: &Env,
+        token_addr: &Address,
+        creator: &Address,
+        name: String,
+        symbol: String,
+        decimals: u32,
+        burn_enabled: bool,
+        max_supply: Option<i128>,
+    ) -> u32 {
+        let mut state = Self::load_state(env).expect("factory must be initialized before seeding");
+        state.token_count = state
+            .token_count
+            .checked_add(1)
+            .expect("token_count overflow while seeding");
+        let index = state.token_count;
+
+        Self::set_persistent(
+            env,
+            &DataKey::TokenInfo(index),
+            &TokenInfo {
+                name,
+                symbol,
+                decimals,
+                creator: creator.clone(),
+                created_at: env.ledger().timestamp(),
+                burn_enabled,
+                max_supply,
+            },
+        );
+        Self::append_creator_token(env, creator, index)
+            .expect("append_creator_token failed while seeding");
+        Self::set_persistent(env, &DataKey::TokenIndex(token_addr.clone()), &index);
+        Self::set_persistent(env, &DataKey::TokenAddress(index), token_addr);
+        Self::set_persistent(env, &(token_addr, symbol_short!("owner")), creator);
+
+        Self::save_state(env, &state);
+        index
+    }
+}
+
 #[cfg(test)]
 mod test;
 

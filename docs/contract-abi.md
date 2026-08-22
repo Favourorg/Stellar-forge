@@ -415,6 +415,10 @@ Read-only: returns `true` if `address` is on the whitelist.
 | 22   | `ZeroFeeSplitEntry`         | `set_fee_split` map contains an entry with `bps == 0`                                 |
 | 23   | `MetadataFrozen`            | metadata is frozen (via `freeze_metadata` or auto-freeze after max updates)           |
 
+## Test/fuzz-only helpers
+
+`fuzz_seed_token` (`src/lib.rs`, gated by `#[cfg(feature = "testutils")]`) is **not** a contract entrypoint — it is a plain associated function in a second, non-`#[contractimpl]` `impl TokenFactory` block, so it is compiled out of the production WASM entirely and never appears in the on-chain ABI. It exists so `contracts/token-factory/fuzz`'s targets (which depend on this crate as an ordinary library and so cannot reach its private `DataKey`/`TokenInfo` types any other way) can register a token in factory storage — mirroring what `create_token` writes — without a real token WASM to install at `token_wasm_hash`, which `cargo test`/fuzzing can't provide (see `mod bench`'s note in `src/lib.rs`). See `contracts/token-factory/fuzz/README.md` for how it's used.
+
 ## Events
 
 The contract emits Soroban events on a `(factory, action)` topic. The frontend parses them via `frontend/src/services/stellar-impl.ts`. Events:
