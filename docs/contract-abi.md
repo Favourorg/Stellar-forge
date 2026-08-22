@@ -335,6 +335,8 @@ Set a fee split where `splits` is a `Map<Address, u32>` of basis-point recipient
 
 **Rounding:** `distribute_fee` uses the **largest-remainder method**. Each recipient's share is `floor(amount * bps / 10_000)`. Remainder stroops (at most `recipients - 1`) are awarded one-at-a-time to the entries with the largest fractional parts, so the sum of all transfers always equals the full fee amount. No recipient with non-zero `bps` receives zero forever as long as the fee amount is ≥ 1 stroop (the largest-remainder guarantee).
 
+**Per-recipient failure isolation:** `distribute_fee` pays each split recipient with the non-panicking `try_transfer` rather than `transfer`. If a recipient's address cannot accept the fee token (frozen account, revoked trustline, clawback-locked balance, or a misbehaving contract address), that single transfer failure does **not** abort the call — the recipient's share is redirected to `treasury` instead, and a `fee_redir` event is emitted naming the skipped recipient and the redirected amount, so an admin can detect and fix a broken split (via `set_fee_split`) without reading contract logs. This holds for both the split path and the non-split (`treasury`-only) path. `treasury` itself is the terminal fallback: if the payment (or redirect) to `treasury` fails there is nowhere else to send the funds, so `distribute_fee` returns `Error::TreasuryTransferFailed` and the whole call reverts.
+
 Emits a `split_set` event on successful configuration and a `split_clr` event when the split is cleared.
 
 **Recipient cap:** `splits` may contain at most **10 recipients** (`MAX_FEE_SPLIT_RECIPIENTS`). Exceeding it is rejected with `Error::TooManyFeeSplitRecipients` before the basis-point sum is even checked. This exists because `distribute_fee` transfers a share to every configured recipient on **every** `create_token`, `create_tokens_batch`, `mint_tokens`, and `set_metadata` call — an unbounded admin-configured split would make every fee-paying call on the contract arbitrarily expensive for the caller, and risk exceeding Soroban's per-transaction resource limits outright.
@@ -414,6 +416,7 @@ Read-only: returns `true` if `address` is on the whitelist.
 | 21   | `InvalidMetadataUri`        | URI is empty, missing `ipfs://` prefix, exceeds 128 bytes, or has no CID              |
 | 22   | `ZeroFeeSplitEntry`         | `set_fee_split` map contains an entry with `bps == 0`                                 |
 | 23   | `MetadataFrozen`            | metadata is frozen (via `freeze_metadata` or auto-freeze after max updates)           |
+| 24   | `TreasuryTransferFailed`    | payment/redirect of a fee share to `treasury` itself failed (no further fallback)     |
 
 ## Events
 
@@ -431,6 +434,7 @@ The contract emits Soroban events on a `(factory, action)` topic. The frontend p
 | `fees`      | `(base_fee, metadata_fee)`               | `update_fees`                          |
 | `split_set` | `(admin, splits)`                        | `set_fee_split` (non-empty)            |
 | `split_clr` | `(admin)`                                | `set_fee_split` (empty — clears split) |
+| `fee_redir` | `(recipient, share)`                     | `distribute_fee` (recipient `try_transfer` failed; share redirected to `treasury`) |
 | `pause`     | `(admin)`                                | `pause`                                |
 | `unpause`   | `(admin)`                                | `unpause`                              |
 | `adm_upd`   | `(current_admin, new_admin)`             | `update_admin`                         |
