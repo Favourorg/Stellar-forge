@@ -1,7 +1,9 @@
 /**
  * Scheduled ingest for the contract-event indexer (issue #943).
  *
- * Invoked by the Vercel cron entry in `vercel.json`. Runs one full cycle:
+ * Invoked every 5 minutes by the `crons` entry in the repo-root `vercel.json`,
+ * which is the authoritative config because `api/` lives at the repo root —
+ * see docs/indexer.md#deployment. Runs one full cycle:
  * backfill (while incomplete), steady-state event paging, then reconciliation.
  * See `.kiro/specs/contract-event-indexing/design.md`.
  *

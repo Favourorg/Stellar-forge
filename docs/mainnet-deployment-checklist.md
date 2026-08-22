@@ -37,6 +37,9 @@ Every mainnet deployment **must** be accompanied by a signed, annotated git tag 
 - [ ] Confirm `VITE_TOKEN_WASM_HASH` equals the factory's on-chain `token_wasm_hash` (`stellar contract invoke --id <factory> -- get_state`). If the factory is being upgraded in this release, the frontend must be redeployed with the new hash in the same release window.
 - [ ] Confirm Content Security Policy headers allow only the required Stellar, Pinata, and application origins.
 - [ ] Review deployment hosting settings, environment variables, redirects, and security headers before publishing.
+- [ ] Confirm the Vercel project's **Root Directory is the repo root**, not `frontend/`. The serverless functions live in `api/` at the repo root, so a project rooted at `frontend/` ships none of them and every `/api/*` call 404s.
+- [ ] Run `npm run check:vercel-cron` and confirm it passes. Vercel schedules cron jobs **only** from the `crons` array in the deployed project's `vercel.json`; without the `/api/cron/index-tokens` entry the indexer never runs, `/api/health/indexer` stays `healthy: false`, and nothing else breaks visibly because the frontend falls back to direct RPC (see [issue #1090](https://github.com/Favourorg/Stellar-forge/issues/1090) and [docs/indexer.md](./indexer.md#deployment)). The same check runs in CI.
+- [ ] If the indexer is enabled, confirm `CRON_SECRET` is set in the Vercel project — the cron endpoint fails closed with 401 in production without it, which looks identical to the cron never firing.
 
 ## Deployment
 

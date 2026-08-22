@@ -1,4 +1,10 @@
 {
+  "crons": [
+    {
+      "path": "/api/cron/index-tokens",
+      "schedule": "*/5 * * * *"
+    }
+  ],
   "headers": [
     {
       "source": "/(.*)",

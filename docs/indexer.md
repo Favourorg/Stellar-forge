@@ -38,6 +38,16 @@ Resumable across cron runs and idempotent.
 **Phase B — steady state.** Pages `getEvents` from the stored cursor, upserting
 `created` events and applying `meta` events.
 
+**Retention window — resolved.** Soroban RPC prunes contract events after a
+bounded window: **≈7 days on SDF public infrastructure**, provider-dependent
+elsewhere (see [rpc-rate-limits.md](./rpc-rate-limits.md#event-retention-constraint)).
+That window bounds only how far back a _cold-started_ Phase B can pick up `meta`
+events; it does not bound the indexer's coverage, because Phase A resolves token
+identity from contract state, which has no retention window. The practical
+consequence: an indexer that is down longer than the window must be re-backfilled
+rather than resumed, and at a 5-minute cadence it has ~2000 consecutive failed
+runs of margin before that happens.
+
 Delivery is **at-least-once**: the cursor advances only after a page has been
 written, so a crash mid-run replays that range rather than skipping it. Every
 write is an idempotent upsert, which is what makes replay safe.
@@ -104,6 +114,28 @@ working app.
 Everything below needs a human — the code is complete, the infrastructure is
 not provisioned.
 
+### Which `vercel.json` is authoritative
+
+**The repo-root `vercel.json`.** The serverless functions live in `api/` at the
+repo root and the frontend calls them same-origin (`/api/ipfs/*`,
+`/api/health/*`, `/api/tokens/*`), so the deployed project's Root Directory
+must be the repo root — a project rooted at `frontend/` ships no functions at
+all. `frontend/vercel.json` only carries response headers for that
+frontend-only case and must never declare `crons`; the check described below
+enforces both halves.
+
+This matters because Vercel reads cron jobs **exclusively** from a `crons`
+array in the deployed project's `vercel.json`. Issue #1090: this file and the
+spec both described a 5-minute cron that no config file had ever contained, so
+the indexer never ran, the store stayed empty and `/api/health/indexer`
+returned `healthy: false` forever. Nothing broke visibly, because the frontend
+falls back to direct RPC — which is precisely why it went unnoticed.
+
+`npm run check:vercel-cron` (wired into the CI `drift-checks` job) fails the
+build if the root `vercel.json` stops scheduling `/api/cron/index-tokens`, if a
+scheduled path has no handler on disk, or if the cadence drifts coarser than
+`LAG_WARNING_SECONDS`. Run it before every production deploy.
+
 1. **Provision Postgres** (Vercel Postgres / Neon) and set `POSTGRES_URL`.
    Install the driver: `npm install @neondatabase/serverless` (override with
    `INDEXER_PG_DRIVER` if using a different one). Without `POSTGRES_URL` the
@@ -124,10 +156,21 @@ not provisioned.
    misconfigured deployment fails closed rather than leaving an unauthenticated
    endpoint that burns RPC quota.
 
-4. **Confirm the cron cadence.** `vercel.json` schedules
-   `/api/cron/index-tokens` every 5 minutes. **Vercel Hobby only supports daily
-   crons** — the 5-minute cadence the lag thresholds assume requires a paid
-   plan. On Hobby, either upgrade or relax the lag alerting to match.
+4. **Cron cadence — resolved.** The root `vercel.json` schedules
+   `/api/cron/index-tokens` on `*/5 * * * *`, the cadence design.md's lag
+   thresholds assume. This **requires a Pro or Enterprise plan**: Vercel Hobby
+   accepts daily crons only, and the deployment is on Pro. If that ever changes,
+   the two must move together — a daily cadence with a 15-minute warning
+   threshold reports a permanent lag warning on a perfectly healthy indexer, so
+   `LAG_WARNING_SECONDS` / `LAG_CRITICAL_SECONDS` in `api/_lib/indexer/ingest.ts`
+   would have to be relaxed to roughly 26h / 50h. `check-vercel-cron.mjs` fails
+   the build if the cadence and the thresholds disagree.
+
+   Vercel authenticates the invocation with `Authorization: Bearer $CRON_SECRET`,
+   so `CRON_SECRET` must be set in the project before the first scheduled run —
+   otherwise every invocation returns 401 and the symptom is indistinguishable
+   from no cron at all.
+
 5. **Let the backfill finish** before enabling the frontend flag. Poll
    `/api/health/indexer` until `backfillComplete` is true and `indexedCount`
    equals the factory's `token_count`.

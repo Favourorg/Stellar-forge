@@ -95,6 +95,19 @@ jobs:
       - name: Spec stubs check (.kiro/specs/*)
         run: node scripts/check-kiro-specs.mjs
 
+      # Vercel schedules cron jobs *only* from a `crons` array in the deployed
+      # project's vercel.json. Issue #1090: the entrypoint, the design doc and
+      # the spec all claimed the indexer cron existed, no config file ever
+      # contained one, and the app kept working (RPC fallback) so nothing
+      # surfaced it. Fail the build instead.
+      - name: Vercel cron configuration (issue #1090)
+        run: node scripts/check-vercel-cron.mjs
+
+      # scripts/*.test.mjs existed but no workflow ran them — the same rot M3
+      # found in the API tests. Plain node:test, so no toolchain is needed.
+      - name: Build-script tests
+        run: npm run test:scripts
+
   frontend:
     name: Frontend
     runs-on: ubuntu-latest
