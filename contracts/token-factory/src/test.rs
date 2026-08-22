@@ -13,21 +13,30 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 
 // ── Malicious re-entrant fee token (issue #1095) ─────────────────────────────
 //
-// The state-injection reentrancy tests below prove that a *pre-set* `locked`
-// flag is honoured, but they prove nothing about whether the flag is actually
-// acquired *before* the external call that a malicious contract could use to
-// re-enter. This contract is the real thing: the factory calls SEP-41
-// `transfer` on it (via `distribute_fee` during `create_token` / `mint_tokens`
-// / `set_metadata`), and it synchronously calls back into the factory to
-// attempt a re-entrant `create_token`, recording whether the guard rejected
-// that nested call.
+// The factory calls SEP-41 `transfer` on this contract (via `distribute_fee`
+// during `create_token` / `mint_tokens` / `set_metadata`), and it synchronously
+// calls back into the factory to attempt a re-entrant `create_token`, recording
+// whether that nested call was refused.
 //
 // It is deliberately NOT a real on-chain contract: it is a native in-process
 // test contract registered with `env.register`, which is the only way to make
 // a genuine *nested* cross-contract call against the factory without compiling
 // a separate malicious WASM (see `fuzz/README.md` for the documented
-// limitation). This exercises the real `locked` acquisition/check code path
-// end-to-end, unlike the `locked = true` state-injection tests.
+// limitation).
+//
+// What the re-entry actually hits. Soroban's host refuses any call into a
+// contract that is already on the call stack, and it does so *before* the
+// callee runs — so the nested invocation never reaches the factory's `locked`
+// check. The malicious contract observes a host `InvokeError`, not
+// `Error::Reentrancy`. This was verified directly: substituting a read-only
+// `get_state()` for the nested `create_token` fails identically, and a
+// read-only view has no guard to trip.
+//
+// So this contract proves the end-to-end property — a malicious fee token
+// cannot re-enter the factory mid-call — but it cannot prove *when* the
+// `locked` flag is acquired relative to the external call, because the guard
+// never executes. Ordering remains covered only by the state-injection tests
+// below.
 #[contract]
 pub struct ReentrantToken;
 
@@ -44,12 +53,12 @@ impl ReentrantToken {
             .set(&symbol_short!("attacker"), &attacker);
         env.storage()
             .instance()
-            .set(&symbol_short!("rejected"), &false);
+            .set(&symbol_short!("blocked"), &false);
     }
 
     /// SEP-41 `transfer`. Invoked by the factory's `distribute_fee` while the
     /// factory holds the reentrancy lock. Re-enters `create_token` and records
-    /// whether the guard rejected the nested call.
+    /// whether the nested call was refused.
     pub fn transfer(env: Env, _from: Address, _to: MuxedAddress, _amount: i128) {
         let factory: Address = env
             .storage()
@@ -73,21 +82,22 @@ impl ReentrantToken {
             &None,
             &1_000,
         );
-        // The guard is checked before any other validation, so a correctly
-        // locked factory returns `Error::Reentrancy` here. If the lock were
-        // acquired *after* the external call, the nested `create_token` would
-        // proceed past the guard and the result would differ.
-        let rejected = matches!(result, Err(Ok(Error::Reentrancy)));
+        // Any error means the re-entry was refused, and refusal is the property
+        // under test. Deliberately not matched against `Error::Reentrancy`:
+        // the host aborts the nested call before the factory's guard runs, so
+        // what arrives here is `Err(Err(InvokeError))`. Asserting the narrower
+        // shape would make this test fail on a *correctly* protected factory.
+        let blocked = result.is_err();
         env.storage()
             .instance()
-            .set(&symbol_short!("rejected"), &rejected);
+            .set(&symbol_short!("blocked"), &blocked);
     }
 
-    /// View: whether the most recent re-entrant call was rejected by the guard.
-    pub fn reentrant_rejected(env: Env) -> bool {
+    /// View: whether the most recent re-entrant call was refused.
+    pub fn reentrant_blocked(env: Env) -> bool {
         env.storage()
             .instance()
-            .get(&symbol_short!("rejected"))
+            .get(&symbol_short!("blocked"))
             .unwrap_or(false)
     }
 }
@@ -2792,10 +2802,17 @@ fn test_batch_reentrancy_guard() {
 // into storage (the same mechanism used for `create_token` above). This proves
 // that the guard is present and wired up correctly for each entrypoint — but
 // NOT that the lock is acquired *before* the vulnerable external call in the
-// real control flow. That gap is closed by
-// `test_mint_tokens_rejects_real_reentrant_call` below, which drives a genuine
-// nested cross-contract re-entry through the malicious `ReentrantToken`
-// fee-token contract defined at the top of this file.
+// real control flow.
+//
+// Reentrancy ordering: that gap is still open. Issue #1095 added
+// `test_mint_tokens_rejects_real_reentrant_call` below to close it with a
+// genuine nested re-entry through the malicious `ReentrantToken` fee token, but
+// the Soroban host refuses re-entry into a contract already on the call stack
+// before the callee runs, so the nested call never reaches the guard — the
+// factory's own `locked` check is unobservable from outside. No test can
+// currently distinguish a factory that locks before `distribute_fee` from one
+// that locks after; the host makes both safe against cross-contract re-entry,
+// which is why the guard is defence-in-depth rather than the only barrier.
 //
 // The cross-function reentrancy test additionally verifies that a lock set by
 // *one* entrypoint (mint_tokens) also blocks a concurrent call to a *different*
@@ -2825,14 +2842,15 @@ fn test_mint_tokens_reentrancy_guard() {
 /// End-to-end reentrancy: a real nested cross-contract call, not a pre-injected
 /// lock. The factory is deployed with a malicious SEP-41 fee token
 /// (`ReentrantToken`) whose `transfer` re-enters `create_token` from inside
-/// `distribute_fee`. The re-entrant call must be rejected by the guard even
-/// though no `locked = true` was ever injected into storage.
+/// `distribute_fee`. The re-entrant call must not succeed.
 ///
-/// This is the test the state-injection tests *cannot* be: if the
-/// `state.locked = true` line in `mint_tokens` were moved after the
-/// `distribute_fee` call, the nested `create_token` would observe `locked ==
-/// false`, the malicious contract would record `rejected == false`, and this
-/// test would fail — while every state-injection test would still pass.
+/// Refusal here comes from the Soroban host, which rejects any call into a
+/// contract already on the call stack before the callee runs — see the note on
+/// `ReentrantToken` above. That makes this a genuine end-to-end check that a
+/// hostile fee token cannot re-enter mid-`mint_tokens`, but *not* a check of
+/// when the `locked` flag is set: moving `state.locked = true` after the
+/// `distribute_fee` call would leave this test passing. Lock ordering is not
+/// covered by any test — see the `Reentrancy ordering` note above.
 #[test]
 fn test_mint_tokens_rejects_real_reentrant_call() {
     let env = Env::default();
@@ -2895,13 +2913,11 @@ fn test_mint_tokens_rejects_real_reentrant_call() {
     // completes its mint and releases the lock.
     client.mint_tokens(&token_addr, &admin, &recipient, &100, &1_000);
 
-    // The malicious contract must have observed `Error::Reentrancy` on its
-    // nested call — proving the lock was already held before the external
-    // `distribute_fee` transfer happened.
+    // The malicious contract must have had its nested call refused.
     let malicious = ReentrantTokenClient::new(&env, &fee_token);
     assert!(
-        malicious.reentrant_rejected(),
-        "re-entrant create_token must be rejected by the guard"
+        malicious.reentrant_blocked(),
+        "re-entrant create_token from the fee token must not succeed"
     );
 }
 
