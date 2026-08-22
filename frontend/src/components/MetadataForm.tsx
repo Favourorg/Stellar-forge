@@ -1,15 +1,17 @@
 import React, { useState, useRef } from 'react'
-import { Button, ConfirmModal, InsufficientBalanceWarning, ProgressIndicator } from './UI'
+import { Button, ConfirmModal, InsufficientBalanceWarning, ProgressIndicator, ProgressBar } from './UI'
 import type { ProgressStep } from './UI'
 import { Input } from './UI/Input'
 import { isValidImageFile } from '../utils/validation'
+import { MAX_METADATA_DESCRIPTION_LENGTH } from '../services/ipfs'
 import { useToast } from '../context/ToastContext'
 import { useStellarContext } from '../context/StellarContext'
+import { useWalletContext } from '../context/WalletContext'
 import { useBalanceCheck } from '../hooks/useBalanceCheck'
 import { useNetwork } from '../context/NetworkContext'
 import { useNetworkGuard } from '../hooks/useNetworkGuard'
 import { useTos } from '../context/TosContext'
-import { isIpfsConfigured } from '../config/env'
+import { useIpfsReady } from '../hooks/useIpfsReady'
 import { ExplorerLink } from './ExplorerLink'
 import { useFactoryState } from '../hooks/useFactoryState'
 
@@ -26,6 +28,7 @@ type Step = 'idle' | 'uploading-ipfs' | 'confirming-stellar' | 'done' | 'error'
 export const MetadataForm: React.FC<MetadataFormProps> = ({ initialTokenAddress = '' }) => {
   const { ipfsService, stellarService } = useStellarContext()
   const { addToast } = useToast()
+  const { wallet } = useWalletContext()
   const { network } = useNetwork()
   const { blocked: networkBlocked, reason: networkReason } = useNetworkGuard()
   const { requireTos } = useTos()
@@ -50,7 +53,8 @@ export const MetadataForm: React.FC<MetadataFormProps> = ({ initialTokenAddress 
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  const ipfsReady = isIpfsConfigured()
+  const ipfsReadiness = useIpfsReady()
+  const ipfsReady = ipfsReadiness === 'ready'
   const isSubmitting = step === 'uploading-ipfs' || step === 'confirming-stellar'
 
   const progressSteps: ProgressStep[] = [
@@ -78,11 +82,11 @@ export const MetadataForm: React.FC<MetadataFormProps> = ({ initialTokenAddress 
     },
   ]
 
-  const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImageChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
 
-    const validation = isValidImageFile(file)
+    const validation = await isValidImageFile(file)
     if (!validation.valid) {
       addToast(validation.error ?? 'Invalid image file', 'error')
       if (fileInputRef.current) fileInputRef.current.value = ''
@@ -111,6 +115,13 @@ export const MetadataForm: React.FC<MetadataFormProps> = ({ initialTokenAddress 
       addToast('Please enter a token address', 'error')
       return
     }
+    if (description.length > MAX_METADATA_DESCRIPTION_LENGTH) {
+      addToast(
+        `Description must be ${MAX_METADATA_DESCRIPTION_LENGTH} characters or fewer`,
+        'error',
+      )
+      return
+    }
     requireTos(() => setPendingConfirm(true))
   }
 
@@ -128,6 +139,7 @@ export const MetadataForm: React.FC<MetadataFormProps> = ({ initialTokenAddress 
         imageFile!,
         description,
         tokenAddress,
+        wallet.address!,
         (p) => setUploadProgress(p),
         (attempt) => addToast(`Retrying upload… (attempt ${attempt}/3)`, 'warning'),
       )
@@ -173,18 +185,30 @@ export const MetadataForm: React.FC<MetadataFormProps> = ({ initialTokenAddress 
     if (fileInputRef.current) fileInputRef.current.value = ''
   }
 
+  if (ipfsReadiness === 'checking') {
+    return (
+      <div
+        className="rounded-lg border border-gray-200 dark:border-gray-700 p-4 text-sm text-gray-500 dark:text-gray-400"
+        aria-busy="true"
+        role="status"
+      >
+        Checking upload availability…
+      </div>
+    )
+  }
+
   if (!ipfsReady) {
     return (
       <div className="rounded-lg bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-300 dark:border-yellow-700 p-4 text-sm text-yellow-800 dark:text-yellow-300">
-        IPFS upload is disabled. Set{' '}
+        IPFS upload is disabled: this deployment has no pinning credentials. Set{' '}
         <code className="font-mono bg-yellow-100 dark:bg-yellow-900 px-1 rounded">
-          VITE_IPFS_API_KEY
+          PINATA_API_KEY
         </code>{' '}
         and{' '}
         <code className="font-mono bg-yellow-100 dark:bg-yellow-900 px-1 rounded">
-          VITE_IPFS_API_SECRET
+          PINATA_API_SECRET
         </code>{' '}
-        to enable metadata uploads.
+        in the server environment to enable metadata uploads.
       </div>
     )
   }
@@ -230,10 +254,7 @@ export const MetadataForm: React.FC<MetadataFormProps> = ({ initialTokenAddress 
               <span>{uploadProgress}%</span>
             </div>
             <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-1.5">
-              <div
-                className="bg-blue-600 h-1.5 rounded-full transition-all duration-300"
-                style={{ width: `${uploadProgress}%` }}
-              />
+              <ProgressBar progress={uploadProgress} className="bg-blue-600 h-1.5 rounded-full transition-all duration-300" />
             </div>
           </div>
         )}
@@ -331,6 +352,7 @@ export const MetadataForm: React.FC<MetadataFormProps> = ({ initialTokenAddress 
             onChange={(e) => setDescription(e.target.value)}
             placeholder="Describe your token…"
             rows={3}
+            maxLength={MAX_METADATA_DESCRIPTION_LENGTH}
             className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md
               focus:outline-none focus:ring-2 focus:ring-blue-500
               dark:bg-gray-700 dark:text-white text-sm resize-none"

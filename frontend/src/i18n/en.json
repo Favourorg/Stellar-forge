@@ -15,7 +15,15 @@
     "ariaLabel": "Primary",
     "openMenu": "Open navigation menu",
     "closeMenu": "Close navigation menu",
-    "admin": "Admin"
+    "admin": "Admin",
+    "help": "Help",
+    "helpAriaLabel": "Open tutorial",
+    "metadata": "Metadata",
+    "dashboard": "Dashboard",
+    "manage": "Manage",
+    "explorer": "Explorer",
+    "activity": "Activity",
+    "faq": "FAQ"
   },
   "wallet": {
     "connect": "Connect Wallet",
@@ -69,7 +77,10 @@
     "walletNotConnected": "Wallet is not connected",
     "validationFailed": "Please fix the errors in the form",
     "submitError": "Failed to submit form",
-    "deployedSuccessfully": "deployed successfully!"
+    "deployedSuccessfully": "deployed successfully!",
+    "maxSupplyLabel": "Max Supply (Optional)",
+    "maxSupplyPlaceholder": "Leave empty for unlimited",
+    "maxSupplyHelp": "A hard cap on total supply. Once set it cannot be changed, and minting beyond it is rejected."
   },
   "mintForm": {
     "tokenAddress": "Token Address",
@@ -171,6 +182,9 @@
   },
   "language": {
     "label": "Language",
-    "en": "English"
+    "en": "English",
+    "es": "Spanish",
+    "pt": "Portuguese",
+    "fr": "French"
   }
 }

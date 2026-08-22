@@ -1,3 +1,5 @@
+import type { VercelRequest } from '@vercel/node'
+
 const WINDOW_MS = 15 * 60 * 1000 // 15 minutes
 const MAX_REQUESTS_PER_WINDOW = parseInt(process.env.RATE_LIMIT_WINDOW ?? '10', 10)
 const MAX_REQUESTS_PER_DAY = parseInt(process.env.RATE_LIMIT_DAY ?? '100', 10)
@@ -82,6 +84,24 @@ function isRateLimitedInMemory(key: string): Promise<boolean> {
 
   bucket.count += 1
   return Promise.resolve(bucket.count > MAX_REQUESTS_PER_WINDOW)
+}
+
+/**
+ * Get trusted client IP from Vercel's rightmost x-forwarded-for position.
+ * On Vercel, the rightmost untrusted hop is the user's real IP.
+ */
+export function clientIp(req: VercelRequest): string {
+  const forwarded = req.headers['x-forwarded-for']
+  if (typeof forwarded === 'string') {
+    // Take the rightmost IP (last entry) as the most-trusted one
+    // e.g., "203.0.113.1, 10.0.0.1" -> use "10.0.0.1" (Vercel's edge)
+    const ips = forwarded.split(',').map((ip) => ip.trim())
+    return ips[ips.length - 1] ?? 'unknown'
+  }
+  if (Array.isArray(forwarded) && forwarded.length > 0) {
+    return forwarded[forwarded.length - 1]
+  }
+  return req.socket?.remoteAddress ?? 'unknown'
 }
 
 // Vercel KV REST API helpers

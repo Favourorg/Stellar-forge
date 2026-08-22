@@ -1,11 +1,14 @@
-// IPFS service for metadata upload via Pinata
+// IPFS service - uploads are proxied through our own serverless functions
+// (api/ipfs/*) so Pinata credentials never reach the browser bundle.
 
 import { IPFS_CONFIG } from '../config/ipfs'
 import { withRetry, isTransientError, HttpError } from '../utils/retry'
 import { isValidImageFile } from '../utils/validation'
-import { IPFSConfigError, IPFSUploadError } from './ipfs-errors'
+import { IPFSUploadError } from './ipfs-errors'
+import { getUploadToken } from './auth'
 
 export { IPFSConfigError, IPFSUploadError } from './ipfs-errors'
+export { clearUploadToken } from './auth'
 
 export interface TokenMetadata {
   name: string
@@ -21,55 +24,97 @@ export interface UploadMetadataOptions {
   onRetry?: (attempt: number, delayMs: number) => void
 }
 
+/**
+ * Caps on free-text metadata fields, enforced on the READ path.
+ *
+ * Metadata is pinned by whoever created the token and can be written straight
+ * to IPFS without going through our upload form, so any write-side limit is
+ * advisory only — these are the numbers that actually hold. Without them a
+ * creator can pin a multi-megabyte `description` that every visitor to that
+ * token's page then renders: enough to stall the tab during reconciliation, or
+ * to push phishing content below the fold of a legitimate-looking page.
+ *
+ * Documented for third-party integrators in docs/metadata-format.md.
+ */
+export const MAX_METADATA_NAME_LENGTH = 128
+export const MAX_METADATA_DESCRIPTION_LENGTH = 2_000
+
+/**
+ * Hard ceiling on the raw JSON we will even parse. Truncating after parse still
+ * means holding (and JSON-parsing) the whole payload, so a 50MB pin would burn
+ * memory and main-thread time before any cap applied.
+ */
+const MAX_METADATA_BYTES = 100 * 1024
+
+/** Clamp a string to `max` characters, appending an ellipsis when shortened. */
+function clamp(value: string, max: number): string {
+  // Count by code points so a truncation can't split a surrogate pair and
+  // leave a lone half behind.
+  const points = [...value]
+  if (points.length <= max) return value
+  return points.slice(0, max).join('') + '…'
+}
+
+// Only ipfs://CID image references are accepted — same pattern the upload
+// proxy enforces (api/_lib/schemaValidation.ts). Anything else (http(s),
+// data:, javascript:, path traversal) is rejected at parse time so it can
+// never reach an <img> src or the gateway resolver.
+const IPFS_IMAGE_URI_PATTERN = /^ipfs:\/\/[a-zA-Z0-9]+$/
+
 function isTokenMetadata(value: unknown): value is TokenMetadata {
   if (typeof value !== 'object' || value === null) return false
   const obj = value as Record<string, unknown>
   return (
     typeof obj.name === 'string' &&
     typeof obj.description === 'string' &&
-    typeof obj.image === 'string'
+    typeof obj.image === 'string' &&
+    IPFS_IMAGE_URI_PATTERN.test(obj.image)
   )
 }
 
-function validateConfig(): void {
-  if (!IPFS_CONFIG.apiKey || !IPFS_CONFIG.apiSecret) {
-    throw new IPFSConfigError(
-      'Pinata API credentials are not configured. Please set VITE_IPFS_API_KEY and VITE_IPFS_API_SECRET in your .env file.',
-    )
-  }
-}
+// Same-origin serverless proxies. Pinata credentials are read from server env
+// inside these handlers, so nothing secret is needed in (or reachable from)
+// the browser bundle.
+const UPLOAD_FILE_ENDPOINT = '/api/ipfs/upload-file'
+const UPLOAD_JSON_ENDPOINT = '/api/ipfs/upload-json'
 
 export class IPFSService {
   /**
-   * Upload an image file to Pinata and pin metadata JSON to IPFS.
+   * Upload an image and pin metadata JSON to IPFS via our serverless proxy.
    *
-   * @param image       - JPEG/PNG/GIF file, max 5MB
+   * Requires wallet authentication: client requests a challenge, signs it with Freighter,
+   * and exchanges the signature for a JWT. Both upload hops use the JWT in the Authorization header.
+   * Pinata credentials live in server env and are never sent from the browser.
+   *
+   * @param image       - JPEG/PNG/GIF file, max 4MB (Vercel body limit)
    * @param description - Token description
    * @param tokenName   - Token name (used as metadata `name` field)
+   * @param walletAddress - Connected Stellar wallet (for auth)
    * @param onProgress  - Optional progress callback (0–100)
    * @param onRetry     - Optional callback fired before each retry attempt
    * @returns           Metadata URI in ipfs:// format
    *
-   * @throws {IPFSConfigError}  When API credentials are missing
-   * @throws {IPFSUploadError}  On validation failures, auth errors, or exhausted retries
+   * @throws {IPFSUploadError}  On validation failures, auth failures, or exhausted retries
    */
   async uploadMetadata(
     image: File,
     description: string,
     tokenName: string,
+    walletAddress: string,
     onProgress?: (percent: number) => void,
     onRetry?: (attempt: number, delayMs: number) => void,
   ): Promise<string> {
-    validateConfig()
-
-    const validation = isValidImageFile(image)
+    const validation = await isValidImageFile(image)
     if (!validation.valid) {
       throw new IPFSUploadError(validation.error ?? 'Invalid image file.')
     }
 
-    // Step 1: Upload image file (progress 0 → 75)
+    // Obtain JWT for authenticated requests
     onProgress?.(0)
-    const imageCid = await this._uploadFile(image, onProgress, onRetry)
+    const token = await getUploadToken(walletAddress)
+
+    // Step 1: Upload image file (progress 0 → 75)
+    const imageCid = await this._uploadFile(image, token, onProgress, onRetry)
 
     // Step 2: Build and upload metadata JSON (progress 75 → 100)
     onProgress?.(75)
@@ -78,7 +123,12 @@ export class IPFSService {
       description,
       image: `ipfs://${imageCid}`,
     }
-    const metadataCid = await this._uploadJSON(metadata, `${tokenName}-metadata.json`, onRetry)
+    const metadataCid = await this._uploadJSON(
+      metadata,
+      `${tokenName}-metadata.json`,
+      token,
+      onRetry,
+    )
     onProgress?.(100)
 
     return `ipfs://${metadataCid}`
@@ -114,26 +164,48 @@ export class IPFSService {
       )
     }
 
+    // Read as text first so an oversized pin is rejected before JSON.parse has
+    // to walk it. response.json() would parse the whole payload no matter how
+    // large, which is the cost we are trying to avoid.
+    let raw: string
+    try {
+      raw = await response.text()
+    } catch {
+      throw new IPFSUploadError('Network error while reading metadata from the IPFS gateway.')
+    }
+
+    if (raw.length > MAX_METADATA_BYTES) {
+      throw new IPFSUploadError('Metadata document is too large to display.')
+    }
+
     let parsed: unknown
     try {
-      parsed = await response.json()
+      parsed = JSON.parse(raw)
     } catch {
       throw new IPFSUploadError('Metadata response is not valid JSON.')
     }
 
     if (!isTokenMetadata(parsed)) {
       throw new IPFSUploadError(
-        'Metadata response is missing required fields (name, description, image).',
+        'Metadata response is missing required fields (name, description, image) or its image is not an ipfs:// URI.',
       )
     }
 
-    return { name: parsed.name, description: parsed.description, image: parsed.image }
+    // Clamp rather than reject: an over-long description is a bad token, not a
+    // broken one, and refusing the whole document would leave the page with no
+    // name or image either. Callers therefore always receive bounded strings.
+    return {
+      name: clamp(parsed.name, MAX_METADATA_NAME_LENGTH),
+      description: clamp(parsed.description, MAX_METADATA_DESCRIPTION_LENGTH),
+      image: parsed.image,
+    }
   }
 
   // ── Private helpers ──────────────────────────────────────────────────────────
 
   private _uploadFile(
     file: File,
+    token: string,
     onProgress?: (percent: number) => void,
     onRetry?: (attempt: number, delayMs: number) => void,
   ): Promise<string> {
@@ -161,12 +233,6 @@ export class IPFSService {
             return
           }
 
-          if (xhr.status === 401) {
-            reject(
-              new IPFSUploadError('Pinata authentication failed. Check your API key and secret.'),
-            )
-            return
-          }
           if (xhr.status !== 200) {
             reject(
               new IPFSUploadError(`Image upload failed (HTTP ${xhr.status}). Please try again.`),
@@ -174,18 +240,14 @@ export class IPFSService {
             return
           }
           try {
-            const data = JSON.parse(xhr.responseText) as {
-              IpfsHash: string
-            }
-            if (!data.IpfsHash) {
-              reject(
-                new IPFSUploadError('Pinata returned an unexpected response: missing IpfsHash.'),
-              )
+            const data = JSON.parse(xhr.responseText) as { cid?: string }
+            if (!data.cid) {
+              reject(new IPFSUploadError('Upload service returned an unexpected response.'))
               return
             }
-            resolve(data.IpfsHash)
+            resolve(data.cid)
           } catch {
-            reject(new IPFSUploadError('Unexpected response from Pinata while uploading image.'))
+            reject(new IPFSUploadError('Unexpected response from the upload service.'))
           }
         })
 
@@ -197,16 +259,14 @@ export class IPFSService {
           reject(new IPFSUploadError('Image upload was aborted.'))
         })
 
-        xhr.open('POST', `${IPFS_CONFIG.pinataApiUrl}/pinning/pinFileToIPFS`)
-        xhr.setRequestHeader('pinata_api_key', IPFS_CONFIG.apiKey)
-        xhr.setRequestHeader('pinata_secret_api_key', IPFS_CONFIG.apiSecret)
+        // Proxied through our own serverless function with JWT authentication
+        xhr.open('POST', UPLOAD_FILE_ENDPOINT)
+        xhr.setRequestHeader('Authorization', `Bearer ${token}`)
         xhr.send(formData)
       })
 
     const formData = new FormData()
     formData.append('file', file)
-    formData.append('pinataMetadata', JSON.stringify({ name: file.name }))
-    formData.append('pinataOptions', JSON.stringify({ cidVersion: 1 }))
 
     return withRetry(doUpload, {
       maxAttempts: 3,
@@ -229,24 +289,22 @@ export class IPFSService {
   private async _uploadJSON(
     json: object,
     name: string,
+    token: string,
     onRetry?: (attempt: number, delayMs: number) => void,
   ): Promise<string> {
-    const body = {
-      pinataContent: json,
-      pinataMetadata: { name },
-      pinataOptions: { cidVersion: 1 },
-    }
+    // Shape expected by api/ipfs/upload-json; the serverless function wraps it
+    // in Pinata's pinataContent/pinataMetadata envelope using server-side creds.
+    const body = { metadata: json, name }
 
     let response: Response
     try {
       response = await withRetry(
         () =>
-          fetch(`${IPFS_CONFIG.pinataApiUrl}/pinning/pinJSONToIPFS`, {
+          fetch(UPLOAD_JSON_ENDPOINT, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              pinata_api_key: IPFS_CONFIG.apiKey,
-              pinata_secret_api_key: IPFS_CONFIG.apiSecret,
+              Authorization: `Bearer ${token}`,
             },
             body: JSON.stringify(body),
           }),
@@ -261,8 +319,8 @@ export class IPFSService {
       )
     }
 
-    if (response.status === 401) {
-      throw new IPFSUploadError('Pinata authentication failed. Check your API key and secret.')
+    if (response.status === 429) {
+      throw new IPFSUploadError('Too many upload requests. Please try again later.')
     }
     if (!response.ok) {
       throw new IPFSUploadError(
@@ -270,20 +328,18 @@ export class IPFSService {
       )
     }
 
-    let data: { IpfsHash: string }
+    let data: { cid?: string }
     try {
-      data = (await response.json()) as {
-        IpfsHash: string
-      }
+      data = (await response.json()) as { cid?: string }
     } catch {
-      throw new IPFSUploadError('Pinata returned a non-JSON response for metadata upload.')
+      throw new IPFSUploadError('The upload service returned a non-JSON response.')
     }
 
-    if (!data.IpfsHash) {
-      throw new IPFSUploadError('Pinata returned an unexpected response: missing IpfsHash.')
+    if (!data.cid) {
+      throw new IPFSUploadError('The upload service returned an unexpected response.')
     }
 
-    return data.IpfsHash
+    return data.cid
   }
 }
 

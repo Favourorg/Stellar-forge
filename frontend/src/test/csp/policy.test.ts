@@ -33,6 +33,17 @@ describe('buildCSPString', () => {
     expect(scriptSrc).not.toContain("'unsafe-eval'")
   })
 
+  it('style-src no longer includes unsafe-inline', () => {
+    const result = buildCSPString(CSP_DIRECTIVES)
+    const styleSrcMatch = result.match(/style-src ([^;]+)/)
+    expect(styleSrcMatch).not.toBeNull()
+    if (styleSrcMatch) {
+      const styleSrc = styleSrcMatch[1]
+      expect(styleSrc).not.toContain("'unsafe-inline'")
+      expect(styleSrc).toContain("'self'")
+    }
+  })
+
   it('includes all required connect-src origins', () => {
     const result = buildCSPString(CSP_DIRECTIVES)
     expect(result).toContain('https://horizon.stellar.org')

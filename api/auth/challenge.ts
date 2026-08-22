@@ -117,7 +117,10 @@ async function verifyStellarSignature(
 ): Promise<boolean> {
   try {
     // Import Stellar SDK for verification
-    const { StrKey, Keypair, TransactionBuilder } = await import('@stellar/js-sdk')
+    // The package is `stellar-sdk`; `@stellar/js-sdk` does not exist on npm,
+    // so this import used to throw and every verification silently fell
+    // through to `return false`.
+    const { StrKey, Keypair, TransactionBuilder } = await import('stellar-sdk')
 
     // Extract public key from the address (Stellar address is an encoded public key)
     const publicKey = StrKey.decodeEd25519PublicKey(address)
