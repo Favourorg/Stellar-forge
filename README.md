@@ -310,6 +310,8 @@ The contract publishes Soroban events on `(factory, action)` topics — `init`, 
 
 ## Deployment
 
+Two `vercel.json` files govern two distinct Vercel deployments, and both must keep an identical `headers` block — see [docs/deployment-vercel.md](./docs/deployment-vercel.md) for which file is authoritative for which deployment.
+
 ## Deployment & Caching
 
 The application uses a service worker (via Workbox) to support offline capabilities. The cache is versioned using the `VITE_FACTORY_CONTRACT_ID` and `VITE_NETWORK` environment variables.
