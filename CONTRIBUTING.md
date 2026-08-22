@@ -1103,17 +1103,29 @@ The fuzz workspace is listed as a **separate** Cargo entry because it has its ow
 
 ### Merge rules
 
-| Update type         | Action                                                                                   |
-| ------------------- | ---------------------------------------------------------------------------------------- |
-| **Patch** (`x.y.Z`) | Auto-merged once all required CI checks pass. No human review needed.                    |
-| **Minor** (`x.Y.z`) | Auto-merged once all required CI checks pass. No human review needed.                    |
-| **Major** (`X.y.z`) | Requires **manual review and approval**. A bot comment on the PR explains what to check. |
+| Update type                 | Action                                                                                   |
+| --------------------------- | ---------------------------------------------------------------------------------------- |
+| **Patch** (`x.y.Z`, 1.0+)   | Auto-merged once all required CI checks pass. No human review needed.                    |
+| **Minor** (`x.Y.z`, 1.0+)   | Auto-merged once all required CI checks pass. No human review needed.                    |
+| **Major** (`X.y.z`)         | Requires **manual review and approval**. A bot comment on the PR explains what to check. |
+| **Pre-1.0** (`0.x`)         | Requires **manual review and approval** regardless of patch/minor. A bot comment on the PR explains why. |
+
+A package is treated as pre-1.0 when the *new* version reported by Dependabot starts with `0.` (or `v0.`, for action tags). Such updates never auto-merge: below `1.0`, semver provides no non-breaking guarantee, so a `0.x` "minor" may legitimately ship breaking changes, and young `0.x` packages are also more exposed to a compromised upstream publishing a malicious patch/minor release. Routing them to human review restores a person in the loop for exactly the updates that most need it.
 
 Auto-merge is implemented in `.github/workflows/dependabot-auto-merge.yml` using GitHub's native `gh pr merge --auto --squash`. The merge only executes after branch-protection required checks (CI, security audit, lint) all pass — auto-merge never bypasses CI.
 
+### Package-age and provenance gates
+
+Two additional, complementary defenses were evaluated but are **not yet automated**:
+
+1. **Package-age gate** — requiring a minimum time-since-publish before auto-merge would give the ecosystem time to catch an obviously-malicious release. `dependabot/fetch-metadata` does not expose publish timestamps, so this would need a per-ecosystem registry lookup (npm registry, crates.io, GitHub tags) that is non-trivial to implement reliably and would slow or throttle every PR. The `0.x` gate above provides a partial substitute, since pre-1.0 releases skew young.
+2. **Provenance / OpenSSF Scorecard signal** — gating on npm provenance attestations or a Scorecard score would raise the bar against compromised upstream pipelines, but consuming those signals (and defining a threshold that does not silently block legitimate updates) is a larger design effort.
+
+These remain open follow-ups; until they land, the `0.x` gate plus the existing required CI checks (which exercise the newly-updated code paths) are the enforced safeguards.
+
 ### Rationale
 
-Leaving every Dependabot PR unreviewed indefinitely is a common cause of the exact "known vulnerability sits unpatched for months" problem that security scanning is meant to prevent. Patch and minor bumps in well-maintained ecosystems (npm, Cargo) have a very low rate of user-facing breakage and a high rate of security fixes; automating them moves the risk needle in the right direction. Major bumps carry real API-breakage risk and always require a human to read the upstream changelog.
+Leaving every Dependabot PR unreviewed indefinitely is a common cause of the exact "known vulnerability sits unpatched for months" problem that security scanning is meant to prevent. Patch and minor bumps in well-maintained, post-1.0 ecosystems (npm, Cargo) have a very low rate of user-facing breakage and a high rate of security fixes; automating them moves the risk needle in the right direction. Major bumps carry real API-breakage risk, and pre-1.0 packages carry both breaking-change and supply-chain risk, so both always require a human to review the upstream change.
 
 ### Waivers
 

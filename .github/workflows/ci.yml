@@ -88,6 +88,12 @@ jobs:
 
       - name: Frontend/contract validation bounds drift (validation.ts vs lib.rs)
         run: ./scripts/check-validation-drift.sh
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+
+      - name: Spec stubs check (.kiro/specs/*)
+        run: node scripts/check-kiro-specs.mjs
 
   frontend:
     name: Frontend
