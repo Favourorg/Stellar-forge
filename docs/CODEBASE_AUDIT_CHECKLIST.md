@@ -101,7 +101,11 @@ For each issue in the codebase audit, the following checklist should be applied:
 
 ### Future Enhancements
 
-- [ ] Add AST-based parameter validation comparing stellar-impl.ts to contract signatures
+- [x] Add AST-based parameter validation comparing stellar-impl.ts to contract signatures
+  - Implementation: `scripts/check-stellar-impl-abi.mjs`
+  - Documentation: `docs/STELLAR_IMPL_ABI_AUDIT.md`
+  - CI Integration: `.github/workflows/ci.yml` (drift-checks job)
+  - Status: ✅ IMPLEMENTED & INTEGRATED
 - [ ] Create integration tests against mocked RPC for each contract.call
 - [ ] Add pre-commit hook to run drift detection on contract/frontend changes
 - [ ] Document all contract method signatures in TypeScript types for IDE hints

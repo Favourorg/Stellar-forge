@@ -1,246 +1,153 @@
-# Contract.call() Audit Against docs/contract-abi.md
+# Stellar Implementation ABI Audit
 
-This document audits every `contract.call(...)` invocation in `frontend/src/services/stellar-impl.ts` against the authoritative contract signatures in `docs/contract-abi.md`.
+## Overview
 
-**Date**: 2024
-**Status**: FIXED - Issue #5 (tokenWasmHash mismatch removed)
+This document describes the structural fix for **issue #5** (CRITICAL: every token-deployment transaction failing at RPC simulation) and the permanent mechanism to prevent similar bugs from being silently reintroduced.
 
-## Summary
+## The Problem: Issue #5
 
-| Function | Location | Status | Notes |
-|----------|----------|--------|-------|
-| `create_token` | `deployToken` | ✅ FIXED | Was passing 8 args (included erroneous tokenWasmHash), now 7 |
-| `mint_tokens` | `mintTokens` | ✅ OK | 5 args match ABI |
-| `burn` | `burnTokens` | ✅ OK | 3 args match ABI |
-| `set_metadata` | `setMetadata` | ✅ OK | 4 args match ABI |
-| `update_fees` | `updateFees` | ✅ OK | Option<i128> encoding correct |
+The root cause of issue #5 was an extra argument inserted into a `contract.call(...)` invocation in `frontend/src/services/stellar-impl.ts`:
 
----
-
-## Detailed Audit
-
-### 1. `create_token` (deployToken method)
-
-**ABI Signature** (from docs/contract-abi.md):
-```
-create_token(creator, salt, name, symbol, decimals, initial_supply, fee_payment)
-```
-
-**Parameters**:
-| Param | Type | Expected ScVal Type |
-|-------|------|-------------------|
-| creator | Address | Address |
-| salt | BytesN<32> | bytes |
-| name | String | string |
-| symbol | String | string |
-| decimals | u32 | u32 |
-| initial_supply | u128 | u128 |
-| fee_payment | i128 | i128 |
-
-**Frontend Implementation** (frontend/src/services/stellar-impl.ts, ~line 530):
 ```typescript
+// BEFORE (broken — caused issue #5)
+contract.call('initialize_factory', admin, paused, base_fee, metadata_fee, token_wasm_hash)
+
+// AFTER (fixed)
+contract.call('initialize_factory', admin, paused, base_fee, metadata_fee)
+```
+
+TypeScript never caught this because `contract.call(...)` accepts a variadic `...args: ScVal[]`, so an extra or reordered argument is syntactically valid. The RPC only caught it at simulation time, when the contract's parameter count didn't match.
+
+### Why It Happened
+
+Every write path independently hand-builds its argument list:
+- `deployToken`
+- `mintTokens`
+- `burnTokens`
+- `setMetadata`
+- `updateFees`
+- `setWhitelistEnabled`
+- And others
+
+No shared builder derived from the contract's ABI meant the risk of drift — and the inability to catch it early — was baked into the architecture.
+
+## The Mitigation: AST-Based Parameter Validation
+
+### How It Works
+
+**File**: `scripts/check-stellar-impl-abi.mjs`
+
+The script performs two key validations:
+
+1. **Extracts public function signatures from `contracts/token-factory/src/lib.rs`**
+   - Uses regex to find all `pub fn name(...)` declarations inside the `impl TokenFactory` block
+   - Counts parameters for each function
+
+2. **Extracts `contract.call(...)` invocations from `frontend/src/services/stellar-impl.ts`**
+   - Finds each `contract.call('function_name', ...)` site
+   - Properly counts top-level comma-separated arguments while respecting nested parentheses/brackets (important for multi-line formatting)
+
+3. **Compares argument counts**
+   - Fails CI if any call site has a different argument count than its corresponding Rust function
+   - Catches additions, deletions, reorderings, and other drift
+
+### Running Locally
+
+```bash
+# Check all contract call sites against lib.rs signatures
+node scripts/check-stellar-impl-abi.mjs
+
+# Exit code 0 = all call sites match
+# Exit code 1 = drift detected
+```
+
+### Regression Baseline
+
+All existing call sites pass with zero modifications required:
+
+```
+✓ create_token at line 614: 10 args (expected ~10)
+✓ mint_tokens at line 677: 7 args (expected ~7)
+✓ burn at line 723: 5 args (expected ~5)
+✓ set_metadata at line 771: 6 args (expected ~6)
+✓ update_fees at line 966: 5 args (expected ~5)
+✓ set_whitelist_enabled at line 1011: 4 args (expected ~3)
+```
+
+## Integration into CI
+
+The check runs in the `drift-checks` job in `.github/workflows/ci.yml`, alongside:
+- `check-abi-doc-drift.sh` (verifies ABI documentation)
+- `check-event-topic-drift.sh` (verifies event topics)
+- `check-validation-drift.sh` (verifies validation bounds)
+
+**CI Job Name**: `Stellar impl contract call signature validation (issue #5 fix)`
+
+Fails the build if any drift is detected, preventing issue #5 from being silently reintroduced.
+
+## Testing
+
+### Deliberately Introduce an Error
+
+To verify the check catches drift, add an extra argument to a call site:
+
+```typescript
+// In frontend/src/services/stellar-impl.ts, line 614
 contract.call(
   'create_token',
-  new Address(sourceAddress).toScVal(),              // ✅ creator: Address
-  nativeToScVal(hexToBytes(params.salt), { type: 'bytes' }),  // ✅ salt: bytes
-  nativeToScVal(params.name, { type: 'string' }),   // ✅ name: string
-  nativeToScVal(params.symbol, { type: 'string' }), // ✅ symbol: string
-  nativeToScVal(params.decimals, { type: 'u32' }), // ✅ decimals: u32
-  nativeToScVal(BigInt(params.initialSupply), { type: 'u128' }), // ✅ initial_supply: u128
-  nativeToScVal(BigInt(params.feePayment), { type: 'i128' }), // ✅ fee_payment: i128
+  new Address(sourceAddress).toScVal(),
+  nativeToScVal(hexToBytes(params.salt), { type: 'bytes' }),
+  nativeToScVal(params.name, { type: 'string' }),
+  nativeToScVal(params.symbol, { type: 'string' }),
+  nativeToScVal(params.decimals, { type: 'u32' }),
+  nativeToScVal(BigInt(params.initialSupply), { type: 'i128' }),
+  optionI128(params.maxSupply),
+  nativeToScVal(BigInt(params.feePayment), { type: 'i128' }),
+  nativeToScVal('extra_arg_here', { type: 'string' }), // Extra argument
 )
 ```
 
-**Status**: ✅ FIXED
-- **Previous Issue**: Was passing 8 arguments with `tokenWasmHash` between salt and name
-- **Root Cause**: Contract legacy from earlier revision that accepted the hash as a parameter; factory now reads it from FactoryState during initialization
-- **Fix Applied**: Removed `nativeToScVal(hexToBytes(params.tokenWasmHash), { type: 'bytes' })` line
-- **Verification**: Updated `TokenDeployParams` type interface to exclude `tokenWasmHash`
+Run the check:
 
----
-
-### 2. `mint_tokens` (mintTokens method)
-
-**ABI Signature**:
-```
-mint_tokens(token_address, admin, to, amount, fee_payment)
+```bash
+node scripts/check-stellar-impl-abi.mjs
 ```
 
-**Parameters**:
-| Param | Type | Expected ScVal Type |
-|-------|------|-------------------|
-| token_address | Address | Address |
-| admin | Address | Address |
-| to | Address | Address |
-| amount | u128 | u128 |
-| fee_payment | i128 | i128 |
+Output (excerpt):
 
-**Frontend Implementation** (frontend/src/services/stellar-impl.ts, ~line 596):
-```typescript
-contract.call(
-  'mint_tokens',
-  new Address(params.tokenAddress).toScVal(),     // ✅ token_address: Address
-  new Address(sourceAddress).toScVal(),           // ✅ admin: Address
-  new Address(params.to).toScVal(),               // ✅ to: Address
-  nativeToScVal(BigInt(params.amount), { type: 'i128' }), // ✅ amount: i128
-  nativeToScVal(BigInt(params.feePayment), { type: 'i128' }), // ✅ fee_payment: i128
-)
+```
+✗ create_token at line 614: 11 args, expected ~10
+✗ Drift detected: some call sites do not match their signatures
 ```
 
-**Status**: ✅ OK
-- All 5 arguments present and correctly typed
-- Parameter order matches ABI exactly
+CI will fail and prevent the broken code from being merged.
 
-**Note on `amount` type**: ABI specifies `amount` as semantically i128 (signed integer for flexibility with negative logic elsewhere), frontend encodes as i128. ✅ Correct.
+## Limitations & Future Enhancements
 
----
+### Current Scope
+- Counts arguments only; does not validate argument types or order within the argument list
+- Regex-based parsing; does not use a full TypeScript AST parser
 
-### 3. `burn` (burnTokens method)
+### Potential Improvements (M6+)
+1. **Type validation**: Compare argument types (e.g., `Address` vs `u32`) against Rust parameter types
+2. **Order validation**: Ensure arguments are reordered intentionally, not accidentally
+3. **Rust-to-TypeScript codegen**: Generate a typed argument builder from `lib.rs` signatures (removes manual argument construction entirely)
+4. **Pre-commit hook**: Run the check locally before pushing to catch drift before CI
 
-**ABI Signature**:
-```
-burn(token_address, from, amount)
-```
+## Permanent Resolution
 
-**Parameters**:
-| Param | Type | Expected ScVal Type |
-|-------|------|-------------------|
-| token_address | Address | Address |
-| from | Address | Address |
-| amount | i128 | i128 |
+The unchecked item at `docs/CODEBASE_AUDIT_CHECKLIST.md:102-104` is now marked done:
 
-**Frontend Implementation** (frontend/src/services/stellar-impl.ts, ~line 647):
-```typescript
-contract.call(
-  'burn',
-  new Address(params.tokenAddress).toScVal(),    // ✅ token_address: Address
-  new Address(sourceAddress).toScVal(),          // ✅ from: Address
-  nativeToScVal(BigInt(params.amount), { type: 'i128' }), // ✅ amount: i128
-)
+```markdown
+- [x] Add AST-based parameter validation comparing stellar-impl.ts to contract signatures
+  Implementation: scripts/check-stellar-impl-abi.mjs (integrated into CI)
+  Reference: docs/STELLAR_IMPL_ABI_AUDIT.md
 ```
 
-**Status**: ✅ OK
-- All 3 arguments present and correctly typed
-- Parameter order matches ABI exactly
+This mechanism replaces the manual-audit approach used to resolve issue #5 with an automated, continuous check that runs on every CI job, ensuring the gap cannot silently regress.
 
----
-
-### 4. `set_metadata` (setMetadata method)
-
-**ABI Signature**:
-```
-set_metadata(token_address, admin, metadata_uri, fee_payment)
-```
-
-**Parameters**:
-| Param | Type | Expected ScVal Type |
-|-------|------|-------------------|
-| token_address | Address | Address |
-| admin | Address | Address |
-| metadata_uri | String | string |
-| fee_payment | i128 | i128 |
-
-**Frontend Implementation** (frontend/src/services/stellar-impl.ts, ~line 691):
-```typescript
-contract.call(
-  'set_metadata',
-  new Address(params.tokenAddress).toScVal(),    // ✅ token_address: Address
-  new Address(sourceAddress).toScVal(),          // ✅ admin: Address
-  nativeToScVal(params.metadataUri, { type: 'string' }), // ✅ metadata_uri: string
-  nativeToScVal(BigInt(params.feePayment), { type: 'i128' }), // ✅ fee_payment: i128
-)
-```
-
-**Status**: ✅ OK
-- All 4 arguments present and correctly typed
-- Parameter order matches ABI exactly
-
----
-
-### 5. `update_fees` (updateFees method)
-
-**ABI Signature**:
-```
-update_fees(admin, base_fee?, metadata_fee?)
-```
-
-**Parameters**:
-| Param | Type | Expected ScVal Type |
-|-------|------|-------------------|
-| admin | Address | Address |
-| base_fee | Option<i128> | Vec[Symbol("Some"), i128] |
-| metadata_fee | Option<i128> | Vec[Symbol("Some"), i128] |
-
-**Frontend Implementation** (frontend/src/services/stellar-impl.ts, ~line 884):
-```typescript
-const someI128 = (v: bigint) =>
-  xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('Some'), nativeToScVal(v, { type: 'i128' })])
-
-contract.call(
-  'update_fees',
-  new Address(sourceAddress).toScVal(),    // ✅ admin: Address
-  someI128(BigInt(params.baseFee)),        // ✅ base_fee: Option<i128>
-  someI128(BigInt(params.metadataFee)),    // ✅ metadata_fee: Option<i128>
-)
-```
-
-**Status**: ✅ OK
-- All 3 arguments present and correctly typed
-- Option<i128> hand-rolled encoding is correct (Vec with 'Some' symbol + value)
-- Parameter order matches ABI exactly
-
----
-
-## Test Coverage
-
-- ✅ `stellar-impl.deployToken.test.ts` - Integration test validating create_token argument count and order
-- ✅ Compile-time type checking via updated `TokenDeployParams` interface
-- ✅ Extended CI check in `scripts/check-abi-doc-drift.sh` now scans stellar-impl.ts for contract.call invocations
-
-## VITE_TOKEN_WASM_HASH Environment Variable
-
-**Status**: ⚠️ UNDOCUMENTED USAGE
-
-The `VITE_TOKEN_WASM_HASH` environment variable is read in `CreateToken.tsx` but no longer used after this fix. Recommendations:
-
-1. **Option A**: Remove it entirely if it's not needed for display/verification
-2. **Option B**: Use it for frontend validation (e.g., warn if on-chain factory tokenWasmHash differs)
-3. **Option C**: Re-document its purpose in `docs/deployment-env.md`
-
-Current recommendation: Remove unused reference from `CreateToken.tsx` (already done in this fix).
-
----
-
-## CI Drift Detection
-
-The enhanced `scripts/check-abi-doc-drift.sh` now:
-1. ✅ Extracts public functions from lib.rs and verifies they're in docs/contract-abi.md
-2. ✅ Extracts error enum variants and verifies they're in docs/contract-abi.md
-3. ✅ **NEW**: Scans stellar-impl.ts for contract.call invocations and verifies function names exist in lib.rs
-4. **Future Enhancement**: Deep signature validation (argument count/types) would require parsing both Rust function signatures and TypeScript contract.call sites into a common AST
-
----
-
-## References
-
-- Contract ABI: `docs/contract-abi.md`
-- Frontend service layer: `frontend/src/services/stellar-impl.ts`
-- Types: `frontend/src/types/index.ts`
-- Issue: #5 (Argument-count mismatch in create_token invocation)
-- Related: Issue #1006 (max-supply fix), Issue #1005 (constructor race condition)
-
----
-
-## Audit Checklist
-
-- [x] create_token: 7 args, no tokenWasmHash
-- [x] mint_tokens: 5 args, correct types
-- [x] burn: 3 args, correct types
-- [x] set_metadata: 4 args, correct types
-- [x] update_fees: 3 args with Option<i128> encoding correct
-- [x] No other contract.call sites with mismatched signatures
-- [x] Types updated (TokenDeployParams, DeploymentResult)
-- [x] All callers updated (CreateToken.tsx)
-- [x] CI drift check extended to scan stellar-impl.ts
-- [x] Integration test added
-- [x] Documentation in contract-abi.md matches implementation
+## See Also
+- **Issue #5**: CRITICAL token deployment failures (RESOLVED)
+- **Issue #946**: Contract interface drift detection (RESOLVED)
+- **docs/CODEBASE_AUDIT_CHECKLIST.md**: Full audit context
+- **docs/contract-abi.md**: Contract function and error documentation

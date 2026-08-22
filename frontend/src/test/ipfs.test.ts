@@ -833,6 +833,29 @@ describe('IPFSService', () => {
 
       await expect(service.getMetadata('ipfs://QmCID')).rejects.toBeInstanceOf(IPFSUploadError)
     })
+
+    it('rejects metadata when CID does not match content', async () => {
+      // Create a valid metadata object
+      const meta = { name: 'MyToken', description: 'A token', image: 'ipfs://QmImg' }
+      const jsonString = JSON.stringify(meta)
+
+      // Mock fetch to return valid JSON but with a CID that won't match
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          status: 200,
+          text: async () => jsonString,
+        }),
+      )
+
+      // Use an invalid/mismatched CID (real Qm prefix but won't match this content)
+      // The CID "QmXxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" won't match
+      // the hash of our actual metadata JSON
+      await expect(
+        service.getMetadata('ipfs://QmXxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'),
+      ).rejects.toBeInstanceOf(IPFSUploadError)
+    })
   })
 
   // ── Error class identity ───────────────────────────────────────────────────

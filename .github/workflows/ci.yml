@@ -88,6 +88,10 @@ jobs:
 
       - name: Frontend/contract validation bounds drift (validation.ts vs lib.rs)
         run: ./scripts/check-validation-drift.sh
+      
+      - name: Stellar impl contract call signature validation (issue #5 fix)
+        run: node scripts/check-stellar-impl-abi.mjs
+
       - uses: actions/setup-node@v7
         with:
           node-version: 20

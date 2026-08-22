@@ -6,6 +6,8 @@ import { withRetry, isTransientError, HttpError } from '../utils/retry'
 import { isValidImageFile } from '../utils/validation'
 import { IPFSUploadError } from './ipfs-errors'
 import { getUploadToken } from './auth'
+import { CID } from 'multiformats/cid'
+import * as sha256 from 'multiformats/hashes/sha2'
 
 export { IPFSConfigError, IPFSUploadError } from './ipfs-errors'
 export { clearUploadToken } from './auth'
@@ -72,6 +74,42 @@ function isTokenMetadata(value: unknown): value is TokenMetadata {
   )
 }
 
+/**
+ * Verify that fetched content matches the given CID by hashing the bytes and
+ * comparing against the CID's multihash.
+ *
+ * @param content - Raw response bytes as string (UTF-8 JSON)
+ * @param cidString - The CID string from the ipfs:// URI (e.g., "QmXxxx" or "bafy...")
+ * @throws {IPFSUploadError} If verification fails or CID is invalid
+ */
+async function verifyCIDMatch(content: string, cidString: string): Promise<void> {
+  try {
+    // Parse the CID from the string form
+    const cid = CID.parse(cidString)
+
+    // Encode content as UTF-8 bytes (matching how IPFS hashes the original JSON)
+    const bytes = new TextEncoder().encode(content)
+
+    // Hash the content with the algorithm specified in the CID
+    const hash = await sha256.sha256.digest(bytes)
+
+    // Compare the computed hash against the CID's multihash
+    // CID.equals performs a deep comparison of the multihashes
+    const expectedCID = CID.create(cid.version, cid.code, hash)
+
+    if (!cid.equals(expectedCID)) {
+      throw new IPFSUploadError(
+        'Metadata content does not match the provided CID. The content may have been tampered with or corrupted.',
+      )
+    }
+  } catch (err) {
+    if (err instanceof IPFSUploadError) throw err
+    throw new IPFSUploadError(
+      `CID verification failed: ${err instanceof Error ? err.message : String(err)}`,
+    )
+  }
+}
+
 // Same-origin serverless proxies. Pinata credentials are read from server env
 // inside these handlers, so nothing secret is needed in (or reachable from)
 // the browser bundle.
@@ -136,8 +174,9 @@ export class IPFSService {
 
   /**
    * Fetch and parse metadata JSON from an ipfs:// URI via the Pinata gateway.
+   * Verifies that the fetched content matches the CID before treating it as valid.
    *
-   * @throws {IPFSUploadError} On invalid URI, network errors, or non-JSON responses
+   * @throws {IPFSUploadError} On invalid URI, network errors, CID verification failures, or non-JSON responses
    */
   async getMetadata(uri: string): Promise<TokenMetadata> {
     if (!uri.startsWith('ipfs://')) {
@@ -177,6 +216,9 @@ export class IPFSService {
     if (raw.length > MAX_METADATA_BYTES) {
       throw new IPFSUploadError('Metadata document is too large to display.')
     }
+
+    // Verify CID matches content before parsing (content-addressing integrity check)
+    await verifyCIDMatch(raw, cid)
 
     let parsed: unknown
     try {
