@@ -254,7 +254,7 @@ stellar contract deploy \
 
 #### Step 4: Upload Token Contract WASM
 
-The factory needs the token contract WASM hash to deploy tokens.
+The factory needs the token contract WASM hash to deploy tokens. Every token created by the factory is an instance of this WASM, so the security of all user tokens depends entirely on it.
 
 ```bash
 # First, build the standard Stellar token contract
@@ -268,10 +268,10 @@ stellar contract install \
 # Example: 1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef
 ```
 
-If you don't have a token WASM, you can use the Stellar Asset Contract:
+If you don't have a token WASM, you can use the reference SEP-41 implementation from `stellar/soroban-examples`:
 ```bash
-# Download the official Stellar token contract
-wget https://github.com/stellar/soroban-examples/raw/main/token/target/wasm32-unknown-unknown/release/soroban_token_contract.wasm
+# Download from a pinned release tag (replace v0.x.y with a specific tag — do NOT use main)
+wget https://github.com/stellar/soroban-examples/raw/<TAG>/token/target/wasm32-unknown-unknown/release/soroban_token_contract.wasm
 
 # Install it
 stellar contract install \
@@ -279,6 +279,8 @@ stellar contract install \
   --source deployer \
   --network testnet
 ```
+
+> **Security — Token WASM provenance**: Before mainnet, record the exact source tag/commit and the resulting WASM hash in [`docs/token-wasm-provenance.md`](./docs/token-wasm-provenance.md). The `soroban-examples` token contract is a well-reviewed reference implementation maintained by Stellar Development Foundation, but this project has not commissioned an independent audit. For high-value deployments, review the [token WASM provenance document](./docs/token-wasm-provenance.md) and assess whether a professional audit is appropriate before launch.
 
 #### Step 5: Initialize the Factory
 

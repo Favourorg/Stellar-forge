@@ -6,6 +6,7 @@ Use this checklist before promoting Stellar Forge from testnet to mainnet. Mainn
 
 - [ ] Confirm the latest contract code has completed audit or peer security review, and document any accepted risks.
 - [ ] Resolve or explicitly defer all high and medium audit findings before signing mainnet transactions.
+- [ ] **Token WASM provenance and audit status**: Confirm the WASM identified by `VITE_TOKEN_WASM_HASH` has a documented source (upstream tag/commit), a verified on-chain hash, and a recorded audit status or explicit risk-acceptance decision. See [`docs/token-wasm-provenance.md`](./token-wasm-provenance.md) and fill in the mainnet row of the deployment log before proceeding.
 - [ ] Build the release WASM with production optimizations enabled and record the final artifact hash.
 - [ ] Verify the optimized WASM hash matches the value configured for the frontend and deployment scripts.
 - [ ] Review fee configuration, including base fees, token creation fees, treasury account, and expected transaction cost.
