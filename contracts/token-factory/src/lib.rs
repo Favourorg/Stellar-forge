@@ -186,6 +186,8 @@ pub enum Error {
     ZeroFeeSplitEntry = 22,
     /// Metadata has been frozen and can no longer be updated
     MetadataFrozen = 23,
+    /// `create_tokens_batch` batch size exceeds `MAX_BATCH_SIZE`
+    BatchSizeExceeded = 24,
 }
 
 #[contract]
@@ -234,6 +236,18 @@ const MIGRATE_TOKEN_INFO_CHUNK: u32 = 20;
 /// `MAX_FEE_SPLIT_RECIPIENTS` recipients are rejected with
 /// `Error::TooManyFeeSplitRecipients` before any storage write occurs.
 pub const MAX_FEE_SPLIT_RECIPIENTS: u32 = 10;
+
+/// Maximum number of tokens allowed in a single `create_tokens_batch` call.
+///
+/// Measured against Soroban's per-transaction CPU/memory/ledger-entry
+/// budgets (see `docs/contract-abi.md`'s "Batch size limits and resource
+/// costs" table): batch size 20 stays comfortably within mainnet limits,
+/// while resource exhaustion is observed at batch size 30. This was
+/// previously enforced only client-side (`frontend/src/utils/validation.ts`
+/// → `MAX_BATCH_SIZE`), which a caller invoking the contract directly could
+/// bypass entirely; it is now enforced here so every caller gets the same
+/// clean, typed rejection.
+pub const MAX_BATCH_SIZE: u32 = 20;
 
 #[contractimpl]
 impl TokenFactory {
@@ -877,6 +891,9 @@ impl TokenFactory {
         let count = tokens.len() as i128;
         if count == 0 {
             return Err(Error::InvalidParameters);
+        }
+        if tokens.len() > MAX_BATCH_SIZE {
+            return Err(Error::BatchSizeExceeded);
         }
 
         for p in tokens.iter() {

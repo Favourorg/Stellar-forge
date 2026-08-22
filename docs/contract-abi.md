@@ -165,9 +165,9 @@ The table below shows measured CPU instructions and memory bytes consumed by `cr
 >
 > Protocol limits may change with network upgrades. Re-run the benchmark harness after each SDK bump and update this table. The CI job in `.github/workflows/benchmarks.yml` runs on every PR touching `contracts/` and surfaces regressions automatically.
 
-**✅ Recommended maximum batch size: 20 tokens**
+**✅ Maximum batch size: 20 tokens (contract-enforced)**
 
-This limit is enforced client-side by the frontend (`frontend/src/utils/validation.ts → validateBatchSize`) and documented here. Callers using the contract directly must enforce this limit themselves to avoid failed transactions.
+This limit is enforced on-chain: `create_tokens_batch` rejects any call with more than `MAX_BATCH_SIZE` (20) entries with `Error::BatchSizeExceeded`, checked before any per-item validation or deployment work begins. The frontend (`frontend/src/utils/validation.ts → validateBatchSize`) mirrors the same value for early client-side feedback, but the contract is the source of truth and rejects oversized batches regardless of caller.
 
 If you need to deploy more than 20 tokens, split them into multiple sequential `create_tokens_batch` calls, each containing ≤ 20 entries.
 
@@ -414,6 +414,7 @@ Read-only: returns `true` if `address` is on the whitelist.
 | 21   | `InvalidMetadataUri`        | URI is empty, missing `ipfs://` prefix, exceeds 128 bytes, or has no CID              |
 | 22   | `ZeroFeeSplitEntry`         | `set_fee_split` map contains an entry with `bps == 0`                                 |
 | 23   | `MetadataFrozen`            | metadata is frozen (via `freeze_metadata` or auto-freeze after max updates)           |
+| 24   | `BatchSizeExceeded`         | `create_tokens_batch` called with more than `MAX_BATCH_SIZE` (20) tokens              |
 
 ## Events
 
