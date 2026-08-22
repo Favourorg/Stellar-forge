@@ -86,6 +86,13 @@ jobs:
       - name: Event topic drift (lib.rs vs CONTRACT_TOPIC_MAP)
         run: ./scripts/check-event-topic-drift.sh
 
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+
+      - name: Spec stubs check (.kiro/specs/*)
+        run: node scripts/check-kiro-specs.mjs
+
   frontend:
     name: Frontend
     runs-on: ubuntu-latest

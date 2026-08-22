@@ -1,3 +1,17 @@
+## [1.4.4](https://github.com/Favourorg/Stellar-forge/compare/v1.4.3...v1.4.4) (2026-08-22)
+
+
+### Bug Fixes
+
+* remove 'unsafe-inline' from CSP style-src (Closes [#1105](https://github.com/Favourorg/Stellar-forge/issues/1105)) ([#1123](https://github.com/Favourorg/Stellar-forge/issues/1123)) ([838129c](https://github.com/Favourorg/Stellar-forge/commit/838129ccc63f862350ac86ee1efcc1ba2ae4a163))
+
+## [1.4.3](https://github.com/Favourorg/Stellar-forge/compare/v1.4.2...v1.4.3) (2026-08-22)
+
+
+### Bug Fixes
+
+* **specs:** resolve spec stubs and enforce kiro spec documentation ([#1117](https://github.com/Favourorg/Stellar-forge/issues/1117)) ([#1120](https://github.com/Favourorg/Stellar-forge/issues/1120)) ([0875cd2](https://github.com/Favourorg/Stellar-forge/commit/0875cd23e96ae0bb87a7d897418349aaa04b18d8)), closes [#1099](https://github.com/Favourorg/Stellar-forge/issues/1099) [#1107](https://github.com/Favourorg/Stellar-forge/issues/1107) [#1108](https://github.com/Favourorg/Stellar-forge/issues/1108) [#1113](https://github.com/Favourorg/Stellar-forge/issues/1113) [#1118](https://github.com/Favourorg/Stellar-forge/issues/1118)
+
 ## [1.4.2](https://github.com/Favourorg/Stellar-forge/compare/v1.4.1...v1.4.2) (2026-08-20)
 
 

@@ -861,7 +861,7 @@ We take security seriously. If you discover a security vulnerability, please rev
 
 ### Content Security Policy (CSP)
 
-A strict CSP is defined as a `<meta>` tag in `frontend/index.html`:
+A strict CSP is defined as a `<meta>` tag in `frontend/index.html` (all configs are generated from `frontend/src/csp/policy.ts` via `npm run prebuild`):
 
 ```
 default-src 'self';
@@ -869,6 +869,8 @@ connect-src 'self' https://*.stellar.org https://api.pinata.cloud;
 img-src 'self' data: https://gateway.pinata.cloud;
 script-src 'self'
 ```
+
+> **Security hardening** — the `style-src` directive is locked to `'self'` (no `'unsafe-inline'`). Tailwind CSS v4 generates all styles at build time, and the three remaining inline style usages in the codebase have been migrated to static classes and CSSOM-based dynamic updates. The `ProgressBar` component uses a CSSOM ref to set its fill width, which is permitted by CSP-level 3 without requiring `'unsafe-inline'`.
 
 For stronger enforcement, set the CSP as an HTTP response header on your hosting provider instead of (or in addition to) the meta tag — HTTP headers take precedence and support more directives like `frame-ancestors`.
 
