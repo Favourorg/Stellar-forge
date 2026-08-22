@@ -49,6 +49,10 @@ vi.mock('../utils/fetchAllContractEvents', () => ({ fetchAllContractEvents }))
 
 const getAllTokens = vi.fn()
 const getTokenInfoByAddress = vi.fn()
+// Read once on mount to pin every page window to one `tokenCount` baseline
+// (#1126). It runs before the first `getAllTokens` call, so leaving it
+// unmocked fails the fetch outright and every assertion below with it.
+const getFactoryState = vi.fn()
 
 const tokenAt = (index: number): TokenInfo => ({
   name: `Token ${index}`,
@@ -68,9 +72,19 @@ const created = (ledger: number, address: string): ContractEvent => ({
   data: { tokenAddress: address, creator: `GCREATOR${ledger}` },
 })
 
+/** Sets the session snapshot the explorer reads on mount, and returns it. */
+function snapshotTokenCount(tokenCount: number): number {
+  getFactoryState.mockResolvedValue({ tokenCount })
+  return tokenCount
+}
+
 function renderExplorer() {
   const value = {
-    stellarService: { getAllTokens, getTokenInfoByAddress } as unknown as StellarService,
+    stellarService: {
+      getAllTokens,
+      getTokenInfoByAddress,
+      getFactoryState,
+    } as unknown as StellarService,
     ipfsService: { getMetadata } as unknown as IPFSService,
   }
   return render(
@@ -86,10 +100,12 @@ beforeEach(() => {
   vi.clearAllMocks()
   getMetadata.mockResolvedValue(null)
   fetchAllContractEvents.mockResolvedValue([])
+  snapshotTokenCount(0)
 })
 
 describe('TokenExplorer', () => {
   it('lists real tokens from a populated factory, newest-first, with resolved addresses', async () => {
+    const snapshot = snapshotTokenCount(3)
     getAllTokens.mockResolvedValue({ tokens: [tokenAt(3), tokenAt(2), tokenAt(1)], total: 3 })
     // Creation order (ascending ledger) maps position k → 1-based index k+1.
     fetchAllContractEvents.mockResolvedValue([
@@ -101,8 +117,10 @@ describe('TokenExplorer', () => {
     renderExplorer()
 
     await waitFor(() => expect(screen.getByText('Token 3')).toBeInTheDocument())
-    // First page requested from the authoritative index-range view.
-    expect(getAllTokens).toHaveBeenCalledWith(0, 10)
+    // First page requested from the authoritative index-range view, pinned to
+    // the session snapshot rather than a fresh live count.
+    expect(getAllTokens).toHaveBeenCalledWith(0, 10, snapshot)
+    expect(getFactoryState).toHaveBeenCalledTimes(1)
 
     // Newest-first ordering and the true 1-based contract index label.
     const cards = screen.getAllByRole('heading', { level: 4 }).map((h) => h.textContent)
@@ -120,6 +138,7 @@ describe('TokenExplorer', () => {
   })
 
   it('server-paginates: clicking Next fetches the next page by offset', async () => {
+    const snapshot = snapshotTokenCount(25)
     getAllTokens.mockImplementation(async (offset = 0, limit = 10) => ({
       tokens: Array.from({ length: Math.min(limit, 25 - offset) }, (_, i) =>
         tokenAt(25 - offset - i),
@@ -136,8 +155,11 @@ describe('TokenExplorer', () => {
       await userEvent.click(screen.getByRole('button', { name: /next page/i }))
     })
 
-    await waitFor(() => expect(getAllTokens).toHaveBeenCalledWith(10, 10))
+    await waitFor(() => expect(getAllTokens).toHaveBeenCalledWith(10, 10, snapshot))
     await waitFor(() => expect(screen.getByText('Page 2 of 3')).toBeInTheDocument())
+    // The snapshot is taken once per session, not re-read per page — that is
+    // the whole point of #1126.
+    expect(getFactoryState).toHaveBeenCalledTimes(1)
   })
 
   it('renders an error state — never a fake-empty list — when the page fetch fails', async () => {
@@ -152,6 +174,7 @@ describe('TokenExplorer', () => {
   })
 
   it('retry re-fetches after a failure and can then succeed', async () => {
+    snapshotTokenCount(1)
     getAllTokens
       .mockRejectedValueOnce(new Error('RPC unavailable'))
       .mockResolvedValue({ tokens: [tokenAt(1)], total: 1 })
@@ -181,6 +204,7 @@ describe('TokenExplorer', () => {
   })
 
   it('still lists tokens when address enrichment is unavailable (no detail link)', async () => {
+    snapshotTokenCount(1)
     getAllTokens.mockResolvedValue({ tokens: [tokenAt(1)], total: 1 })
     fetchAllContractEvents.mockRejectedValue(new Error('events down'))
 
