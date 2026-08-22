@@ -104,7 +104,9 @@ async function verifyCIDMatch(content: string, cidString: string): Promise<void>
     }
   } catch (err) {
     if (err instanceof IPFSUploadError) throw err
-    throw new IPFSUploadError(`CID verification failed: ${err instanceof Error ? err.message : String(err)}`)
+    throw new IPFSUploadError(
+      `CID verification failed: ${err instanceof Error ? err.message : String(err)}`,
+    )
   }
 }
 
