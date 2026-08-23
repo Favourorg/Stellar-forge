@@ -835,6 +835,108 @@ describe('IPFSService', () => {
     })
   })
 
+  // ── Unpin (orphaned-pin cleanup) ───────────────────────────────────────────
+
+  describe('unpin & unpinLastUpload — orphaned pin cleanup (issue #1096)', () => {
+    it('uploadMetadataDetailed returns both the image and metadata CIDs', async () => {
+      vi.resetModules()
+      const { IPFSService: Fresh } = await import('../services/ipfs')
+      const fresh = new Fresh()
+      mockXHR(200, JSON.stringify({ cid: 'QmImageABCD' }))
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          status: 200,
+          json: async () => ({ cid: 'QmMetaWXYZ' }),
+        }),
+      )
+
+      const result = await fresh.uploadMetadataDetailed(
+        makeFile(),
+        'desc',
+        'Token',
+        'GTESTWALLETADDRESS',
+      )
+
+      expect(result.metadataUri).toBe('ipfs://QmMetaWXYZ')
+      expect(result.imageCid).toBe('QmImageABCD')
+      expect(result.metadataCid).toBe('QmMetaWXYZ')
+      expect(fresh.lastUploadedCids).toEqual({
+        imageCid: 'QmImageABCD',
+        metadataCid: 'QmMetaWXYZ',
+      })
+    })
+
+    it('unpin posts the CID to the same-origin proxy with its JWT', async () => {
+      vi.resetModules()
+      const { IPFSService: Fresh } = await import('../services/ipfs')
+      const fresh = new Fresh()
+
+      let capturedUrl = ''
+      let capturedOpts: RequestInit | null = null
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockImplementation(async (url: string, opts: RequestInit) => {
+          capturedUrl = url
+          capturedOpts = opts
+          return { ok: true, status: 200, json: async () => ({ success: true }) }
+        }),
+      )
+
+      await fresh.unpin('QmOrphanCID', 'GTESTWALLETADDRESS')
+
+      expect(capturedUrl).toBe('/api/ipfs/unpin')
+      expect((capturedOpts?.method ?? '').toUpperCase()).toBe('POST')
+      const headers = capturedOpts?.headers as Record<string, string>
+      expect(headers.Authorization).toBe('Bearer test-jwt')
+      const body = JSON.parse(capturedOpts?.body as string) as { cid: string }
+      expect(body.cid).toBe('QmOrphanCID')
+    })
+
+    it('unpin throws an IPFSUploadError on a 400 response', async () => {
+      vi.resetModules()
+      const { IPFSService: Fresh } = await import('../services/ipfs')
+      const fresh = new Fresh()
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 400 }))
+
+      await expect(fresh.unpin('bad-cid', 'GTESTWALLETADDRESS')).rejects.toBeInstanceOf(
+        IPFSUploadError,
+      )
+    })
+
+    it('unpinLastUpload unpins both CIDs that the last upload created', async () => {
+      vi.resetModules()
+      const { IPFSService: Fresh } = await import('../services/ipfs')
+      const fresh = new Fresh()
+      mockXHR(200, JSON.stringify({ cid: 'QmImageABCD' }))
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          status: 200,
+          json: async () => ({ cid: 'QmMetaWXYZ' }),
+        }),
+      )
+
+      await fresh.uploadMetadata(makeFile(), 'desc', 'Token', 'GTESTWALLETADDRESS')
+
+      const unpinUrls: string[] = []
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockImplementation(async (url: string) => {
+          unpinUrls.push(url)
+          return { ok: true, status: 200, json: async () => ({ success: true }) }
+        }),
+      )
+
+      await fresh.unpinLastUpload('GTESTWALLETADDRESS')
+
+      const unpinBodies = unpinUrls.map((u) => u)
+      expect(unpinBodies).toHaveLength(2)
+    })
+  })
+
   // ── Error class identity ───────────────────────────────────────────────────
 
   describe('error classes', () => {

@@ -3,6 +3,10 @@
     {
       "path": "/api/cron/index-tokens",
       "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/cron/reconcile-pins",
+      "schedule": "*/15 * * * *"
     }
   ],
   "headers": [
