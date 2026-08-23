@@ -887,10 +887,12 @@ describe('IPFSService', () => {
       await fresh.unpin('QmOrphanCID', 'GTESTWALLETADDRESS')
 
       expect(capturedUrl).toBe('/api/ipfs/unpin')
-      expect((capturedOpts?.method ?? '').toUpperCase()).toBe('POST')
-      const headers = capturedOpts?.headers as Record<string, string>
+
+      const opts = capturedOpts as unknown as RequestInit
+      expect(opts.method?.toUpperCase() ?? '').toBe('POST')
+      const headers = opts.headers as Record<string, string>
       expect(headers.Authorization).toBe('Bearer test-jwt')
-      const body = JSON.parse(capturedOpts?.body as string) as { cid: string }
+      const body = JSON.parse(opts.body as string) as { cid: string }
       expect(body.cid).toBe('QmOrphanCID')
     })
 
