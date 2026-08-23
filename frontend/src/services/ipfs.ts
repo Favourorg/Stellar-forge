@@ -1,6 +1,9 @@
 // IPFS service - uploads are proxied through our own serverless functions
 // (api/ipfs/*) so Pinata credentials never reach the browser bundle.
 
+import { CID } from 'multiformats/cid'
+import { sha256 } from 'multiformats/hashes/sha2'
+import { identity } from 'multiformats/hashes/identity'
 import { IPFS_CONFIG } from '../config/ipfs'
 import { withRetry, isTransientError, HttpError } from '../utils/retry'
 import { isValidImageFile } from '../utils/validation'
@@ -45,6 +48,65 @@ export const MAX_METADATA_DESCRIPTION_LENGTH = 2_000
  * memory and main-thread time before any cap applied.
  */
 const MAX_METADATA_BYTES = 100 * 1024
+
+/**
+ * Hash codes that this client can recompute for CID verification.
+ *
+ * sha256 covers the overwhelming majority of on-chain metadata URIs (both the
+ * legacy Qm... v0 style and the current bafy... v1 style are sha256 underneath).
+ * `identity` is the trivial hash used for tiny inline payloads — the digest IS
+ * the content, so verification is a byte comparison.
+ */
+const VERIFIABLE_HASH_CODES = new Set<number>([
+  sha256.code, // 0x12
+  identity.code, // 0x00
+])
+
+/**
+ * Verify that `bytes` are exactly the content addressed by the given CID.
+ *
+ * Content addressing guarantees the multihash digest inside a CID is the hash
+ * of the byte sequence the CID names. Hashing what we actually received and
+ * comparing digests detects a gateway serving something other than the
+ * requested document — tampering, corruption, or a misbehaving gateway — before
+ * the frontend parses or renders it. This is the frontend half of the
+ * "anyone can pin metadata directly to IPFS" trust model documented in
+ * docs/metadata-format.md.
+ *
+ * @returns `true` when the bytes hash to the CID's digest; `false` on any
+ *   mismatch, unparseable CID, or unknown hash function (verification is
+ *   fail-closed: if we cannot verify, the content is not trusted).
+ */
+export async function verifyCIDMatch(bytes: Uint8Array, cidStr: string): Promise<boolean> {
+  let cid: CID
+  try {
+    cid = CID.parse(cidStr)
+  } catch {
+    return false
+  }
+
+  const { multihash } = cid
+  if (!VERIFIABLE_HASH_CODES.has(multihash.code)) return false
+
+  let computed: Uint8Array
+  switch (multihash.code) {
+    case sha256.code:
+      computed = (await sha256.digest(bytes)).digest
+      break
+    case identity.code:
+      // Identity hash: the digest is the content itself.
+      computed = bytes
+      break
+    default:
+      return false
+  }
+
+  if (computed.length !== multihash.digest.length) return false
+  for (let i = 0; i < computed.length; i++) {
+    if (computed[i] !== multihash.digest[i]) return false
+  }
+  return true
+}
 
 /** Clamp a string to `max` characters, appending an ellipsis when shortened. */
 function clamp(value: string, max: number): string {
@@ -164,14 +226,30 @@ export class IPFSService {
       )
     }
 
-    // Read as text first so an oversized pin is rejected before JSON.parse has
-    // to walk it. response.json() would parse the whole payload no matter how
-    // large, which is the cost we are trying to avoid.
-    let raw: string
+    // Read as raw bytes so we can verify the CID before trusting the content.
+    let rawBytes: Uint8Array
     try {
-      raw = await response.text()
+      rawBytes = new Uint8Array(await response.arrayBuffer())
     } catch {
       throw new IPFSUploadError('Network error while reading metadata from the IPFS gateway.')
+    }
+
+    // Verify the received content matches the CID before parsing or rendering.
+    // Anyone can pin metadata directly to IPFS, and while the configured gateway
+    // is trusted, a gateway bug, DNS hijack, or CDN cache-poison could serve a
+    // different document. Content addressing lets us detect that client-side.
+    if (!(await verifyCIDMatch(rawBytes, cid))) {
+      throw new IPFSUploadError(
+        'Metadata content does not match its IPFS CID. The document may have been tampered with.',
+      )
+    }
+
+    // Decode to text for JSON parsing and size capping.
+    let raw: string
+    try {
+      raw = new TextDecoder().decode(rawBytes)
+    } catch {
+      throw new IPFSUploadError('Metadata response contains invalid UTF-8.')
     }
 
     if (raw.length > MAX_METADATA_BYTES) {

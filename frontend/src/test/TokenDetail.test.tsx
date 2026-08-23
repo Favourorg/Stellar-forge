@@ -1,12 +1,17 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { CID } from 'multiformats/cid'
+import { sha256 } from 'multiformats/hashes/sha2'
 import { TokenDetail } from '../components/TokenDetail'
 import { StellarContext } from '../context/StellarContext'
 import { IPFSService, MAX_METADATA_DESCRIPTION_LENGTH } from '../services/ipfs'
 import type { StellarService } from '../services/stellar'
-import type { TokenInfo } from '../types'
 
+// Legacy test CID that appears in image URIs; it is only used as a placeholder
+// inside metadata documents (and as fallback — the actual bytes served by the
+// gateway are what getMetadata validates, and the tests below compute a real
+// CID from the served content so verification passes).
 const VALID_CID = 'QmXoypizjW3WknFiJnKLwHCnL72vedxjQkDDP1mXWo6uco'
 const ATTACKER_URL = 'https://evil.example.com/pixel.png'
 
@@ -36,11 +41,21 @@ const TOKEN_ADDRESS = 'CA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKERYNZGGA5SOAOPIFY6YQGAXE'
 // import — mocking '../services/stellar' would never bind. Supply the context
 // directly with a stub service plus a real IPFSService, whose gateway fetch is
 // stubbed through global fetch below.
-function renderTokenDetail(address = TOKEN_ADDRESS) {
+function renderTokenDetail(address = TOKEN_ADDRESS, metadataCid = VALID_CID) {
   const value = {
     stellarService: { resolveTokenInfoByAddress } as unknown as StellarService,
     ipfsService: new IPFSService(),
   }
+
+  resolveTokenInfoByAddress.mockResolvedValue({
+    status: 'resolved',
+    name: 'TestToken',
+    symbol: 'TST',
+    decimals: 7,
+    creator: 'GCREATOR000000000000000000000000000000000000000000000',
+    createdAt: 1_700_000_000,
+    metadataUri: `ipfs://${metadataCid}`,
+  })
 
   return render(
     <StellarContext.Provider value={value}>
@@ -53,33 +68,33 @@ function renderTokenDetail(address = TOKEN_ADDRESS) {
   )
 }
 
-const tokenInfo = (overrides: Partial<TokenInfo> = {}): TokenInfo => ({
-  name: 'TestToken',
-  symbol: 'TST',
-  decimals: 7,
-  creator: 'GCREATOR000000000000000000000000000000000000000000000',
-  createdAt: 1_700_000_000,
-  metadataUri: `ipfs://${VALID_CID}`,
-  ...overrides,
-})
-
-/** Stub the IPFS gateway response that TokenDetail fetches metadata from. */
-const mockPinnedMetadata = (metadata: Record<string, unknown>) => {
+/**
+ * Stub the IPFS gateway response that TokenDetail fetches metadata from, and
+ * return the CID that actually addresses those bytes. TokenDetail's
+ * getMetadata now verifies the served content matches the requested CID, so
+ * the URI in the token info must be the CID of the served content for
+ * happy-path tests to resolve, while mismatch tests use a different CID.
+ */
+const mockPinnedMetadata = async (metadata: Record<string, unknown>): Promise<string> => {
+  const content = JSON.stringify(metadata)
+  const utf8 = new Uint8Array(new TextEncoder().encode(content))
+  const digest = await sha256.digest(utf8)
+  const cid = CID.createV1(0x70, digest).toString()
   vi.stubGlobal(
     'fetch',
     vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
-      // getMetadata reads text() so it can size-check before parsing.
-      text: async () => JSON.stringify(metadata),
+      arrayBuffer: async () =>
+        utf8.buffer.slice(utf8.byteOffset, utf8.byteOffset + utf8.byteLength),
     } as unknown as Response),
   )
+  return cid
 }
 
 describe('TokenDetail — untrusted metadata rendering', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    resolveTokenInfoByAddress.mockResolvedValue({ status: 'resolved', ...tokenInfo() })
   })
 
   afterEach(() => {
@@ -87,7 +102,7 @@ describe('TokenDetail — untrusted metadata rendering', () => {
   })
 
   it('discards pinned metadata with a non-IPFS image entirely, never rendering the attacker URL', async () => {
-    mockPinnedMetadata({
+    await mockPinnedMetadata({
       name: 'EvilToken',
       description: 'desc',
       image: ATTACKER_URL,
@@ -106,13 +121,13 @@ describe('TokenDetail — untrusted metadata rendering', () => {
   })
 
   it('renders the real image when metadata has a well-formed ipfs:// image', async () => {
-    mockPinnedMetadata({
+    const cid = await mockPinnedMetadata({
       name: 'GoodToken',
       description: 'desc',
       image: `ipfs://${VALID_CID}`,
     })
 
-    renderTokenDetail()
+    renderTokenDetail(TOKEN_ADDRESS, cid)
 
     const img = await screen.findByRole('img', { name: 'GoodToken' })
     await waitFor(() => {
@@ -127,13 +142,13 @@ describe('TokenDetail — untrusted metadata rendering', () => {
     // Sized under the 100KB whole-document cap so this exercises the
     // truncation path, not the outright-rejection path.
     const pinnedLength = 40_000
-    mockPinnedMetadata({
+    const cid = await mockPinnedMetadata({
       name: 'SpamToken',
       description: 'A'.repeat(pinnedLength),
       image: `ipfs://${VALID_CID}`,
     })
 
-    renderTokenDetail()
+    renderTokenDetail(TOKEN_ADDRESS, cid)
 
     const para = await screen.findByText(/^A+…$/)
 
@@ -146,13 +161,13 @@ describe('TokenDetail — untrusted metadata rendering', () => {
   })
 
   it('renders a <script>-containing description as inert text, not executed markup', async () => {
-    mockPinnedMetadata({
+    const cid = await mockPinnedMetadata({
       name: 'Token',
       description: '<script>window.__pwned = true</script>',
       image: `ipfs://${VALID_CID}`,
     })
 
-    renderTokenDetail()
+    renderTokenDetail(TOKEN_ADDRESS, cid)
 
     await waitFor(() => {
       expect(screen.getByText('<script>window.__pwned = true</script>')).toBeInTheDocument()

@@ -6,6 +6,14 @@ Because that document is pinned by whoever created the token, **it is untrusted 
 
 This page documents the constraints the frontend enforces, so third-party integrators pinning their own metadata know what will and will not survive rendering.
 
+## Content addressing and CID verification
+
+The frontend verifies that the bytes returned by the IPFS gateway actually match the CID in the token's `metadata_uri` before parsing or rendering them. This is the client-side half of the content-addressing guarantee: a gateway bug, DNS hijack, or CDN cache-poisoning could serve a different document than the CID addresses, and the client-side hash verification catches that.
+
+The SHA-256 multihash inside the CID is recomputed from the bytes the gateway returned and compared against the CID's digest. A mismatch raises an error and the metadata is dropped entirely — the token renders without metadata, same as an unparseable document.
+
+Supported hash functions: **SHA-256** (the overwhelming majority of on-chain URIs — both the legacy `Qm...` v0 format and the current `bafy...` v1 format), and **identity** (inline payloads). Unknown hash functions cause the document to be rejected.
+
 ## Document shape
 
 ```json
@@ -53,6 +61,7 @@ This is deliberate redundancy. A character cap does not bound *height* — a few
 | Layer | Location | Notes |
 | --- | --- | --- |
 | Read (authoritative) | `getMetadata` in `frontend/src/services/ipfs.ts` | The only check that binds for externally-pinned metadata |
+| CID integrity | `verifyCIDMatch` in `frontend/src/services/ipfs.ts` | Byte-level hash check before parse; mismatch → metadata dropped |
 | Write (advisory) | `MetadataForm.tsx`, `MetadataUploadForm.tsx` | Better UX; trivially bypassed by pinning directly |
 | Render (defence in depth) | `TokenDetail.tsx`, `TokenExplorer.tsx` | Bounds height regardless of character count |
 

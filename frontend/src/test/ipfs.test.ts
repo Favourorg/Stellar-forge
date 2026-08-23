@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { CID } from 'multiformats/cid'
+import { sha256 } from 'multiformats/hashes/sha2'
 import {
   IPFSService,
   MAX_METADATA_DESCRIPTION_LENGTH,
@@ -94,7 +96,31 @@ function mockXHR(status: number, responseText: string, triggerError = false) {
   return xhrMock
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
+// ── CID helpers ─────────────────────────────────────────────────────────────────
+
+/**
+ * Compute the CIDv1 that would actually address `content`. getMetadata now
+ * verifies content matches its CID before parsing, so test gateway responses
+ * must be addressed by the CID of the exact bytes they serve.
+ */
+async function cidOf(content: string): Promise<string> {
+  const bytes = new Uint8Array(new TextEncoder().encode(content))
+  const digest = await sha256.digest(bytes)
+  return CID.createV1(0x70, digest).toString()
+}
+
+/** Build a fetch mock that serves `content` with a matching CID and URL check. */
+function gatewayMock(content: string, onUrl?: (url: string) => void) {
+  const utf8 = new Uint8Array(new TextEncoder().encode(content))
+  return vi.fn().mockImplementation(async (url: string) => {
+    onUrl?.(url)
+    return {
+      ok: true,
+      status: 200,
+      arrayBuffer: async () => utf8.buffer.slice(utf8.byteOffset, utf8.byteOffset + utf8.byteLength),
+    }
+  })
+}
 
 describe('IPFSService', () => {
   let service: IPFSService
@@ -565,38 +591,27 @@ describe('IPFSService', () => {
   // ── getMetadata ────────────────────────────────────────────────────────────
 
   describe('getMetadata', () => {
+    // Each test builds a gateway response whose content matches its CID,
+    // so the CID verification step passes and the test reaches the
+    // behaviour it targets.
+
     it('fetches and returns parsed metadata JSON', async () => {
       const meta = { name: 'MyToken', description: 'A token', image: 'ipfs://QmImg' }
-      vi.stubGlobal(
-        'fetch',
-        vi.fn().mockResolvedValue({
-          ok: true,
-          status: 200,
-          text: async () => JSON.stringify(meta),
-        }),
-      )
+      const content = JSON.stringify(meta)
+      vi.stubGlobal('fetch', gatewayMock(content))
 
-      const result = await service.getMetadata('ipfs://QmSomeCID')
+      const result = await service.getMetadata(`ipfs://${await cidOf(content)}`)
       expect(result).toEqual(meta)
     })
 
     it('constructs the correct gateway URL from the CID', async () => {
+      const content = JSON.stringify({ name: 'T', description: 'D', image: 'ipfs://QmImg' })
       let calledUrl = ''
-      vi.stubGlobal(
-        'fetch',
-        vi.fn().mockImplementation(async (url: string) => {
-          calledUrl = url
-          return {
-            ok: true,
-            status: 200,
-            text: async () =>
-              JSON.stringify({ name: 'T', description: 'D', image: 'ipfs://QmImg' }),
-          }
-        }),
-      )
+      vi.stubGlobal('fetch', gatewayMock(content, (url) => { calledUrl = url }))
 
-      await service.getMetadata('ipfs://QmTestCID')
-      expect(calledUrl).toContain('QmTestCID')
+      const cid = await cidOf(content)
+      await service.getMetadata(`ipfs://${cid}`)
+      expect(calledUrl).toContain(cid)
       expect(calledUrl).toContain('gateway.pinata.cloud')
     })
 
@@ -618,7 +633,6 @@ describe('IPFSService', () => {
         vi.fn().mockResolvedValue({
           ok: false,
           status: 404,
-          text: async () => JSON.stringify({}),
         }),
       )
 
@@ -626,16 +640,12 @@ describe('IPFSService', () => {
     })
 
     it('throws IPFSUploadError when response is not valid JSON', async () => {
-      vi.stubGlobal(
-        'fetch',
-        vi.fn().mockResolvedValue({
-          ok: true,
-          status: 200,
-          text: async () => 'this is not JSON {',
-        }),
-      )
+      const content = 'this is not JSON {'
+      vi.stubGlobal('fetch', gatewayMock(content))
 
-      await expect(service.getMetadata('ipfs://QmCID')).rejects.toBeInstanceOf(IPFSUploadError)
+      await expect(service.getMetadata(`ipfs://${await cidOf(content)}`)).rejects.toBeInstanceOf(
+        IPFSUploadError,
+      )
     })
 
     it('rejects metadata whose image is not an ipfs:// URI', async () => {
@@ -647,69 +657,49 @@ describe('IPFSService', () => {
         'ipfs://../../secret',
       ]
       for (const image of badImages) {
-        vi.stubGlobal(
-          'fetch',
-          vi.fn().mockResolvedValue({
-            ok: true,
-            status: 200,
-            text: async () => JSON.stringify({ name: 'MyToken', description: 'A token', image }),
-          }),
-        )
+        const content = JSON.stringify({ name: 'MyToken', description: 'A token', image })
+        vi.stubGlobal('fetch', gatewayMock(content))
 
-        await expect(service.getMetadata('ipfs://QmCID')).rejects.toBeInstanceOf(IPFSUploadError)
+        await expect(service.getMetadata(`ipfs://${await cidOf(content)}`)).rejects.toBeInstanceOf(
+          IPFSUploadError,
+        )
       }
     })
 
     it('throws IPFSUploadError when metadata is missing name field', async () => {
-      vi.stubGlobal(
-        'fetch',
-        vi.fn().mockResolvedValue({
-          ok: true,
-          status: 200,
-          text: async () => JSON.stringify({ description: 'A token', image: 'ipfs://QmImg' }),
-        }),
-      )
+      const content = JSON.stringify({ description: 'A token', image: 'ipfs://QmImg' })
+      vi.stubGlobal('fetch', gatewayMock(content))
 
-      await expect(service.getMetadata('ipfs://QmCID')).rejects.toBeInstanceOf(IPFSUploadError)
+      await expect(service.getMetadata(`ipfs://${await cidOf(content)}`)).rejects.toBeInstanceOf(
+        IPFSUploadError,
+      )
     })
 
     it('throws IPFSUploadError when metadata is missing description field', async () => {
-      vi.stubGlobal(
-        'fetch',
-        vi.fn().mockResolvedValue({
-          ok: true,
-          status: 200,
-          text: async () => JSON.stringify({ name: 'MyToken', image: 'ipfs://QmImg' }),
-        }),
-      )
+      const content = JSON.stringify({ name: 'MyToken', image: 'ipfs://QmImg' })
+      vi.stubGlobal('fetch', gatewayMock(content))
 
-      await expect(service.getMetadata('ipfs://QmCID')).rejects.toBeInstanceOf(IPFSUploadError)
+      await expect(service.getMetadata(`ipfs://${await cidOf(content)}`)).rejects.toBeInstanceOf(
+        IPFSUploadError,
+      )
     })
 
     it('throws IPFSUploadError when metadata is missing image field', async () => {
-      vi.stubGlobal(
-        'fetch',
-        vi.fn().mockResolvedValue({
-          ok: true,
-          status: 200,
-          text: async () => JSON.stringify({ name: 'MyToken', description: 'A token' }),
-        }),
-      )
+      const content = JSON.stringify({ name: 'MyToken', description: 'A token' })
+      vi.stubGlobal('fetch', gatewayMock(content))
 
-      await expect(service.getMetadata('ipfs://QmCID')).rejects.toBeInstanceOf(IPFSUploadError)
+      await expect(service.getMetadata(`ipfs://${await cidOf(content)}`)).rejects.toBeInstanceOf(
+        IPFSUploadError,
+      )
     })
 
     it('throws IPFSUploadError when metadata fields have wrong types', async () => {
-      vi.stubGlobal(
-        'fetch',
-        vi.fn().mockResolvedValue({
-          ok: true,
-          status: 200,
-          text: async () => JSON.stringify({ name: 42, description: true, image: null }),
-        }),
-      )
+      const content = JSON.stringify({ name: 42, description: true, image: null })
+      vi.stubGlobal('fetch', gatewayMock(content))
 
-      await expect(service.getMetadata('ipfs://QmCID')).rejects.toBeInstanceOf(IPFSUploadError)
+      await expect(service.getMetadata(`ipfs://${await cidOf(content)}`)).rejects.toBeInstanceOf(
+        IPFSUploadError,
+      )
     })
 
     it('strips unexpected extra fields from the returned metadata', async () => {
@@ -720,24 +710,22 @@ describe('IPFSService', () => {
         maliciousField: '<script>alert(1)</script>',
         extra: { nested: 'data' },
       }
-      vi.stubGlobal(
-        'fetch',
-        vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => JSON.stringify(raw) }),
-      )
+      const content = JSON.stringify(raw)
+      vi.stubGlobal('fetch', gatewayMock(content))
 
-      const result = await service.getMetadata('ipfs://QmCID')
+      const result = await service.getMetadata(`ipfs://${await cidOf(content)}`)
       expect(result).toEqual({ name: 'MyToken', description: 'A token', image: 'ipfs://QmImg' })
       expect(result).not.toHaveProperty('maliciousField')
       expect(result).not.toHaveProperty('extra')
     })
 
     it('throws IPFSUploadError when gateway returns an empty object', async () => {
-      vi.stubGlobal(
-        'fetch',
-        vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => JSON.stringify({}) }),
-      )
+      const content = JSON.stringify({})
+      vi.stubGlobal('fetch', gatewayMock(content))
 
-      await expect(service.getMetadata('ipfs://QmCID')).rejects.toBeInstanceOf(IPFSUploadError)
+      await expect(service.getMetadata(`ipfs://${await cidOf(content)}`)).rejects.toBeInstanceOf(
+        IPFSUploadError,
+      )
     })
 
     // Metadata can be pinned directly to IPFS without going through our upload
@@ -745,24 +733,29 @@ describe('IPFSService', () => {
     // An unbounded description renders into every visitor's page: enough text
     // stalls the tab, and enough newlines push phishing content below the fold.
     describe('length caps on untrusted free text', () => {
-      const gateway = (meta: Record<string, unknown>) =>
-        vi.stubGlobal(
-          'fetch',
-          vi.fn().mockResolvedValue({
+      const gateway = async (meta: Record<string, unknown>) => {
+        const content = JSON.stringify(meta)
+        const utf8 = new Uint8Array(new TextEncoder().encode(content))
+        return {
+          mock: vi.fn().mockResolvedValue({
             ok: true,
             status: 200,
-            text: async () => JSON.stringify(meta),
+            arrayBuffer: async () =>
+              utf8.buffer.slice(utf8.byteOffset, utf8.byteOffset + utf8.byteLength),
           }),
-        )
+          cid: await cidOf(content),
+        }
+      }
 
       it('truncates a description longer than the cap', async () => {
-        gateway({
+        const { mock, cid } = await gateway({
           name: 'T',
           description: 'a'.repeat(MAX_METADATA_DESCRIPTION_LENGTH + 5_000),
           image: 'ipfs://QmImg',
         })
+        vi.stubGlobal('fetch', mock)
 
-        const result = await service.getMetadata('ipfs://QmCID')
+        const result = await service.getMetadata(`ipfs://${cid}`)
 
         expect([...result.description].length).toBe(MAX_METADATA_DESCRIPTION_LENGTH + 1) // + ellipsis
         expect(result.description.endsWith('…')).toBe(true)
@@ -770,22 +763,24 @@ describe('IPFSService', () => {
 
       it('leaves a description at exactly the cap untouched', async () => {
         const exact = 'b'.repeat(MAX_METADATA_DESCRIPTION_LENGTH)
-        gateway({ name: 'T', description: exact, image: 'ipfs://QmImg' })
+        const { mock, cid } = await gateway({ name: 'T', description: exact, image: 'ipfs://QmImg' })
+        vi.stubGlobal('fetch', mock)
 
-        const result = await service.getMetadata('ipfs://QmCID')
+        const result = await service.getMetadata(`ipfs://${cid}`)
 
         expect(result.description).toBe(exact)
         expect(result.description).not.toContain('…')
       })
 
       it('truncates an over-long name', async () => {
-        gateway({
+        const { mock, cid } = await gateway({
           name: 'n'.repeat(MAX_METADATA_NAME_LENGTH + 500),
           description: 'd',
           image: 'ipfs://QmImg',
         })
+        vi.stubGlobal('fetch', mock)
 
-        const result = await service.getMetadata('ipfs://QmCID')
+        const result = await service.getMetadata(`ipfs://${cid}`)
 
         expect([...result.name].length).toBe(MAX_METADATA_NAME_LENGTH + 1)
       })
@@ -793,13 +788,14 @@ describe('IPFSService', () => {
       it('does not split a surrogate pair when truncating', async () => {
         // Emoji are two UTF-16 code units each; slicing by .length would cut one
         // in half and leave an unpaired surrogate (renders as a replacement char).
-        gateway({
+        const { mock, cid } = await gateway({
           name: 'T',
           description: '😀'.repeat(MAX_METADATA_DESCRIPTION_LENGTH + 100),
           image: 'ipfs://QmImg',
         })
+        vi.stubGlobal('fetch', mock)
 
-        const result = await service.getMetadata('ipfs://QmCID')
+        const result = await service.getMetadata(`ipfs://${cid}`)
 
         expect(result.description).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/)
         expect(result.description).not.toMatch(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/)
@@ -808,30 +804,78 @@ describe('IPFSService', () => {
       it('rejects a payload too large to parse rather than truncating it', async () => {
         // Guards the cost of JSON.parse itself — truncating after parse would
         // still mean walking the whole multi-megabyte document first.
+        const content = 'x'.repeat(200 * 1024)
+        const utf8 = new Uint8Array(new TextEncoder().encode(content))
         vi.stubGlobal(
           'fetch',
           vi.fn().mockResolvedValue({
             ok: true,
             status: 200,
-            text: async () => 'x'.repeat(200 * 1024),
+            arrayBuffer: async () =>
+              utf8.buffer.slice(utf8.byteOffset, utf8.byteOffset + utf8.byteLength),
           }),
         )
 
-        await expect(service.getMetadata('ipfs://QmCID')).rejects.toThrow(/too large/i)
+        await expect(service.getMetadata(`ipfs://${await cidOf(content)}`)).rejects.toThrow(
+          /too large/i,
+        )
       })
     })
 
     it('throws IPFSUploadError when gateway returns a non-object (array)', async () => {
-      vi.stubGlobal(
-        'fetch',
-        vi.fn().mockResolvedValue({
-          ok: true,
-          status: 200,
-          text: async () => JSON.stringify(['name', 'description', 'image']),
-        }),
-      )
+      const content = JSON.stringify(['name', 'description', 'image'])
+      vi.stubGlobal('fetch', gatewayMock(content))
 
-      await expect(service.getMetadata('ipfs://QmCID')).rejects.toBeInstanceOf(IPFSUploadError)
+      await expect(service.getMetadata(`ipfs://${await cidOf(content)}`)).rejects.toBeInstanceOf(
+        IPFSUploadError,
+      )
+    })
+
+    // ── CID verification ────────────────────────────────────────────────────
+
+    describe('CID verification', () => {
+      it('returns the parsed metadata when content matches the CID', async () => {
+        const meta = { name: 'ValidToken', description: 'OK', image: 'ipfs://QmImg' }
+        const content = JSON.stringify(meta)
+        vi.stubGlobal('fetch', gatewayMock(content))
+
+        const result = await service.getMetadata(`ipfs://${await cidOf(content)}`)
+
+        expect(result).toEqual(meta)
+      })
+
+      it('rejects content that does not match the CID', async () => {
+        // Serve content A addressed by CID for content B
+        const realContent = JSON.stringify({ name: 'Real', description: 'Real', image: 'ipfs://QmReal' })
+        const tamperedContent = JSON.stringify({ name: 'Tampered', description: 'Tampered', image: 'ipfs://QmFake' })
+        vi.stubGlobal('fetch', gatewayMock(tamperedContent))
+
+        await expect(
+          service.getMetadata(`ipfs://${await cidOf(realContent)}`),
+        ).rejects.toThrow(/does not match.*CID/)
+      })
+
+      it('rejects an unparseable CID string', async () => {
+        // CID verification should not throw for invalid CID — it returns false
+        // and getMetadata throws IPFSUploadError.
+        const content = JSON.stringify({ name: 'T', description: 'D', image: 'ipfs://QmImg' })
+        const utf8 = new Uint8Array(new TextEncoder().encode(content))
+        vi.stubGlobal(
+          'fetch',
+          vi.fn().mockResolvedValue({
+            ok: true,
+            status: 200,
+            arrayBuffer: async () =>
+              utf8.buffer.slice(utf8.byteOffset, utf8.byteOffset + utf8.byteLength),
+          }),
+        )
+
+        // An invalid CID string is still valid as a URI path component, but
+        // verifyCIDMatch will fail closed and getMetadata rejects.
+        await expect(service.getMetadata('ipfs://!!!!invalid-cid!!!!')).rejects.toBeInstanceOf(
+          IPFSUploadError,
+        )
+      })
     })
   })
 
