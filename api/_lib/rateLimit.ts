@@ -6,6 +6,15 @@ const MAX_REQUESTS_PER_WINDOW = parseInt(process.env.RATE_LIMIT_WINDOW ?? '10', 
 const MAX_REQUESTS_PER_DAY = parseInt(process.env.RATE_LIMIT_DAY ?? '100', 10)
 
 /**
+ * Whether the rate limiter has a durable (KV-backed) store configured.
+ * Mirrors the indexer's `isDurableStoreConfigured` pattern so operators
+ * can verify that production abuse protection is actually working.
+ */
+export function isRateLimitDurable(): boolean {
+  return isKvConfigured()
+}
+
+/**
  * Check if a wallet address has exceeded rate limits (window or daily).
  * Uses Vercel KV for durable, cross-instance limits.
  * Falls back to in-memory tracking if KV is unavailable.
