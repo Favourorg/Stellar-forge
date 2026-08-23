@@ -49,7 +49,7 @@ Every mutating factory call that has a monetary cost (`create_token`, `create_to
 Token images and descriptions are too large and mutable to store cheaply on a Soroban ledger, so StellarForge splits metadata into two layers:
 
 1. **Off-chain payload** — the frontend uploads the image and a JSON document (`{ name, description, image }`) to IPFS through Pinata's pinning API, getting back a content identifier (CID) for each.
-2. **On-chain pointer** — `set_metadata(token_address, admin, metadata_uri, fee_payment)` stores a single `ipfs://<cid>` string against the token, one time only (`Error::MetadataAlreadySet` on a second attempt). Any client — StellarForge's UI, a block explorer, another dApp — can resolve that URI through any IPFS gateway to fetch the same image/description.
+2. **On-chain pointer** — `set_metadata(token_address, admin, metadata_uri, fee_payment)` stores the current `ipfs://<cid>` URI for the token, and each successful update increments the metadata version. The contract enforces `fee_payment >= metadata_fee`, validates the `ipfs://` prefix and length, blocks writes when the token is frozen, and keeps the admin authorization path aligned with the `admin.require_auth()` + admin identity check in the factory contract. Any client — StellarForge's UI, a block explorer, another dApp — can resolve that URI through any IPFS gateway to fetch the same image/description.
 
 ### 4. Administration, safety, and lifecycle controls
 
@@ -270,7 +270,7 @@ The authoritative, field-by-field reference — including parameter tables, ever
 
 ### Metadata
 
-- `set_metadata(token_address, admin, metadata_uri, fee_payment)`: Attach an `ipfs://` (or `https://`) metadata URI to a token. One-shot — a second call returns `MetadataAlreadySet`.
+- `set_metadata(token_address, admin, metadata_uri, fee_payment)`: Attach or update the token's `ipfs://` metadata URI. The caller must authorize as the current admin, `fee_payment` must satisfy `metadata_fee`, and updates are allowed until the token is frozen or the per-token update cap is reached; every successful write increments the metadata version.
 - `set_burn_enabled(token_address, admin, enabled)`: Toggle whether a specific token can be burned. Caller must be the token's creator.
 
 ### Admin & Governance
@@ -302,7 +302,7 @@ The contract publishes Soroban events on `(factory, action)` topics — `init`, 
 
 1. **Connect Wallet**: Use the Freighter browser extension to connect an account. The app checks that Freighter's active network matches the app's selected network and blocks writes on mismatch.
 2. **Create Token**: Fill in name, symbol, decimals, and initial supply; the form validates against the same rules the contract enforces (name ≤ 32 chars, symbol ≤ 12 chars, decimals 0–18) before submission. Sign and submit the transaction to pay the creation fee and deploy the token contract.
-3. **Set Metadata**: Upload a token image and description — the app uploads the image to IPFS, pins a metadata JSON document referencing it, then calls `set_metadata` with the resulting `ipfs://` URI (one-time only per token).
+3. **Set Metadata**: Upload a token image and description — the app uploads the image to IPFS, pins a metadata JSON document referencing it, then calls `set_metadata` with the resulting `ipfs://` URI. Metadata updates are valid for the token until the URI is frozen or the update cap is reached; the contract increments the metadata version on every successful write.
 4. **Mint Tokens**: As the token's creator, mint additional supply to any address, subject to the token's optional `max_supply` cap.
 5. **Manage Supply**: Token holders can burn their own balance at any time (unless the creator has disabled burning for that token via `set_burn_enabled`).
 6. **Admin Panel**: The factory admin can update fees, configure a fee split, pause/unpause the factory, and rotate the admin address from the in-app Admin Panel.
