@@ -157,8 +157,8 @@ describe('trackEvent', () => {
     })
   })
 
-  // ADR-005: REQ-ADR005-06 - Events without props do not fabricate a payload.
-  it('calls plausible with no second argument when props is omitted', () => {
+  // ADR-005: REQ-ADR005-06 - Events without props pass an undefined payload.
+  it('calls plausible with an undefined payload when props is omitted', () => {
     const plausible = stubPlausible()
     trackEvent('wallet_connect')
     expect(plausible).toHaveBeenCalledWith('wallet_connect', undefined)
