@@ -1,3 +1,10 @@
+## [1.5.6](https://github.com/Favourorg/Stellar-forge/compare/v1.5.5...v1.5.6) (2026-08-24)
+
+
+### Bug Fixes
+
+* **infra:** consolidate vercel.json security headers (Closes [#1104](https://github.com/Favourorg/Stellar-forge/issues/1104)) ([#1134](https://github.com/Favourorg/Stellar-forge/issues/1134)) ([fc64bea](https://github.com/Favourorg/Stellar-forge/commit/fc64bea1d5185c43fe289214857246bfe014e51c))
+
 ## [1.5.5](https://github.com/Favourorg/Stellar-forge/compare/v1.5.4...v1.5.5) (2026-08-22)
 
 
