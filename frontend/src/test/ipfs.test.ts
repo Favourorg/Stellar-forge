@@ -856,11 +856,6 @@ describe('IPFSService', () => {
         service.getMetadata('ipfs://QmXxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'),
       ).rejects.toBeInstanceOf(IPFSUploadError)
     })
-        service.getMetadata(
-          'ipfs://QmXxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
-        ),
-      ).rejects.toBeInstanceOf(IPFSUploadError)
-    })
   })
 
   // ── Unpin (orphaned-pin cleanup) ───────────────────────────────────────────

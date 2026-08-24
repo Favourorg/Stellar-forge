@@ -5,17 +5,21 @@ on:
     branches:
       - main
     paths:
-      - 'contracts/token-factory/src/lib.rs'
-      - 'docs/contract-abi.md'
+      - 'contracts/**'
+      - 'docs/**'
       - 'SECURITY.md'
-      - '.github/workflows/validate-access-control-drift.yml'
+      - '.github/workflows/**'
+      - 'scripts/check-access-control-docs-drift.sh'
   push:
     branches:
       - main
     paths:
-      - 'contracts/token-factory/src/lib.rs'
-      - 'docs/contract-abi.md'
+      - 'contracts/**'
+      - 'docs/**'
       - 'SECURITY.md'
+      - '.github/workflows/**'
+      - 'scripts/check-access-control-docs-drift.sh'
+  workflow_dispatch:
 
 jobs:
   check-access-control-drift:

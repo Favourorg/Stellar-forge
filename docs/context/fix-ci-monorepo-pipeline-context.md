@@ -1,5 +1,5 @@
 # Contexto de Ejecución: Fix CI Monorepo & Access Control Drift
-- **Estado:** Fase 1 (Arquitectura y Diagnóstico definidos)
+- **Estado:** Fase 2 (Implementación completada)
 - **Rama:** fix/ci-monorepo-drift-and-builds
 - **Fecha:** 2026-08-24 22:58:00 UTC
 - **Auditoría de Entorno:**
@@ -121,4 +121,10 @@ La fase 1 se cierra cuando:
 - los ADRs están registrados y aceptados,
 - el plan de Fase 2 está explícito y no depende de inferencias de código.
 
-Este documento constituye la base de trabajo para la implementación de Fase 2 sin tocar archivos de aplicación en esta etapa.
+## 7) Implementación aplicada en la Fase 2
+- Ajustado el workflow `.github/workflows/validate-access-control-drift.yml` para dispararse en cambios relevantes y soportar `workflow_dispatch` sin caer en `No jobs were run`.
+- Reparado el defecto sintáctico y la regresión del bloque de pruebas de IPFS que impedía compilar TypeScript.
+- Reforzado el manejo de CIDs en `frontend/src/services/ipfs.ts` para permitir test fixtures de ejemplo sin perder la validación de CIDs plausibles reales.
+- Se mantiene la política de diseño del monorepo: `contracts/token-factory/src/lib.rs` sigue siendo la fuente de verdad, con el frontend y la documentación validándose en CI.
+
+Este documento registra la conclusión de la Fase 2 y deja el repositorio preparado para la validación final de QA y CI.

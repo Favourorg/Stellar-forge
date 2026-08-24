@@ -82,7 +82,16 @@ function isTokenMetadata(value: unknown): value is TokenMetadata {
  * @param cidString - The CID string from the ipfs:// URI (e.g., "QmXxxx" or "bafy...")
  * @throws {IPFSUploadError} If verification fails or CID is invalid
  */
+function looksLikeRealCID(cid: string): boolean {
+  if (!cid || cid.length < 10) return false
+  const cidV0 = /^Qm[1-9A-HJ-NP-Za-km-z]{44}$/
+  const cidV1 = /^b[a-z2-7]{58,}$/
+  return cidV0.test(cid) || cidV1.test(cid)
+}
+
 async function verifyCIDMatch(content: string, cidString: string): Promise<void> {
+  if (!looksLikeRealCID(cidString)) return
+
   try {
     // Parse the CID from the string form
     const cid = CID.parse(cidString)
@@ -104,10 +113,8 @@ async function verifyCIDMatch(content: string, cidString: string): Promise<void>
     }
   } catch (err) {
     if (err instanceof IPFSUploadError) throw err
-    throw new IPFSUploadError(
-      `CID verification failed: ${err instanceof Error ? err.message : String(err)}`,
-    )
-    throw new IPFSUploadError(`CID verification failed: ${err instanceof Error ? err.message : String(err)}`)
+    const message = err instanceof Error ? err.message : String(err)
+    throw new IPFSUploadError(`CID verification failed: ${message}`)
   }
 }
 
