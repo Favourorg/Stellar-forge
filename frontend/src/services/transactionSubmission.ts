@@ -23,7 +23,7 @@
  */
 
 import { rpc, FeeBumpTransaction, Transaction } from 'stellar-sdk'
-import { parseContractError } from '../utils/contractErrors'
+import { parseContractError, parseTransactionResultError } from '../utils/contractErrors'
 import { isTransientError } from '../utils/retry'
 import { nextBackoffDelay } from '../utils/pollWithBackoff'
 
@@ -89,13 +89,20 @@ export class TransactionSubmissionError extends Error {
   constructor(
     status: TransactionFailureStatus,
     message: string,
-    options: { txHash?: string; attempts?: number; cause?: unknown } = {},
+    options: {
+      txHash?: string
+      attempts?: number
+      cause?: unknown
+      /** Overrides the status-derived retry safety (e.g. a deterministic
+       *  contract-logic rejection must not be advertised as safe to retry). */
+      safeToRetryOverride?: boolean
+    } = {},
   ) {
     super(message)
     this.name = 'TransactionSubmissionError'
     this.cause = options.cause
     this.status = status
-    this.safeToRetry = RETRY_SAFETY[status]
+    this.safeToRetry = options.safeToRetryOverride ?? RETRY_SAFETY[status]
     this.txHash = options.txHash
     this.attempts = options.attempts
   }
@@ -193,8 +200,10 @@ function deadlinePassed(
 
 function errorResultMessage(response: rpc.Api.SendTransactionResponse): string {
   try {
-    const xdrString = response.errorResult?.toXDR('base64')
-    if (xdrString) return xdrString
+    if (response.errorResult) {
+      const { message } = parseTransactionResultError(response.errorResult)
+      return message
+    }
   } catch {
     // A malformed result XDR must not mask the rejection itself.
   }
@@ -301,16 +310,26 @@ export async function sendSignedTransaction(
         continue
       }
 
-      case 'ERROR':
+      case 'ERROR': {
         onStatus?.('failed')
+        const { message, contractErrorCode } =
+          response.errorResult != null
+            ? parseTransactionResultError(response.errorResult)
+            : { message: errorResultMessage(response), contractErrorCode: undefined }
+        const safeToRetry = contractErrorCode === undefined
+        const finalMessage = contractErrorCode !== undefined
+          ? message
+          : parseContractError(new Error(message)).message
         throw new TransactionSubmissionError(
           'failed',
-          parseContractError(new Error(errorResultMessage(response))).message,
+          finalMessage,
           {
             ...(response.hash ? { txHash: response.hash } : {}),
             attempts: attempt + 1,
+            ...(safeToRetry ? {} : { safeToRetryOverride: false }),
           },
         )
+      }
 
       default: {
         // An undocumented status must never fall through to hash-polling: we
@@ -416,18 +435,27 @@ export async function awaitTransactionInclusion(
     if (response.status === rpc.Api.GetTransactionStatus.FAILED) {
       onStatus?.('failed')
       let detail = `Transaction failed: ${hash}`
+      let safeToRetry = true
       try {
-        const resultXdr = response.resultXdr?.toXDR('base64')
-        if (resultXdr) detail = resultXdr
+        if (response.resultXdr) {
+          const { message, contractErrorCode } = parseTransactionResultError(response.resultXdr)
+          if (contractErrorCode !== undefined) {
+            // A decoded contract-logic rejection is deterministic: retrying
+            // without changing the underlying condition cannot succeed. Do not
+            // advertise it as a safe blind retry.
+            safeToRetry = false
+          }
+          if (message) detail = message
+        }
       } catch {
         // Fall back to the generic message; the verdict is unchanged.
       }
       throw new TransactionSubmissionError(
         'failed',
-        parseContractError(new Error(detail)).message,
-        {
-          txHash: hash,
-        },
+        detail,
+        safeToRetry === false
+          ? { txHash: hash, safeToRetryOverride: false }
+          : { txHash: hash },
       )
     }
 

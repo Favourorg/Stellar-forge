@@ -14,7 +14,8 @@
  */
 
 import { describe, it, expect, vi } from 'vitest'
-import { rpc } from 'stellar-sdk'
+import { rpc, xdr } from 'stellar-sdk'
+import { extractContractErrorCode, getContractErrorMessage } from '../utils/contractErrors'
 import {
   awaitTransactionInclusion,
   inclusionDeadlineOf,
@@ -75,8 +76,27 @@ function failed() {
     oldestLedger: 1,
     oldestLedgerCloseTime: 1_600_000_000,
     ledger: 104,
-    resultXdr: { toXDR: () => 'Error(Contract, 7)' },
+    resultXdr: contractFailureXdr(7),
   } as unknown as rpc.Api.GetTransactionResponse
+}
+
+/**
+ * Build a realistic SDK `TransactionResult` XDR object for a Soroban
+ * contract rejection with the given error code, using the SDK's own typed
+ * builders — the shape the real network serialises, not a hand-written
+ * debug string.
+ */
+function contractFailureXdr(contractCode: number): xdr.TransactionResult {
+  const scError = xdr.ScError.sceContract(contractCode)
+  const invokeResult = xdr.InvokeHostFunctionResult.invokeHostFunctionTrapped(scError)
+  const opTr = xdr.OperationResultTr.invokeHostFunction(invokeResult)
+  const opResult = xdr.OperationResult.opInner(opTr)
+  const resultResult = xdr.TransactionResultResult.txFailed([opResult])
+  return new xdr.TransactionResult({
+    feeCharged: xdr.Int64.fromString('100'),
+    result: resultResult,
+    ext: new xdr.TransactionResultExt(0),
+  })
 }
 
 /** A signed envelope stub — only its bounds are read by this module. */
@@ -177,7 +197,7 @@ describe('sendSignedTransaction', () => {
     const send = vi
       .fn()
       .mockResolvedValue(
-        sendResponse('ERROR', { errorResult: { toXDR: () => 'Error(Contract, 1)' } }),
+        sendResponse('ERROR', { errorResult: contractFailureXdr(1) }),
       )
     const server = mockServer({ sendTransaction: send })
 
@@ -187,6 +207,8 @@ describe('sendSignedTransaction', () => {
 
     expect(error).toBeInstanceOf(TransactionSubmissionError)
     expect(error.status).toBe('failed')
+    expect(error.safeToRetry).toBe(false) // deterministic contract-logic rejection
+    expect(error.message).toMatch(/insufficient fee/i)
     expect(send).toHaveBeenCalledTimes(1)
     expect(server.getTransaction).not.toHaveBeenCalled()
   })
@@ -339,6 +361,8 @@ describe('awaitTransactionInclusion', () => {
     ).catch((e: unknown) => e)) as TransactionSubmissionError
 
     expect(error.status).toBe('failed')
+    expect(error.safeToRetry).toBe(false) // deterministic contract-logic rejection
+    expect(error.message).toMatch(/burn amount exceeds/i)
     expect(seen[seen.length - 1]).toBe('failed')
   })
 

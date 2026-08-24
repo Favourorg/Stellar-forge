@@ -31,6 +31,95 @@ export const CONTRACT_ERROR_MESSAGES: Record<number, string> = {
 }
 
 /**
+ * Look up a human-readable message for a contract error code.
+ * Returns undefined for codes that are not in the known set.
+ */
+export function getContractErrorMessage(code: number): string | undefined {
+  return CONTRACT_ERROR_MESSAGES[code]
+}
+
+/**
+ * Extract the contract error code from a TransactionResult XDR by navigating
+ * the typed accessors, instead of serialising the result to opaque base64.
+ *
+ * Returns the numeric error code, or undefined if the result does not
+ * represent a contract error.
+ */
+export function extractContractErrorCode(
+  result: unknown,
+): number | undefined {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
+    const { xdr } = require('stellar-sdk') as {
+      xdr: {
+        TransactionResultCode: { txFailed(): { name: string } }
+        OperationType: { invokeHostFunction(): { name: string } }
+        InvokeHostFunctionResultCode: { invokeHostFunctionTrapped(): { name: string } }
+        ScErrorType: { sceContract(): { name: string } }
+      }
+    }
+
+    const txResult = result as {
+      result(): { switch(): { name: string }; results(): unknown[] }
+    }
+    const resultResult = txResult.result()
+    if (resultResult.switch() !== xdr.TransactionResultCode.txFailed()) return undefined
+
+    const ops = resultResult.results() as {
+      tr(): {
+        switch(): { name: string }
+        invokeHostFunctionResult(): {
+          switch(): { name: string }
+          value(): { switch(): { name: string }; contractCode(): number }
+        }
+      }
+    }[]
+    if (!ops || ops.length === 0) return undefined
+
+    const opTr = ops[0].tr()
+    if (opTr.switch() !== xdr.OperationType.invokeHostFunction()) return undefined
+
+    const ihf = opTr.invokeHostFunctionResult()
+    if (ihf.switch() !== xdr.InvokeHostFunctionResultCode.invokeHostFunctionTrapped()) return undefined
+
+    const scError = ihf.value() as { switch(): { name: string }; contractCode(): number }
+    if (scError.switch() !== xdr.ScErrorType.sceContract()) return undefined
+
+    const code = scError.contractCode()
+    return typeof code === 'number' ? code : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Parse a TransactionResult XDR and return the human-readable error message
+ * for a known contract error, or a generic fallback if the error cannot be
+ * decoded.
+ *
+ * Returns an object with both the plain message and the contract error code
+ * (when available) so callers can decide whether the error is a deterministic
+ * contract-logic rejection (not safe to blind-retry) vs a generic failure.
+ */
+export function parseTransactionResultError(
+  result: unknown,
+): { message: string; contractErrorCode: number | undefined } {
+  try {
+    const code = extractContractErrorCode(result)
+    if (code !== undefined) {
+      const msg = getContractErrorMessage(code)
+      if (msg) {
+        return { message: msg, contractErrorCode: code }
+      }
+      return { message: `An unexpected contract error occurred (code ${code}).`, contractErrorCode: code }
+    }
+  } catch {
+    // Fall through to the generic message.
+  }
+  return { message: 'The network rejected the transaction.', contractErrorCode: undefined }
+}
+
+/**
  * Parses a raw contract error into a human-readable Error.
  * Soroban contract errors surface as "Error(Contract, X)" in result XDR.
  * Unknown codes fall back to a generic message.
@@ -82,7 +171,7 @@ export function parseContractError(err: unknown): Error {
   if (match?.[1]) {
     const code = parseInt(match[1], 10)
     return new Error(
-      CONTRACT_ERROR_MESSAGES[code] ?? `An unexpected contract error occurred (code ${code}).`,
+      getContractErrorMessage(code) ?? `An unexpected contract error occurred (code ${code}).`,
     )
   }
 
