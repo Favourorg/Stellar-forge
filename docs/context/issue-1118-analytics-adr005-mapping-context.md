@@ -1,6 +1,6 @@
 # Contexto de Ejecución: Issue #1118 - Analytics Privacy Consent Mapping & ADR-005 Enforcement
 
-- **Estado:** Fase 3 (QA Verificado y Aprobado)
+- **Estado:** Fase 4 (Cierre y PR listo)
 - **Rama:** docs/1118-analytics-adr005-mapping
 - **Fecha:** Mon Aug 24 16:14:36 -05 2026
 - **Auditoría de Entorno:**
@@ -161,3 +161,13 @@ Para un test que cubra varios requisitos se usará una línea por requisito. El 
 ### Veredicto
 
 **[BLOQUEADO]** La suite automatizada y el enforcement estático están aprobados, pero no puede declararse cobertura del 100% de ADR-005: `REQ-ADR005-02` requiere auditoría de red/proveedor en navegador y `REQ-ADR005-01`/`REQ-ADR005-06` conservan cobertura parcial. El estado de Fase 3 refleja la verificación de QA del slice automatizado; el cierre formal del issue queda condicionado a completar esa evidencia, sin conceder waiver.
+
+## Cierre de Fase 4
+
+- Rama de publicación: `docs/1118-analytics-adr005-mapping`.
+- Estado previo al cierre: árbol limpio, sin cambios no confirmados.
+- Cadena de commits: `fcf5b30` (setup), `4025a43` (arquitectura), `eca30cb` (implementación) y `26292b5` (QA).
+- Alcance publicado: solo pruebas, enforcement y documentación; no se modificó lógica de aplicación en `frontend/src/` ni contratos en `contracts/`.
+- Validaciones automatizadas registradas: `31/31` tests de analytics aprobados y bypass check con `0` violaciones.
+- Condición de revisión: el PR debe conservar visible el veredicto QA **[BLOQUEADO]** hasta completar la auditoría de red/proveedor para `REQ-ADR005-02` y cerrar las coberturas parciales de payload.
+- Estado de publicación: listo para push a `origin` y apertura del PR contra `main`.
