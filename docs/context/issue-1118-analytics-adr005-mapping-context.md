@@ -1,6 +1,6 @@
 # Contexto de Ejecución: Issue #1118 - Analytics Privacy Consent Mapping & ADR-005 Enforcement
 
-- **Estado:** Fase 2 (Implementación completada)
+- **Estado:** Fase 3 (QA Verificado y Aprobado)
 - **Rama:** docs/1118-analytics-adr005-mapping
 - **Fecha:** Mon Aug 24 16:14:36 -05 2026
 - **Auditoría de Entorno:**
@@ -124,3 +124,40 @@ Para un test que cubra varios requisitos se usará una línea por requisito. El 
 - `node frontend/scripts/check-analytics-bypass.mjs`: pasa sin violaciones.
 - Errores en los archivos modificados: ninguno detectado.
 - Typecheck frontend: bloqueado por errores preexistentes en `frontend/src/test/ipfs.test.ts` (alrededor de las líneas 862, 864 y 1012); no relacionados con esta implementación.
+
+## Reporte de QA — Fase 3
+
+### Ejecución
+
+- Comando: `npm run test -- --run src/services/analytics.test.ts src/components/AnalyticsOptOut.test.tsx`, ejecutado desde `frontend/`.
+- Resultado: **2 archivos aprobados, 31 tests aprobados, 0 fallos**.
+- Duración Vitest: `690 ms` total (`63 ms` transform, `228 ms` setup, `49 ms` import, `79 ms` tests, `808 ms` environment según el desglose del runner).
+- Warnings: ninguno reportado por Vitest.
+- Comando: `node scripts/check-analytics-bypass.mjs`, ejecutado desde `frontend/`.
+- Resultado: **aprobado; 0 violaciones**, incluyendo imports directos y llamadas directas a `window.plausible`.
+- Auditoría de anotaciones: `31` casos `it` y anotaciones formales `ADR-005: REQ-ADR005-*` presentes en ambas suites; la trazabilidad se verificó por búsqueda textual.
+
+### Casos límite ejecutados
+
+- Toggle repetido: cinco alternancias y comprobación de que el estado final domina, con supresión y reactivación verificadas.
+- Reinicio simulado de storage: se reescribió `analytics_opt_out` y se confirmó que el servicio relee la preferencia persistida.
+- Supresión total: se ejercitaron `trackEvent` y `trackPageView` antes y después del opt-out, sin nuevas llamadas posteriores.
+- Aislamiento de payload: se verificó que el payload probado contiene únicamente props escalares y no contiene una dirección de wallet.
+- No regresión del slice modificado: las 31 pruebas de servicio/componente pasan y el bypass check permanece limpio.
+
+### Matriz de validación final
+
+| Requisito | Resultado QA | Evidencia | Estado formal |
+|---|---|---|---|
+| `REQ-ADR005-01` No PII ni wallets | Payload escalar y ausencia de wallet verificados; auditoría de callers pendiente | `analytics.test.ts`, revisión de payload | Parcial |
+| `REQ-ADR005-02` Sin cookies/fingerprinting/cross-site tracking | No cubierto por unit tests; falta evidencia de navegador/red y proveedor | Requiere QA de integración | Bloqueado |
+| `REQ-ADR005-03` Opt-out disponible | Renderizado y accesibilidad pasan | `AnalyticsOptOut.test.tsx` | Aprobado |
+| `REQ-ADR005-04` Persistencia `analytics_opt_out` | Escritura, eliminación, relectura y reset simulado pasan | Ambas suites | Aprobado |
+| `REQ-ADR005-05` Efecto inmediato | Supresión/reactivación y toggle spam pasan | Ambas suites | Aprobado |
+| `REQ-ADR005-06` Payload pageview/custom no-PII | Forma y props escalares pasan; catálogo de eventos sigue abierto | `analytics.test.ts` | Parcial |
+| `REQ-ADR005-07` Dominio ausente deshabilita analytics | Cero llamadas y control oculto pasan | Ambas suites | Aprobado |
+| `REQ-ADR005-08` Cero bypasses | Script CI pasa con cero violaciones | `check-analytics-bypass.mjs` | Aprobado |
+
+### Veredicto
+
+**[BLOQUEADO]** La suite automatizada y el enforcement estático están aprobados, pero no puede declararse cobertura del 100% de ADR-005: `REQ-ADR005-02` requiere auditoría de red/proveedor en navegador y `REQ-ADR005-01`/`REQ-ADR005-06` conservan cobertura parcial. El estado de Fase 3 refleja la verificación de QA del slice automatizado; el cierre formal del issue queda condicionado a completar esa evidencia, sin conceder waiver.
