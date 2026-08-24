@@ -56,8 +56,8 @@ Token images and descriptions are too large and mutable to store cheaply on a So
 - **Pause switch** — `pause`/`unpause` let the admin halt `create_token`, `create_tokens_batch`, `mint_tokens`, and `set_metadata` factory-wide in an emergency. `burn` intentionally ignores the pause flag, since token holders should always be able to reduce their own balance.
 - **Reentrancy guard** — a `locked` flag on `FactoryState` prevents a second `create_token`/`create_tokens_batch` call from interleaving with one already in progress in the same transaction context.
 - **Per-token burn toggle** — `set_burn_enabled` lets a token's creator disable burning for that token specifically (e.g. for a fixed-supply asset), independent of the factory-wide pause.
-- **Allow-list primitives** — `add_to_whitelist` / `remove_from_whitelist` / `is_whitelisted` maintain an admin-managed address allow-list in factory storage. (These are currently standalone storage primitives; no factory entrypoint gates on them yet — see the project issue tracker for the tracked follow-up to wire enforcement into `create_token`.)
-- **Admin rotation** — `transfer_admin` / `update_admin` move admin privileges to a new address (both perform the same underlying state change; `update_admin` additionally emits an `adm_upd` event).
+- **Allow-list enforcement** — `add_to_whitelist` / `remove_from_whitelist` / `is_whitelisted` maintain an admin-managed address allow-list in factory storage. When the admin calls `set_whitelist_enabled(true)`, only whitelisted addresses may call `create_token` or `create_tokens_batch`; non-whitelisted callers receive `Error::NotWhitelisted`. Enforcement defaults to `false` so existing open deployments are unaffected until an admin opts in.
+- **Admin rotation** — `propose_admin` / `accept_admin` / `cancel_admin_proposal` implement a two-step rotation: the current admin proposes a successor (emitting `adm_prop`), the proposed admin proves they can sign by calling `accept_admin` (emitting `adm_acc`), and the current admin may cancel at any time before acceptance (emitting `adm_can`). Proposals expire after ~28 hours (`ADMIN_PROPOSAL_TTL_LEDGERS`). `transfer_admin` / `update_admin` are retained as ABI-compatible aliases for `propose_admin` — neither completes the rotation on its own.
 - **Upgrade + migrate** — `upgrade` swaps the contract's executable WASM in place; `migrate` is an idempotent, versioned function (`schema_version` vs. `CURRENT_SCHEMA_VERSION`) that brings on-chain state up to date with the currently-deployed code without ever losing existing tokens or fee configuration. See [Contract Upgrade Process](#contract-upgrade-process) below.
 
 ### 5. The frontend's role
@@ -181,7 +181,21 @@ be inlined into the client bundle and shipped to every visitor:
 ```env
 PINATA_API_KEY=<pinata-api-key>
 PINATA_API_SECRET=<pinata-api-secret>
+JWT_SECRET=<random-32-byte-secret>
+VERCEL_KV_REST_API_URL=<vercel-kv-rest-url>
+VERCEL_KV_REST_API_TOKEN=<vercel-kv-rest-token>
 ```
+
+> **The KV variables are required in production.** Uploads are gated on a
+> wallet-signature login whose challenge is issued by one request and verified
+> by another. On Vercel those are separate invocations with no routing
+> affinity, so without a shared store the second one lands on an instance that
+> has never seen the challenge, and correct clients are told to "request a new
+> challenge" at whatever rate the platform happens to scale at (issue #1091).
+> The same store backs rate limiting, which is likewise per-instance without
+> it. `GET /api/health/auth` reports which store is live: `durable: true` for
+> Vercel KV, or `503` with `store: "in-memory"` for the local-dev fallback.
+> Local development needs neither variable.
 
 > **Note:** `VITE_FACTORY_CONTRACT_ID` and `VITE_TOKEN_WASM_HASH` are required. The app will display a misconfiguration screen if either is missing, rather than failing silently at runtime.
 >
@@ -264,8 +278,8 @@ The authoritative, field-by-field reference — including parameter tables, ever
 - `update_fees(admin, base_fee?, metadata_fee?)`: Adjust either fee; `None` leaves it unchanged.
 - `set_fee_split(admin, splits)` / `get_fee_split()`: Configure or read a `Map<Address, u32>` of basis-point fee recipients (must sum to `10_000`, or be empty to clear the split and fall back to `treasury`).
 - `pause(admin)` / `unpause(admin)`: Halt or resume `create_token`, `create_tokens_batch`, `mint_tokens`, and `set_metadata` factory-wide.
-- `add_to_whitelist(admin, address)` / `remove_from_whitelist(admin, address)` / `is_whitelisted(address)`: Maintain an admin-managed address allow-list in contract storage (not currently enforced by any entrypoint — see the issue tracker).
-- `transfer_admin(admin, new_admin)` / `update_admin(current_admin, new_admin)`: Rotate the admin address. Equivalent effect; `update_admin` additionally emits an `adm_upd` event.
+- `add_to_whitelist(admin, address)` / `remove_from_whitelist(admin, address)` / `is_whitelisted(address)`: Maintain an admin-managed address allow-list in contract storage. Use `set_whitelist_enabled(admin, true)` to turn enforcement on — once enabled, only whitelisted addresses may call `create_token` or `create_tokens_batch` (non-whitelisted callers receive `Error::NotWhitelisted`). Enforcement is off by default.
+- `propose_admin(current_admin, new_admin)` / `accept_admin(new_admin)` / `cancel_admin_proposal(current_admin)`: Two-step admin rotation. `propose_admin` records the proposed successor; `accept_admin` (called by the proposed admin) completes the handover after proving the key can sign; `cancel_admin_proposal` lets the current admin withdraw a proposal. `transfer_admin` and `update_admin` are legacy aliases for `propose_admin`.
 - `upgrade(admin, new_wasm_hash)`: Replace the factory's executable WASM in place, preserving all state. See [Contract Upgrade Process](#contract-upgrade-process).
 - `migrate(admin)`: Idempotently bring on-chain state up to `CURRENT_SCHEMA_VERSION` after an upgrade.
 
@@ -278,7 +292,7 @@ The authoritative, field-by-field reference — including parameter tables, ever
 
 ### Errors
 
-All fallible entrypoints return `Result<T, Error>`. See the full table (17 variants, e.g. `InsufficientFee`, `Unauthorized`, `ContractPaused`, `MaxSupplyExceeded`, `InvalidFeeSplit`) in [`docs/contract-abi.md`](./docs/contract-abi.md#errors).
+All fallible entrypoints return `Result<T, Error>`. See the full table (25 variants, e.g. `InsufficientFee`, `Unauthorized`, `ContractPaused`, `MaxSupplyExceeded`, `InvalidFeeSplit`, `NoPendingProposal`, `ProposalExpired`) in [`docs/contract-abi.md`](./docs/contract-abi.md#errors).
 
 ### Events
 
@@ -295,6 +309,8 @@ The contract publishes Soroban events on `(factory, action)` topics — `init`, 
 7. **Explore & Export**: Browse all deployed tokens or a specific creator's tokens in the Token Explorer/Dashboard, and export transaction history to CSV.
 
 ## Deployment
+
+Two `vercel.json` files govern two distinct Vercel deployments, and both must keep an identical `headers` block — see [docs/deployment-vercel.md](./docs/deployment-vercel.md) for which file is authoritative for which deployment.
 
 ## Deployment & Caching
 
@@ -379,8 +395,8 @@ stellar contract install \
 If you don't have a token WASM, you can use the Stellar Asset Contract:
 
 ```bash
-# Download the official Stellar token contract
-wget https://github.com/stellar/soroban-examples/raw/main/token/target/wasm32-unknown-unknown/release/soroban_token_contract.wasm
+# Download from a pinned release tag (replace v0.x.y with a specific tag — do NOT use main)
+wget https://github.com/stellar/soroban-examples/raw/<TAG>/token/target/wasm32-unknown-unknown/release/soroban_token_contract.wasm
 
 # Install it
 stellar contract install \
@@ -861,7 +877,7 @@ We take security seriously. If you discover a security vulnerability, please rev
 
 ### Content Security Policy (CSP)
 
-A strict CSP is defined as a `<meta>` tag in `frontend/index.html`:
+A strict CSP is defined as a `<meta>` tag in `frontend/index.html` (all configs are generated from `frontend/src/csp/policy.ts` via `npm run prebuild`):
 
 ```
 default-src 'self';
@@ -869,6 +885,8 @@ connect-src 'self' https://*.stellar.org https://api.pinata.cloud;
 img-src 'self' data: https://gateway.pinata.cloud;
 script-src 'self'
 ```
+
+> **Security hardening** — the `style-src` directive is locked to `'self'` (no `'unsafe-inline'`). Tailwind CSS v4 generates all styles at build time, and the three remaining inline style usages in the codebase have been migrated to static classes and CSSOM-based dynamic updates. The `ProgressBar` component uses a CSSOM ref to set its fill width, which is permitted by CSP-level 3 without requiring `'unsafe-inline'`.
 
 For stronger enforcement, set the CSP as an HTTP response header on your hosting provider instead of (or in addition to) the meta tag — HTTP headers take precedence and support more directives like `frame-ancestors`.
 
@@ -962,11 +980,7 @@ The factory contract supports in-place WASM upgrades without redeploying or migr
 | 1       | Initial versioned schema — added `schema_version` field to `FactoryState`                                                                                                                                                                                                                                                                                                                                                                                                  |
 | 2       | Max-supply accounting fix (issue #1006) — `deploy_one` now seeds the per-token supply counter with `initial_supply`; version bump only, no `FactoryState` field changes. Pre-fix capped tokens must be back-filled individually via `backfill_capped_supply` (see [docs/contract-abi.md](./docs/contract-abi.md#supply-cap-accounting))                                                                                                                                    |
 | 3       | Persistent-storage migration (issue #1007) — per-token bookkeeping (`TokenInfo`, `TokenIndex`, `Metadata`, `owner`, `supply`, `CreatorTokens`) moves out of the shared `instance` ledger entry into `persistent` storage, keeping `instance` storage O(1) in `token_count`. `TokenInfo` migrates in bounded, resumable chunks per `migrate` call; everything else migrates lazily on next access (see [docs/contract-abi.md](./docs/contract-abi.md#storage-architecture)) |
-| Version | Change                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------                                                                                                                                    |
-| 1       | Initial versioned schema — added `schema_version` field to `FactoryState`                                                                                                                                                                                                                                                                                                                                                                                                  |
-| 2       | Max-supply accounting fix (issue #1006) — `deploy_one` now seeds the per-token supply counter with `initial_supply`; version bump only, no `FactoryState` field changes. Pre-fix capped tokens must be back-filled individually via `backfill_capped_supply` (see [docs/contract-abi.md](./docs/contract-abi.md#supply-cap-accounting))                                                                                                                                    |
-| 3       | Added `whitelist_enabled: bool` to `FactoryState`; new `set_whitelist_enabled` entrypoint; `create_token` and `create_tokens_batch` enforce the whitelist gate when enabled                                                                                                                                                                                                                                                                                                |
+| 4       | Two-step admin rotation — added `pending_admin: Option<Address>` and `pending_admin_expiry: Option<u64>` to `FactoryState`; new `propose_admin`, `accept_admin`, `cancel_admin_proposal` entrypoints; `transfer_admin` and `update_admin` now delegate to `propose_admin` (no single-step rotation path remains). New error codes 24 (`NoPendingProposal`) and 25 (`ProposalExpired`). New events `adm_prop`, `adm_acc`, `adm_can`. |
 
 ### Adding a new migration (version N → N+1)
 

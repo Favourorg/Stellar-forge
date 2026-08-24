@@ -1,6 +1,6 @@
 import React, { useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Input, Button } from './UI'
+import { Input, Button, ProgressBar } from './UI'
 import { useToast } from '../context/ToastContext'
 import { useWalletContext } from '../context/WalletContext'
 import { ipfsService, MAX_METADATA_DESCRIPTION_LENGTH } from '../services/ipfs'
@@ -229,10 +229,7 @@ export const MetadataUploadForm: React.FC<MetadataUploadFormProps> = ({
             <span className="font-medium text-gray-900 dark:text-white">{uploadProgress}%</span>
           </div>
           <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
-            <div
-              className="bg-blue-600 h-2 rounded-full transition-all duration-300"
-              style={{ width: `${uploadProgress}%` }}
-            />
+            <ProgressBar progress={uploadProgress} />
           </div>
         </div>
       )}

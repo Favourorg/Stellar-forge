@@ -16,21 +16,37 @@ No infrastructure yet — M0 is spec plus the correctness fix that does not need
 
 ## M1 — Resolve open questions
 
-Blocks production rollout, not the code. Each is cheap and each can invalidate
-part of the _deployment_, so all three are called out in
+Blocked production rollout, not the code. Each is cheap and each can invalidate
+part of the _deployment_, so all of them are called out in
 [docs/indexer.md](../../../docs/indexer.md#deployment).
 
-- [ ] Confirm the RPC provider's event retention window. **Needs a human** —
-      provider-specific. Phase A backfill no longer depends on it (see the
-      contract change in M2), so this now only bounds how far back a
-      cold-started Phase B can pick up `meta` events.
+Exit: **met** — all open questions answered and the answers recorded below.
+
+- [x] Confirm the RPC provider's event retention window. **Resolved:** ≈7 days
+      on SDF public infrastructure, provider-dependent elsewhere — documented in
+      [docs/rpc-rate-limits.md](../../../docs/rpc-rate-limits.md#event-retention-constraint).
+      Phase A backfill no longer depends on it (see the contract change in M2),
+      so this only bounds how far back a cold-started Phase B can pick up `meta`
+      events: an indexer down longer than the window must be re-backfilled
+      rather than resumed. At the 5-minute cadence that is ~2000 consecutive
+      failed runs of margin.
 - [x] Confirm whether `simulateTransaction` accepts an unfunded source account
       for `get_token_info`. It does — simulation never touches ledger account
       state — so `sorobanChain.ts` uses a fixed all-zero source account and no
       key material is needed on any network.
-- [ ] Confirm the Vercel plan's minimum cron interval. **Needs a human.**
-      `vercel.json` schedules every 5 minutes; Hobby is daily-only, so the
-      cadence the lag thresholds assume requires a paid plan.
+- [x] Confirm the Vercel plan's minimum cron interval. **Resolved:** the
+      deployment is on Pro, so the 5-minute cadence the lag thresholds assume is
+      supported, and `LAG_WARNING_SECONDS` / `LAG_CRITICAL_SECONDS` stay at
+      15m / 1h. Hobby would have been daily-only.
+- [x] **The cron was never actually scheduled** (issue #1090). This file and
+      `docs/indexer.md` both described a `vercel.json` cron entry that neither
+      `vercel.json` nor `frontend/vercel.json` had ever contained — Vercel reads
+      cron jobs exclusively from that array, so ingest never ran and every
+      component below was dead code in every deployment. The app kept working
+      (RPC fallback), which is why it went unnoticed. The root `vercel.json` is
+      authoritative (`api/` lives at the repo root) and now schedules
+      `/api/cron/index-tokens` on `*/5 * * * *`;
+      `scripts/check-vercel-cron.mjs` runs in CI so it cannot silently regress.
 
 ## M2 — Ingest, no frontend changes
 

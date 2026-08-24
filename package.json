@@ -1,6 +1,6 @@
 {
   "name": "stellar-forge",
-  "version": "1.4.2",
+  "version": "1.5.7",
   "private": true,
   "type": "module",
   "description": "StellarForge - Stellar Token Deployer",
@@ -8,7 +8,10 @@
     "prepare": "husky",
     "release": "semantic-release",
     "audit:waivers": "node scripts/check-audit-waivers.mjs",
+    "check:kiro-specs": "node scripts/check-kiro-specs.mjs",
+    "check:vercel-cron": "node scripts/check-vercel-cron.mjs",
     "test:api": "vitest run",
+    "test:scripts": "node --test scripts/*.test.mjs",
     "contract:compile": "cd contracts/token-factory && cargo build --target wasm32v1-none --release",
     "frontend:dev": "cd frontend && npm run dev",
     "start": "npm run contract:compile && npm run frontend:dev",

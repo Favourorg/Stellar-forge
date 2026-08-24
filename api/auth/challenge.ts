@@ -1,29 +1,12 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { randomBytes } from 'crypto'
 import { issueToken, verifyToken } from '../_lib/jwt'
+import { deleteChallenge, getChallenge, putChallenge } from '../_lib/challengeStore'
 
-// Challenges expire after 5 minutes
-const CHALLENGE_TTL_MS = 5 * 60 * 1000
-
-interface StoredChallenge {
-  value: string
-  createdAt: number
-}
-
-// In production, swap for Vercel KV. For now, per-instance memory.
-// This is acceptable for challenges since they're short-lived and being
-// re-requested is not costly — the user can just generate a new one.
-const challenges = new Map<string, StoredChallenge>()
-
-// Periodic cleanup: remove expired challenges every minute
-setInterval(() => {
-  const now = Date.now()
-  for (const [address, challenge] of challenges.entries()) {
-    if (now - challenge.createdAt > CHALLENGE_TTL_MS) {
-      challenges.delete(address)
-    }
-  }
-}, 60 * 1000)
+// Challenge storage — TTL, one-time use and the durable/dev-fallback split all
+// live in `../_lib/challengeStore` (issue #1091). It used to be a Map in this
+// module, which meant the GET that issued a challenge and the POST that
+// verified it had to be served by the same instance to work at all.
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // POST /api/auth/challenge { address: string, signature: string, publicKey: string }
@@ -54,10 +37,17 @@ async function handleGetChallenge(req: VercelRequest, res: VercelResponse) {
 
   // Generate a new challenge for this address
   const challengeValue = randomBytes(32).toString('hex')
-  challenges.set(address, {
-    value: challengeValue,
-    createdAt: Date.now(),
-  })
+
+  // The challenge is only handed to the client once it is durably stored. A
+  // failed write would otherwise produce a challenge that no later request can
+  // verify — the exact symptom issue #1091 exists to remove.
+  try {
+    await putChallenge(address, challengeValue)
+  } catch (err) {
+    console.error('Failed to store auth challenge:', err)
+    res.status(500).json({ error: 'Could not issue a challenge. Try again.' })
+    return
+  }
 
   res.status(200).json({ challenge: challengeValue })
 }
@@ -75,7 +65,18 @@ async function handleVerifyChallenge(req: VercelRequest, res: VercelResponse) {
     return
   }
 
-  const storedChallenge = challenges.get(address)
+  // A store failure must not be reported as a missing challenge: that would
+  // tell a correct client to request a new one, forever, while the real fault
+  // is server-side.
+  let storedChallenge: string | null
+  try {
+    storedChallenge = await getChallenge(address)
+  } catch (err) {
+    console.error('Failed to read auth challenge:', err)
+    res.status(500).json({ error: 'Could not verify the challenge. Try again.' })
+    return
+  }
+
   if (!storedChallenge) {
     res.status(400).json({ error: 'Challenge not found or expired. Request a new challenge.' })
     return
@@ -84,16 +85,16 @@ async function handleVerifyChallenge(req: VercelRequest, res: VercelResponse) {
   // Verify the signature using Stellar's public key cryptography
   // Freighter's signMessage returns the signature as XDR; we use the Stellar SDK to verify
   try {
-    const verified = await verifyStellarSignature(address, storedChallenge.value, signature)
+    const verified = await verifyStellarSignature(address, storedChallenge, signature)
 
     if (!verified) {
       res.status(401).json({ error: 'Signature verification failed.' })
-      challenges.delete(address)
+      await deleteChallenge(address)
       return
     }
 
     // Clean up used challenge
-    challenges.delete(address)
+    await deleteChallenge(address)
 
     // Issue a JWT valid for 5 minutes
     const token = issueToken(address, 5 * 60 * 1000)

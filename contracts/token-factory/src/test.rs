@@ -4,11 +4,103 @@ extern crate std;
 
 use super::*;
 use soroban_sdk::{
+    contract, contractimpl,
     testutils::{Address as _, Events as _},
     token::{StellarAssetClient, TokenClient},
-    Address, BytesN, Env, Map, String,
+    Address, BytesN, Env, Map, MuxedAddress, String,
 };
 use std::panic::{catch_unwind, AssertUnwindSafe};
+
+// ── Malicious re-entrant fee token (issue #1095) ─────────────────────────────
+//
+// The factory calls SEP-41 `transfer` on this contract (via `distribute_fee`
+// during `create_token` / `mint_tokens` / `set_metadata`), and it synchronously
+// calls back into the factory to attempt a re-entrant `create_token`, recording
+// whether that nested call was refused.
+//
+// It is deliberately NOT a real on-chain contract: it is a native in-process
+// test contract registered with `env.register`, which is the only way to make
+// a genuine *nested* cross-contract call against the factory without compiling
+// a separate malicious WASM (see `fuzz/README.md` for the documented
+// limitation).
+//
+// What the re-entry actually hits. Soroban's host refuses any call into a
+// contract that is already on the call stack, and it does so *before* the
+// callee runs — so the nested invocation never reaches the factory's `locked`
+// check. The malicious contract observes a host `InvokeError`, not
+// `Error::Reentrancy`. This was verified directly: substituting a read-only
+// `get_state()` for the nested `create_token` fails identically, and a
+// read-only view has no guard to trip.
+//
+// So this contract proves the end-to-end property — a malicious fee token
+// cannot re-enter the factory mid-call — but it cannot prove *when* the
+// `locked` flag is acquired relative to the external call, because the guard
+// never executes. Ordering remains covered only by the state-injection tests
+// below.
+#[contract]
+pub struct ReentrantToken;
+
+#[contractimpl]
+impl ReentrantToken {
+    /// Remember the factory to call back into, plus an address to act as the
+    /// "attacker" on the re-entrant `create_token` call.
+    pub fn __constructor(env: Env, factory: Address, attacker: Address) {
+        env.storage()
+            .instance()
+            .set(&symbol_short!("factory"), &factory);
+        env.storage()
+            .instance()
+            .set(&symbol_short!("attacker"), &attacker);
+        env.storage()
+            .instance()
+            .set(&symbol_short!("blocked"), &false);
+    }
+
+    /// SEP-41 `transfer`. Invoked by the factory's `distribute_fee` while the
+    /// factory holds the reentrancy lock. Re-enters `create_token` and records
+    /// whether the nested call was refused.
+    pub fn transfer(env: Env, _from: Address, _to: MuxedAddress, _amount: i128) {
+        let factory: Address = env
+            .storage()
+            .instance()
+            .get(&symbol_short!("factory"))
+            .unwrap();
+        let attacker: Address = env
+            .storage()
+            .instance()
+            .get(&symbol_short!("attacker"))
+            .unwrap();
+        let client = TokenFactoryClient::new(&env, &factory);
+        let salt = BytesN::from_array(&env, &[0xEE; 32]);
+        let result = client.try_create_token(
+            &attacker,
+            &salt,
+            &String::from_str(&env, "Reentry"),
+            &String::from_str(&env, "RENTRY"),
+            &7,
+            &0_i128,
+            &None,
+            &1_000,
+        );
+        // Any error means the re-entry was refused, and refusal is the property
+        // under test. Deliberately not matched against `Error::Reentrancy`:
+        // the host aborts the nested call before the factory's guard runs, so
+        // what arrives here is `Err(Err(InvokeError))`. Asserting the narrower
+        // shape would make this test fail on a *correctly* protected factory.
+        let blocked = result.is_err();
+        env.storage()
+            .instance()
+            .set(&symbol_short!("blocked"), &blocked);
+    }
+
+    /// View: whether the most recent re-entrant call was refused.
+    pub fn reentrant_blocked(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&symbol_short!("blocked"))
+            .unwrap_or(false)
+    }
+}
 
 // ── Test setup helper ─────────────────────────────────────────────────────────
 
@@ -1543,13 +1635,191 @@ fn test_burn_allowed_when_factory_paused() {
     assert_eq!(TokenClient::new(&s.env, &token_addr).balance(&burner), 300);
 }
 
-// ── transfer_admin / update_admin ─────────────────────────────────────────────
+// ── propose_admin / accept_admin / cancel_admin_proposal ──────────────────────
+//
+// Two-step admin rotation: the current admin proposes a successor; the
+// successor proves it can sign by calling accept_admin; the rotation only
+// completes when both steps have executed. transfer_admin and update_admin
+// now both delegate to propose_admin, so no single-step path remains.
 
 #[test]
-fn test_transfer_admin() {
+fn test_propose_admin_records_pending_state() {
+    let s = Setup::new();
+    let new_admin = Address::generate(&s.env);
+    s.client.propose_admin(&s.admin, &new_admin);
+    let state = s.client.get_state();
+    assert_eq!(state.pending_admin, Some(new_admin));
+    assert!(state.pending_admin_expiry.is_some());
+}
+
+#[test]
+fn test_accept_admin_completes_rotation() {
+    let s = Setup::new();
+    let new_admin = Address::generate(&s.env);
+    s.client.propose_admin(&s.admin, &new_admin);
+    s.client.accept_admin(&new_admin);
+    let state = s.client.get_state();
+    assert_eq!(state.admin, new_admin);
+    assert_eq!(state.pending_admin, None);
+    assert_eq!(state.pending_admin_expiry, None);
+}
+
+#[test]
+fn test_accept_admin_old_admin_loses_access() {
+    let s = Setup::new();
+    let new_admin = Address::generate(&s.env);
+    s.client.propose_admin(&s.admin, &new_admin);
+    s.client.accept_admin(&new_admin);
+    // Old admin can no longer exercise admin-only operations.
+    assert_eq!(s.client.try_pause(&s.admin), Err(Ok(Error::Unauthorized)));
+    // New admin can.
+    s.client.pause(&new_admin);
+    assert!(s.client.get_state().paused);
+}
+
+#[test]
+fn test_propose_admin_unauthorized() {
+    let s = Setup::new();
+    let stranger = Address::generate(&s.env);
+    let new_admin = Address::generate(&s.env);
+    assert_eq!(
+        s.client.try_propose_admin(&stranger, &new_admin),
+        Err(Ok(Error::Unauthorized))
+    );
+}
+
+#[test]
+fn test_propose_admin_self_transfer_rejected() {
+    let s = Setup::new();
+    assert_eq!(
+        s.client.try_propose_admin(&s.admin, &s.admin),
+        Err(Ok(Error::InvalidParameters))
+    );
+}
+
+#[test]
+fn test_accept_admin_wrong_address_rejected() {
+    let s = Setup::new();
+    let proposed = Address::generate(&s.env);
+    let impostor = Address::generate(&s.env);
+    s.client.propose_admin(&s.admin, &proposed);
+    // A different address trying to accept must be rejected.
+    assert_eq!(
+        s.client.try_accept_admin(&impostor),
+        Err(Ok(Error::NoPendingProposal))
+    );
+    // Proposal must still be live.
+    assert_eq!(s.client.get_state().pending_admin, Some(proposed));
+}
+
+#[test]
+fn test_accept_admin_with_no_proposal_rejected() {
+    let s = Setup::new();
+    let addr = Address::generate(&s.env);
+    assert_eq!(
+        s.client.try_accept_admin(&addr),
+        Err(Ok(Error::NoPendingProposal))
+    );
+}
+
+#[test]
+fn test_second_proposal_overwrites_first() {
+    let s = Setup::new();
+    let first = Address::generate(&s.env);
+    let second = Address::generate(&s.env);
+    s.client.propose_admin(&s.admin, &first);
+    // Overwrite with a second proposal.
+    s.client.propose_admin(&s.admin, &second);
+    let state = s.client.get_state();
+    // Only the second proposal should be active.
+    assert_eq!(state.pending_admin, Some(second.clone()));
+    // First proposed address can no longer accept.
+    assert_eq!(
+        s.client.try_accept_admin(&first),
+        Err(Ok(Error::NoPendingProposal))
+    );
+    // Second can accept.
+    s.client.accept_admin(&second);
+    assert_eq!(s.client.get_state().admin, second);
+}
+
+#[test]
+fn test_cancel_admin_proposal() {
+    let s = Setup::new();
+    let new_admin = Address::generate(&s.env);
+    s.client.propose_admin(&s.admin, &new_admin);
+    s.client.cancel_admin_proposal(&s.admin);
+    let state = s.client.get_state();
+    assert_eq!(state.pending_admin, None);
+    assert_eq!(state.pending_admin_expiry, None);
+}
+
+#[test]
+fn test_cancel_admin_proposal_idempotent() {
+    let s = Setup::new();
+    // Cancelling when there is no proposal must be a no-op, not an error.
+    s.client.cancel_admin_proposal(&s.admin);
+}
+
+#[test]
+fn test_cancel_admin_proposal_unauthorized() {
+    let s = Setup::new();
+    let new_admin = Address::generate(&s.env);
+    let stranger = Address::generate(&s.env);
+    s.client.propose_admin(&s.admin, &new_admin);
+    assert_eq!(
+        s.client.try_cancel_admin_proposal(&stranger),
+        Err(Ok(Error::Unauthorized))
+    );
+    // Proposal must still be intact after the failed cancel.
+    assert_eq!(s.client.get_state().pending_admin, Some(new_admin));
+}
+
+#[test]
+fn test_expired_proposal_cannot_be_accepted() {
+    let s = Setup::new();
+    let new_admin = Address::generate(&s.env);
+    s.client.propose_admin(&s.admin, &new_admin);
+
+    // Advance the ledger past the TTL.
+    s.env.ledger().with_mut(|li| {
+        li.sequence_number = li.sequence_number.saturating_add(ADMIN_PROPOSAL_TTL_LEDGERS as u32 + 1);
+    });
+
+    assert_eq!(
+        s.client.try_accept_admin(&new_admin),
+        Err(Ok(Error::ProposalExpired))
+    );
+    // After expiry the state must be cleared so the admin can propose again.
+    let state = s.client.get_state();
+    assert_eq!(state.pending_admin, None);
+    assert_eq!(state.admin, s.admin);
+}
+
+#[test]
+fn test_transfer_admin_delegates_to_propose_admin() {
+    // transfer_admin must be a thin alias for propose_admin — it initiates
+    // a proposal, not a completed rotation.
     let s = Setup::new();
     let new_admin = Address::generate(&s.env);
     s.client.transfer_admin(&s.admin, &new_admin);
+    // Admin must NOT have changed yet — only proposal stored.
+    assert_eq!(s.client.get_state().admin, s.admin);
+    assert_eq!(s.client.get_state().pending_admin, Some(new_admin.clone()));
+    // Completing requires accept_admin.
+    s.client.accept_admin(&new_admin);
+    assert_eq!(s.client.get_state().admin, new_admin);
+}
+
+#[test]
+fn test_update_admin_delegates_to_propose_admin() {
+    // update_admin must be a thin alias for propose_admin — same as above.
+    let s = Setup::new();
+    let new_admin = Address::generate(&s.env);
+    s.client.update_admin(&s.admin, &new_admin);
+    assert_eq!(s.client.get_state().admin, s.admin);
+    assert_eq!(s.client.get_state().pending_admin, Some(new_admin.clone()));
+    s.client.accept_admin(&new_admin);
     assert_eq!(s.client.get_state().admin, new_admin);
 }
 
@@ -1575,9 +1845,15 @@ fn test_transfer_admin_same_address_rejected() {
 
 #[test]
 fn test_update_admin_old_loses_access() {
+    // Verify the full two-step flow: the old admin loses access only after
+    // accept_admin completes.
     let s = Setup::new();
     let new_admin = Address::generate(&s.env);
     s.client.update_admin(&s.admin, &new_admin);
+    // Old admin still holds the key at proposal stage.
+    assert_eq!(s.client.get_state().admin, s.admin);
+    s.client.accept_admin(&new_admin);
+    // Now old admin must be locked out.
     assert_eq!(s.client.try_pause(&s.admin), Err(Ok(Error::Unauthorized)));
     s.client.pause(&new_admin);
     assert!(s.client.get_state().paused);
@@ -2708,7 +2984,19 @@ fn test_batch_reentrancy_guard() {
 // environment does not support running a malicious re-entrant WASM in-process,
 // we simulate the mid-execution state by injecting `locked = true` directly
 // into storage (the same mechanism used for `create_token` above). This proves
-// that the guard is present and wired up correctly for each entrypoint.
+// that the guard is present and wired up correctly for each entrypoint — but
+// NOT that the lock is acquired *before* the vulnerable external call in the
+// real control flow.
+//
+// Reentrancy ordering: that gap is still open. Issue #1095 added
+// `test_mint_tokens_rejects_real_reentrant_call` below to close it with a
+// genuine nested re-entry through the malicious `ReentrantToken` fee token, but
+// the Soroban host refuses re-entry into a contract already on the call stack
+// before the callee runs, so the nested call never reaches the guard — the
+// factory's own `locked` check is unobservable from outside. No test can
+// currently distinguish a factory that locks before `distribute_fee` from one
+// that locks after; the host makes both safe against cross-contract re-entry,
+// which is why the guard is defence-in-depth rather than the only barrier.
 //
 // The cross-function reentrancy test additionally verifies that a lock set by
 // *one* entrypoint (mint_tokens) also blocks a concurrent call to a *different*
@@ -2733,6 +3021,88 @@ fn test_mint_tokens_reentrancy_guard() {
         .client
         .try_mint_tokens(&token_addr, &admin, &recipient, &100, &1_000);
     assert_eq!(result, Err(Ok(Error::Reentrancy)));
+}
+
+/// End-to-end reentrancy: a real nested cross-contract call, not a pre-injected
+/// lock. The factory is deployed with a malicious SEP-41 fee token
+/// (`ReentrantToken`) whose `transfer` re-enters `create_token` from inside
+/// `distribute_fee`. The re-entrant call must not succeed.
+///
+/// Refusal here comes from the Soroban host, which rejects any call into a
+/// contract already on the call stack before the callee runs — see the note on
+/// `ReentrantToken` above. That makes this a genuine end-to-end check that a
+/// hostile fee token cannot re-enter mid-`mint_tokens`, but *not* a check of
+/// when the `locked` flag is set: moving `state.locked = true` after the
+/// `distribute_fee` call would leave this test passing. Lock ordering is not
+/// covered by any test — see the `Reentrancy ordering` note above.
+#[test]
+fn test_mint_tokens_rejects_real_reentrant_call() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let factory_addr = Address::generate(&env);
+
+    // Register the malicious fee token, wired to re-enter the (pre-generated)
+    // factory address. It must know the factory address up front, so we
+    // pre-generate the factory address rather than letting `register` pick one.
+    let fee_token = env.register(ReentrantToken, (factory_addr.clone(), admin.clone()));
+
+    env.register_at(
+        &factory_addr,
+        TokenFactory,
+        TokenFactoryArgs::__constructor(
+            &admin,
+            &treasury,
+            &fee_token,
+            &dummy_hash(&env),
+            &1_000,
+            &500,
+        ),
+    );
+    let client = TokenFactoryClient::new(&env, &factory_addr);
+    let client: TokenFactoryClient<'static> = unsafe { core::mem::transmute(client) };
+
+    // Seed a factory token owned by `admin` so `mint_tokens` has a real token
+    // to mint (mirrors `seed_token`, which assumes the shared `Setup` env).
+    let token_addr = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
+    env.as_contract(&factory_addr, || {
+        let mut state: FactoryState = env.storage().instance().get(&DataKey::State).unwrap();
+        state.token_count = state.token_count.checked_add(1).unwrap();
+        let index = state.token_count;
+        let info = TokenInfo {
+            name: String::from_str(&env, "T"),
+            symbol: String::from_str(&env, "T"),
+            decimals: 7,
+            creator: admin.clone(),
+            created_at: 0,
+            burn_enabled: true,
+            max_supply: None,
+        };
+        TokenFactory::set_persistent(&env, &DataKey::TokenInfo(index), &info);
+        env.storage().instance().set(&DataKey::State, &state);
+        TokenFactory::set_persistent(&env, &DataKey::TokenIndex(token_addr.clone()), &index);
+        TokenFactory::set_persistent(&env, &DataKey::TokenAddress(index), &token_addr);
+        TokenFactory::append_creator_token(&env, &admin, index).unwrap();
+        TokenFactory::set_persistent(&env, &(&token_addr, symbol_short!("owner")), &admin);
+    });
+
+    let recipient = Address::generate(&env);
+
+    // The outer call must succeed: the malicious `transfer` swallows the
+    // (rejected) re-entrant call and returns normally, so `mint_tokens`
+    // completes its mint and releases the lock.
+    client.mint_tokens(&token_addr, &admin, &recipient, &100, &1_000);
+
+    // The malicious contract must have had its nested call refused.
+    let malicious = ReentrantTokenClient::new(&env, &fee_token);
+    assert!(
+        malicious.reentrant_blocked(),
+        "re-entrant create_token from the fee token must not succeed"
+    );
 }
 
 #[test]
@@ -3068,6 +3438,60 @@ fn test_migrate_preserves_state_fields() {
     assert_eq!(state.base_fee, 1_000);
     assert_eq!(state.metadata_fee, 500);
     assert!(!state.paused);
+}
+
+// ── schema v4 migration: pending_admin fields default to None ─────────────────
+
+/// Simulating a schema-v3 deployment and running migrate must walk the v3→v4
+/// step, adding `pending_admin = None` and `pending_admin_expiry = None`.
+#[test]
+fn test_migrate_v3_to_v4_adds_pending_admin_fields() {
+    let s = Setup::new();
+
+    // Rewind to schema version 3 so the v4 step fires.
+    s.env.as_contract(&s.client.address, || {
+        let mut state: FactoryState = s.env.storage().instance().get(&DataKey::State).unwrap();
+        state.schema_version = 3;
+        s.env.storage().instance().set(&DataKey::State, &state);
+        s.env.storage().instance().set(&symbol_short!("sv"), &3u32);
+    });
+
+    s.client.migrate(&s.admin);
+
+    let state = s.client.get_state();
+    assert_eq!(state.schema_version, CURRENT_SCHEMA_VERSION);
+    // New fields must be absent (no live proposal) after migration.
+    assert_eq!(state.pending_admin, None);
+    assert_eq!(state.pending_admin_expiry, None);
+}
+
+/// Running migrate on a fully-current contract must be a no-op for
+/// pending_admin fields (idempotent).
+#[test]
+fn test_migrate_v4_idempotent_for_pending_admin() {
+    let s = Setup::new();
+    // After a fresh init, schema is already at v4.
+    s.client.migrate(&s.admin);
+    s.client.migrate(&s.admin);
+    let state = s.client.get_state();
+    assert_eq!(state.schema_version, CURRENT_SCHEMA_VERSION);
+    assert_eq!(state.pending_admin, None);
+}
+
+/// A contract starting at sv=0 must walk all four steps in a single migrate call.
+#[test]
+fn test_migrate_from_v0_walks_all_steps_to_v4() {
+    let s = Setup::new();
+
+    s.env.as_contract(&s.client.address, || {
+        let mut state: FactoryState = s.env.storage().instance().get(&DataKey::State).unwrap();
+        state.schema_version = 0;
+        s.env.storage().instance().set(&DataKey::State, &state);
+        s.env.storage().instance().set(&symbol_short!("sv"), &0u32);
+    });
+
+    s.client.migrate(&s.admin);
+    assert_eq!(s.client.get_state().schema_version, CURRENT_SCHEMA_VERSION);
 }
 
 // ── whitelist enforcement ─────────────────────────────────────────────────────
@@ -3766,7 +4190,8 @@ fn test_whitelist_gate_consistent_across_single_and_batch() {
 // stream kept reporting the previous admin. Both now delegate to
 // `rotate_admin`.
 
-/// Rotating via `transfer_admin` must actually move admin rights.
+/// Rotating via `transfer_admin` must store a pending proposal, not move admin
+/// rights immediately. The new admin must call `accept_admin` to complete.
 #[test]
 fn test_transfer_admin_grants_new_admin_rights() {
     let s = Setup::new();
@@ -3774,7 +4199,15 @@ fn test_transfer_admin_grants_new_admin_rights() {
 
     s.client.transfer_admin(&s.admin, &new_admin);
 
+    // Proposal stored, but admin has NOT changed yet.
+    assert_eq!(s.client.get_state().pending_admin, Some(new_admin.clone()));
+    assert_eq!(s.client.get_state().admin, s.admin);
+
+    // Complete the handover.
+    s.client.accept_admin(&new_admin);
+
     assert_eq!(s.client.get_state().admin, new_admin);
+    assert_eq!(s.client.get_state().pending_admin, None);
     // The new admin can exercise an admin-only entrypoint...
     s.client.pause(&new_admin);
     assert!(s.client.get_state().paused);
@@ -3782,8 +4215,8 @@ fn test_transfer_admin_grants_new_admin_rights() {
     assert_eq!(s.client.try_unpause(&s.admin), Err(Ok(Error::Unauthorized)));
 }
 
-/// Both entrypoints must enforce identical guards, so neither can be used to
-/// side-step a restriction the other applies.
+/// Both `transfer_admin` and `update_admin` must enforce identical guards,
+/// since they are aliases for `propose_admin`.
 #[test]
 fn test_transfer_admin_and_update_admin_share_guards() {
     let s = Setup::new();
@@ -3802,23 +4235,25 @@ fn test_transfer_admin_and_update_admin_share_guards() {
     );
 }
 
-/// Rotating with either entrypoint must leave the factory in the same state.
+/// Both `transfer_admin` and `update_admin` must leave the factory in the
+/// same intermediate (proposal-pending) state.
 #[test]
 fn test_transfer_admin_and_update_admin_produce_same_state() {
     let via_transfer = {
         let s = Setup::new();
         let new_admin = Address::generate(&s.env);
         s.client.transfer_admin(&s.admin, &new_admin);
-        (s.client.get_state().admin, new_admin)
+        (s.client.get_state().pending_admin, new_admin)
     };
     let via_update = {
         let s = Setup::new();
         let new_admin = Address::generate(&s.env);
         s.client.update_admin(&s.admin, &new_admin);
-        (s.client.get_state().admin, new_admin)
+        (s.client.get_state().pending_admin, new_admin)
     };
-    assert_eq!(via_transfer.0, via_transfer.1);
-    assert_eq!(via_update.0, via_update.1);
+    // Both should record the correct pending_admin.
+    assert_eq!(via_transfer.0, Some(via_transfer.1));
+    assert_eq!(via_update.0, Some(via_update.1));
 }
 
 // ── migrate: schema-v3 chunked walk must be resumable ───────────────────────

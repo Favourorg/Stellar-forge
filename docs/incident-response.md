@@ -32,8 +32,10 @@ The factory contract's `admin` address is a single point of catastrophic trust. 
 | `update_fees(admin, base_fee, metadata_fee)` | Set arbitrarily high fees to drain users who call the contract |
 | `set_fee_split(admin, splits)` | Redirect collected fees to an attacker-controlled address |
 | `upgrade(admin, new_wasm_hash)` | Replace the contract with arbitrary attacker code |
-| `transfer_admin(admin, new_admin)` / `update_admin(admin, new_admin)` | Lock out the legitimate operator permanently |
+| `propose_admin(admin, attacker_address)` | Begin a rotation to an attacker-controlled address; the attacker then calls `accept_admin` to complete the transfer |
 | `pause(admin)` | Halt the factory, denying service to all token creators |
+
+**Two-step rotation reduces but does not eliminate admin-rotation risk.** The two-step model (`propose_admin` + `accept_admin`) prevents accidental rotation to an uncontrolled address — the incoming key must prove it can sign. However, an attacker who already holds the current admin key can still complete the rotation to their own address by controlling both steps. Detection window: a `propose_admin` call emits an `adm_prop` event that is visible on-chain *before* `accept_admin` completes the transfer, giving operators a window to cancel via `cancel_admin_proposal` if the proposal is unauthorized.
 
 **Upgrade detection gap:** `upgrade` currently emits no on-chain event (see issue #9). Until event emission is added, detection of a malicious WASM swap requires active polling of the on-chain WASM hash. This runbook treats upgrade detection latency as high-risk and calls it out explicitly.
 
@@ -65,7 +67,8 @@ curl -N "https://horizon.stellar.org/accounts/<FACTORY_CONTRACT>/operations?curs
 ```
 
 Alert on:
-- Any `adm_upd` event (admin transfer — extremely rare in normal operation)
+- Any `adm_prop` event (admin rotation proposed — act immediately if unexpected; you have until `accept_admin` is called or the proposal expires to cancel via `cancel_admin_proposal`)
+- Any `adm_acc` event (admin rotation completed — if unexpected, the admin key is compromised)
 - Any `fees` event with unusually large values
 - Any `pause` event not preceded by a planned maintenance notice
 
@@ -157,23 +160,38 @@ stellar contract invoke \
 
 `pause` halts `create_token`, `create_tokens_batch`, `mint_tokens`, and `set_metadata`. It does **not** halt `burn`, so users can always recover their own balances. Fees already collected cannot be retrieved via this mechanism.
 
-> ⚠️ **If the attacker has already called `transfer_admin`** to a new address, your `pause` call will fail with `Unauthorized`. Skip to step 4.
+> ⚠️ **If the attacker has already called `propose_admin` followed by `accept_admin`** to transfer admin rights to their address, your `pause` call will fail with `Unauthorized`. Skip to step 4.
+>
+> ⚠️ **If you see an unexpected `adm_prop` event** but `accept_admin` has not yet been called, act immediately: call `cancel_admin_proposal` before the attacker can call `accept_admin`. You have up to ~28 hours (the proposal TTL) to cancel.
 
-### Step 4 — Attempt to transfer admin to the break-glass address
+### Step 4 — Rotate admin to the break-glass address (two-step)
 
-If the admin key is still operable but you suspect imminent key-theft (e.g. private key was exposed in logs):
+If the admin key is still operable but you suspect imminent key-theft (e.g. private key was exposed in logs), rotate to the pre-agreed break-glass account using the two-step flow:
 
+**Step 4a — Propose the break-glass address as new admin:**
 ```bash
 stellar contract invoke \
   --id "$FACTORY_CONTRACT_ID" \
   --source "$ADMIN_SECRET_KEY" \
   --network mainnet \
-  -- transfer_admin \
-  --admin "$ADMIN_ADDRESS" \
+  -- propose_admin \
+  --current_admin "$ADMIN_ADDRESS" \
   --new_admin "$BREAK_GLASS_ADDRESS"
 ```
 
-This transfers control to the pre-agreed break-glass account (see [section 7](#7-break-glass-recovery-mechanism)), rendering the compromised key inoperative for any further admin actions.
+**Step 4b — Accept from the break-glass account (must be done within ~28 hours):**
+```bash
+stellar contract invoke \
+  --id "$FACTORY_CONTRACT_ID" \
+  --source "$BREAK_GLASS_SECRET_KEY" \
+  --network mainnet \
+  -- accept_admin \
+  --new_admin "$BREAK_GLASS_ADDRESS"
+```
+
+Once `accept_admin` succeeds, the compromised key is locked out of all admin-gated operations. See [section 7](#7-break-glass-recovery-mechanism) for break-glass account details.
+
+> 💡 **Why two steps?** The two-step model prevents accidental rotation to a typo'd address by requiring the incoming key to prove it can sign. In an emergency you need both the admin key (step 4a) and the break-glass key (step 4b) available — verify break-glass account access before any incident occurs (see the deployment checklist).
 
 ### Step 5 — Post to the incident channel
 

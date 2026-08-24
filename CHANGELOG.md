@@ -1,3 +1,73 @@
+## [1.5.7](https://github.com/Favourorg/Stellar-forge/compare/v1.5.6...v1.5.7) (2026-08-24)
+
+
+### Bug Fixes
+
+* **contracts:** enforce MAX_BATCH_SIZE cap in create_tokens_batch (Closes [#1100](https://github.com/Favourorg/Stellar-forge/issues/1100)) ([#1135](https://github.com/Favourorg/Stellar-forge/issues/1135)) ([2ba33e5](https://github.com/Favourorg/Stellar-forge/commit/2ba33e5e5516b2e3e66388ebd3dcb4568a3b5a14))
+
+## [1.5.6](https://github.com/Favourorg/Stellar-forge/compare/v1.5.5...v1.5.6) (2026-08-24)
+
+
+### Bug Fixes
+
+* **infra:** consolidate vercel.json security headers (Closes [#1104](https://github.com/Favourorg/Stellar-forge/issues/1104)) ([#1134](https://github.com/Favourorg/Stellar-forge/issues/1134)) ([fc64bea](https://github.com/Favourorg/Stellar-forge/commit/fc64bea1d5185c43fe289214857246bfe014e51c))
+
+## [1.5.5](https://github.com/Favourorg/Stellar-forge/compare/v1.5.4...v1.5.5) (2026-08-22)
+
+
+### Bug Fixes
+
+* **api:** store wallet-auth challenges in Vercel KV (Closes [#1091](https://github.com/Favourorg/Stellar-forge/issues/1091)) ([#1132](https://github.com/Favourorg/Stellar-forge/issues/1132)) ([62941bb](https://github.com/Favourorg/Stellar-forge/commit/62941bb0131970c10fc56f5fcf19135eefe8de3f))
+
+## [1.5.4](https://github.com/Favourorg/Stellar-forge/compare/v1.5.3...v1.5.4) (2026-08-22)
+
+
+### Bug Fixes
+
+* **infra:** schedule the indexer cron in vercel.json (Closes [#1090](https://github.com/Favourorg/Stellar-forge/issues/1090)) ([#1130](https://github.com/Favourorg/Stellar-forge/issues/1130)) ([288d5f3](https://github.com/Favourorg/Stellar-forge/commit/288d5f3b1208405fd08e12342fef2ae58cf25a7b)), closes [#1123](https://github.com/Favourorg/Stellar-forge/issues/1123) [#1124](https://github.com/Favourorg/Stellar-forge/issues/1124) [#1125](https://github.com/Favourorg/Stellar-forge/issues/1125) [#1126](https://github.com/Favourorg/Stellar-forge/issues/1126) [#1126](https://github.com/Favourorg/Stellar-forge/issues/1126) [#1126](https://github.com/Favourorg/Stellar-forge/issues/1126) [#1121](https://github.com/Favourorg/Stellar-forge/issues/1121) [#1121](https://github.com/Favourorg/Stellar-forge/issues/1121)
+
+## [1.5.3](https://github.com/Favourorg/Stellar-forge/compare/v1.5.2...v1.5.3) (2026-08-22)
+
+
+### Bug Fixes
+
+* **api:** remove clientIp() dead code with inverted XFF parsing (audit [#26](https://github.com/Favourorg/Stellar-forge/issues/26)) ([#1129](https://github.com/Favourorg/Stellar-forge/issues/1129)) ([fa1a888](https://github.com/Favourorg/Stellar-forge/commit/fa1a888c99133d2fafab52f3e79444d1ac188766)), closes [#1101](https://github.com/Favourorg/Stellar-forge/issues/1101)
+
+## [1.5.2](https://github.com/Favourorg/Stellar-forge/compare/v1.5.1...v1.5.2) (2026-08-22)
+
+
+### Bug Fixes
+
+* **explorer:** snapshot tokenCount once per session to prevent pagination drift ([#1126](https://github.com/Favourorg/Stellar-forge/issues/1126)) ([a27f77b](https://github.com/Favourorg/Stellar-forge/commit/a27f77b8dda5b76feced0cf6baeac7a42a84bcf0))
+
+## [1.5.1](https://github.com/Favourorg/Stellar-forge/compare/v1.5.0...v1.5.1) (2026-08-22)
+
+
+### Bug Fixes
+
+* align frontend token validation with contract (name ≤ 32 UTF-8 bytes, remove ASCII-only restriction) ([#1125](https://github.com/Favourorg/Stellar-forge/issues/1125)) ([cefa9b9](https://github.com/Favourorg/Stellar-forge/commit/cefa9b9c13bbc7f2b5a770e5376369c4875c3833))
+
+# [1.5.0](https://github.com/Favourorg/Stellar-forge/compare/v1.4.4...v1.5.0) (2026-08-22)
+
+
+### Features
+
+* show pre-signature fee recipient breakdown and batch total (Closes [#1108](https://github.com/Favourorg/Stellar-forge/issues/1108)) ([#1124](https://github.com/Favourorg/Stellar-forge/issues/1124)) ([f983539](https://github.com/Favourorg/Stellar-forge/commit/f983539afe0eccc35503bc0a0378e47f0f0d70de))
+
+## [1.4.4](https://github.com/Favourorg/Stellar-forge/compare/v1.4.3...v1.4.4) (2026-08-22)
+
+
+### Bug Fixes
+
+* remove 'unsafe-inline' from CSP style-src (Closes [#1105](https://github.com/Favourorg/Stellar-forge/issues/1105)) ([#1123](https://github.com/Favourorg/Stellar-forge/issues/1123)) ([838129c](https://github.com/Favourorg/Stellar-forge/commit/838129ccc63f862350ac86ee1efcc1ba2ae4a163))
+
+## [1.4.3](https://github.com/Favourorg/Stellar-forge/compare/v1.4.2...v1.4.3) (2026-08-22)
+
+
+### Bug Fixes
+
+* **specs:** resolve spec stubs and enforce kiro spec documentation ([#1117](https://github.com/Favourorg/Stellar-forge/issues/1117)) ([#1120](https://github.com/Favourorg/Stellar-forge/issues/1120)) ([0875cd2](https://github.com/Favourorg/Stellar-forge/commit/0875cd23e96ae0bb87a7d897418349aaa04b18d8)), closes [#1099](https://github.com/Favourorg/Stellar-forge/issues/1099) [#1107](https://github.com/Favourorg/Stellar-forge/issues/1107) [#1108](https://github.com/Favourorg/Stellar-forge/issues/1108) [#1113](https://github.com/Favourorg/Stellar-forge/issues/1113) [#1118](https://github.com/Favourorg/Stellar-forge/issues/1118)
+
 ## [1.4.2](https://github.com/Favourorg/Stellar-forge/compare/v1.4.1...v1.4.2) (2026-08-20)
 
 
