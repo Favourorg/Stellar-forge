@@ -12,14 +12,21 @@ import {
   MAX_PAGE_LIMIT,
   type IndexedToken,
   type IndexerState,
+  type ListEventsOptions,
+  type ListEventsResult,
   type ListTokensOptions,
   type ListTokensResult,
+  type StoredEvent,
   type TokenStore,
 } from './types'
 
 export class MemoryTokenStore implements TokenStore {
   private tokens = new Map<string, IndexedToken>()
   private state: IndexerState = { ...EMPTY_STATE }
+  /** Keyed by `${tokenAddress}\u0000${ledgerSeq}\u0000${topic}` to mirror the
+   *  Postgres primary key, so replaying a ledger overwrites rather than
+   *  duplicating. */
+  private events = new Map<string, StoredEvent>()
 
   async upsertTokens(tokens: IndexedToken[]): Promise<void> {
     for (const token of tokens) {
@@ -83,4 +90,34 @@ export class MemoryTokenStore implements TokenStore {
   async saveState(patch: Partial<IndexerState>): Promise<void> {
     this.state = { ...this.state, ...patch }
   }
+
+  async upsertEvents(events: StoredEvent[]): Promise<void> {
+    for (const event of events) {
+      this.events.set(eventKey(event.tokenAddress, event.ledgerSeq, event.topic), { ...event })
+    }
+  }
+
+  async listEvents(options: ListEventsOptions): Promise<ListEventsResult> {
+    const limit = Math.min(Math.max(options.limit, 1), MAX_PAGE_LIMIT)
+
+    const rows = [...this.events.values()]
+      .filter((e) => e.tokenAddress === options.tokenAddress)
+      .filter((e) => (options.cursor === undefined ? true : e.ledgerSeq < options.cursor))
+      .sort((a, b) => b.ledgerSeq - a.ledgerSeq || a.topic.localeCompare(b.topic))
+
+    // Same one-extra-row trick as `listTokens`: learn whether another page
+    // exists without a second pass.
+    const page = rows.slice(0, limit)
+    const hasMore = rows.length > limit
+    const last = page[page.length - 1]
+
+    return {
+      events: page,
+      nextCursor: hasMore && last ? String(last.ledgerSeq) : null,
+    }
+  }
+}
+
+function eventKey(tokenAddress: string, ledgerSeq: number, topic: string): string {
+  return `${tokenAddress}\u0000${ledgerSeq}\u0000${topic}`
 }

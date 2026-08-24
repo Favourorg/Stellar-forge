@@ -49,7 +49,7 @@ Every mutating factory call that has a monetary cost (`create_token`, `create_to
 Token images and descriptions are too large and mutable to store cheaply on a Soroban ledger, so StellarForge splits metadata into two layers:
 
 1. **Off-chain payload** — the frontend uploads the image and a JSON document (`{ name, description, image }`) to IPFS through Pinata's pinning API, getting back a content identifier (CID) for each.
-2. **On-chain pointer** — `set_metadata(token_address, admin, metadata_uri, fee_payment)` stores a single `ipfs://<cid>` string against the token, one time only (`Error::MetadataAlreadySet` on a second attempt). Any client — StellarForge's UI, a block explorer, another dApp — can resolve that URI through any IPFS gateway to fetch the same image/description.
+2. **On-chain pointer** — `set_metadata(token_address, admin, metadata_uri, fee_payment)` stores the current `ipfs://<cid>` URI for the token, and each successful update increments the metadata version. The contract enforces `fee_payment >= metadata_fee`, validates the `ipfs://` prefix and length, blocks writes when the token is frozen, and keeps the admin authorization path aligned with the `admin.require_auth()` + admin identity check in the factory contract. Any client — StellarForge's UI, a block explorer, another dApp — can resolve that URI through any IPFS gateway to fetch the same image/description.
 
 ### 4. Administration, safety, and lifecycle controls
 
@@ -57,7 +57,7 @@ Token images and descriptions are too large and mutable to store cheaply on a So
 - **Reentrancy guard** — a `locked` flag on `FactoryState` prevents a second `create_token`/`create_tokens_batch` call from interleaving with one already in progress in the same transaction context.
 - **Per-token burn toggle** — `set_burn_enabled` lets a token's creator disable burning for that token specifically (e.g. for a fixed-supply asset), independent of the factory-wide pause.
 - **Allow-list enforcement** — `add_to_whitelist` / `remove_from_whitelist` / `is_whitelisted` maintain an admin-managed address allow-list in factory storage. When the admin calls `set_whitelist_enabled(true)`, only whitelisted addresses may call `create_token` or `create_tokens_batch`; non-whitelisted callers receive `Error::NotWhitelisted`. Enforcement defaults to `false` so existing open deployments are unaffected until an admin opts in.
-- **Admin rotation** — `transfer_admin` / `update_admin` move admin privileges to a new address (both perform the same underlying state change; `update_admin` additionally emits an `adm_upd` event).
+- **Admin rotation** — `propose_admin` / `accept_admin` / `cancel_admin_proposal` implement a two-step rotation: the current admin proposes a successor (emitting `adm_prop`), the proposed admin proves they can sign by calling `accept_admin` (emitting `adm_acc`), and the current admin may cancel at any time before acceptance (emitting `adm_can`). Proposals expire after ~28 hours (`ADMIN_PROPOSAL_TTL_LEDGERS`). `transfer_admin` / `update_admin` are retained as ABI-compatible aliases for `propose_admin` — neither completes the rotation on its own.
 - **Upgrade + migrate** — `upgrade` swaps the contract's executable WASM in place; `migrate` is an idempotent, versioned function (`schema_version` vs. `CURRENT_SCHEMA_VERSION`) that brings on-chain state up to date with the currently-deployed code without ever losing existing tokens or fee configuration. See [Contract Upgrade Process](#contract-upgrade-process) below.
 
 ### 5. The frontend's role
@@ -270,7 +270,7 @@ The authoritative, field-by-field reference — including parameter tables, ever
 
 ### Metadata
 
-- `set_metadata(token_address, admin, metadata_uri, fee_payment)`: Attach an `ipfs://` (or `https://`) metadata URI to a token. One-shot — a second call returns `MetadataAlreadySet`.
+- `set_metadata(token_address, admin, metadata_uri, fee_payment)`: Attach or update the token's `ipfs://` metadata URI. The caller must authorize as the current admin, `fee_payment` must satisfy `metadata_fee`, and updates are allowed until the token is frozen or the per-token update cap is reached; every successful write increments the metadata version.
 - `set_burn_enabled(token_address, admin, enabled)`: Toggle whether a specific token can be burned. Caller must be the token's creator.
 
 ### Admin & Governance
@@ -279,7 +279,7 @@ The authoritative, field-by-field reference — including parameter tables, ever
 - `set_fee_split(admin, splits)` / `get_fee_split()`: Configure or read a `Map<Address, u32>` of basis-point fee recipients (must sum to `10_000`, or be empty to clear the split and fall back to `treasury`).
 - `pause(admin)` / `unpause(admin)`: Halt or resume `create_token`, `create_tokens_batch`, `mint_tokens`, and `set_metadata` factory-wide.
 - `add_to_whitelist(admin, address)` / `remove_from_whitelist(admin, address)` / `is_whitelisted(address)`: Maintain an admin-managed address allow-list in contract storage. Use `set_whitelist_enabled(admin, true)` to turn enforcement on — once enabled, only whitelisted addresses may call `create_token` or `create_tokens_batch` (non-whitelisted callers receive `Error::NotWhitelisted`). Enforcement is off by default.
-- `transfer_admin(admin, new_admin)` / `update_admin(current_admin, new_admin)`: Rotate the admin address. Equivalent effect; `update_admin` additionally emits an `adm_upd` event.
+- `propose_admin(current_admin, new_admin)` / `accept_admin(new_admin)` / `cancel_admin_proposal(current_admin)`: Two-step admin rotation. `propose_admin` records the proposed successor; `accept_admin` (called by the proposed admin) completes the handover after proving the key can sign; `cancel_admin_proposal` lets the current admin withdraw a proposal. `transfer_admin` and `update_admin` are legacy aliases for `propose_admin`.
 - `upgrade(admin, new_wasm_hash)`: Replace the factory's executable WASM in place, preserving all state. See [Contract Upgrade Process](#contract-upgrade-process).
 - `migrate(admin)`: Idempotently bring on-chain state up to `CURRENT_SCHEMA_VERSION` after an upgrade.
 
@@ -292,7 +292,7 @@ The authoritative, field-by-field reference — including parameter tables, ever
 
 ### Errors
 
-All fallible entrypoints return `Result<T, Error>`. See the full table (17 variants, e.g. `InsufficientFee`, `Unauthorized`, `ContractPaused`, `MaxSupplyExceeded`, `InvalidFeeSplit`) in [`docs/contract-abi.md`](./docs/contract-abi.md#errors).
+All fallible entrypoints return `Result<T, Error>`. See the full table (25 variants, e.g. `InsufficientFee`, `Unauthorized`, `ContractPaused`, `MaxSupplyExceeded`, `InvalidFeeSplit`, `NoPendingProposal`, `ProposalExpired`) in [`docs/contract-abi.md`](./docs/contract-abi.md#errors).
 
 ### Events
 
@@ -302,13 +302,15 @@ The contract publishes Soroban events on `(factory, action)` topics — `init`, 
 
 1. **Connect Wallet**: Use the Freighter browser extension to connect an account. The app checks that Freighter's active network matches the app's selected network and blocks writes on mismatch.
 2. **Create Token**: Fill in name, symbol, decimals, and initial supply; the form validates against the same rules the contract enforces (name ≤ 32 chars, symbol ≤ 12 chars, decimals 0–18) before submission. Sign and submit the transaction to pay the creation fee and deploy the token contract.
-3. **Set Metadata**: Upload a token image and description — the app uploads the image to IPFS, pins a metadata JSON document referencing it, then calls `set_metadata` with the resulting `ipfs://` URI (one-time only per token).
+3. **Set Metadata**: Upload a token image and description — the app uploads the image to IPFS, pins a metadata JSON document referencing it, then calls `set_metadata` with the resulting `ipfs://` URI. Metadata updates are valid for the token until the URI is frozen or the update cap is reached; the contract increments the metadata version on every successful write.
 4. **Mint Tokens**: As the token's creator, mint additional supply to any address, subject to the token's optional `max_supply` cap.
 5. **Manage Supply**: Token holders can burn their own balance at any time (unless the creator has disabled burning for that token via `set_burn_enabled`).
 6. **Admin Panel**: The factory admin can update fees, configure a fee split, pause/unpause the factory, and rotate the admin address from the in-app Admin Panel.
 7. **Explore & Export**: Browse all deployed tokens or a specific creator's tokens in the Token Explorer/Dashboard, and export transaction history to CSV.
 
 ## Deployment
+
+Two `vercel.json` files govern two distinct Vercel deployments, and both must keep an identical `headers` block — see [docs/deployment-vercel.md](./docs/deployment-vercel.md) for which file is authoritative for which deployment.
 
 ## Deployment & Caching
 
@@ -978,11 +980,7 @@ The factory contract supports in-place WASM upgrades without redeploying or migr
 | 1       | Initial versioned schema — added `schema_version` field to `FactoryState`                                                                                                                                                                                                                                                                                                                                                                                                  |
 | 2       | Max-supply accounting fix (issue #1006) — `deploy_one` now seeds the per-token supply counter with `initial_supply`; version bump only, no `FactoryState` field changes. Pre-fix capped tokens must be back-filled individually via `backfill_capped_supply` (see [docs/contract-abi.md](./docs/contract-abi.md#supply-cap-accounting))                                                                                                                                    |
 | 3       | Persistent-storage migration (issue #1007) — per-token bookkeeping (`TokenInfo`, `TokenIndex`, `Metadata`, `owner`, `supply`, `CreatorTokens`) moves out of the shared `instance` ledger entry into `persistent` storage, keeping `instance` storage O(1) in `token_count`. `TokenInfo` migrates in bounded, resumable chunks per `migrate` call; everything else migrates lazily on next access (see [docs/contract-abi.md](./docs/contract-abi.md#storage-architecture)) |
-| Version | Change                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------                                                                                                                                    |
-| 1       | Initial versioned schema — added `schema_version` field to `FactoryState`                                                                                                                                                                                                                                                                                                                                                                                                  |
-| 2       | Max-supply accounting fix (issue #1006) — `deploy_one` now seeds the per-token supply counter with `initial_supply`; version bump only, no `FactoryState` field changes. Pre-fix capped tokens must be back-filled individually via `backfill_capped_supply` (see [docs/contract-abi.md](./docs/contract-abi.md#supply-cap-accounting))                                                                                                                                    |
-| 3       | Added `whitelist_enabled: bool` to `FactoryState`; new `set_whitelist_enabled` entrypoint; `create_token` and `create_tokens_batch` enforce the whitelist gate when enabled                                                                                                                                                                                                                                                                                                |
+| 4       | Two-step admin rotation — added `pending_admin: Option<Address>` and `pending_admin_expiry: Option<u64>` to `FactoryState`; new `propose_admin`, `accept_admin`, `cancel_admin_proposal` entrypoints; `transfer_admin` and `update_admin` now delegate to `propose_admin` (no single-step rotation path remains). New error codes 24 (`NoPendingProposal`) and 25 (`ProposalExpired`). New events `adm_prop`, `adm_acc`, `adm_can`. |
 
 ### Adding a new migration (version N → N+1)
 

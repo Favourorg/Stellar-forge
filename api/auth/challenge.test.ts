@@ -2,6 +2,17 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import handler from './challenge'
 import { getChallenge, putChallenge, __resetInMemoryChallenges } from '../_lib/challengeStore'
+import { isRateLimited } from '../_lib/rateLimit'
+
+vi.mock('../_lib/rateLimit', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../_lib/rateLimit')>()
+  return {
+    ...actual,
+    isRateLimited: vi.fn(),
+  }
+})
+
+const mockIsRateLimited = vi.mocked(isRateLimited)
 
 const ADDRESS = 'GBUKOFF6QUZ4YDTVAJ7NNQZ4LMHFXWNQMPQZ2VDLTMMFVDBLMEXWMXOU'
 
@@ -22,12 +33,14 @@ beforeEach(() => {
   __resetInMemoryChallenges()
   delete process.env.VERCEL_KV_REST_API_URL
   delete process.env.VERCEL_KV_REST_API_TOKEN
+  mockIsRateLimited.mockResolvedValue(false)
 })
 
 afterEach(() => {
   vi.restoreAllMocks()
   delete process.env.VERCEL_KV_REST_API_URL
   delete process.env.VERCEL_KV_REST_API_TOKEN
+  mockIsRateLimited.mockReset()
 })
 
 describe('GET /api/auth/challenge', () => {
@@ -147,6 +160,47 @@ describe('/api/auth/challenge method handling', () => {
       await handler(req, res)
       expect(status).toHaveBeenCalledWith(405)
     }
+  })
+})
+
+describe('rate limiting', () => {
+  it('rejects GET with 429 when rate limited', async () => {
+    mockIsRateLimited.mockResolvedValue(true)
+
+    const { req, res, status, json } = get(ADDRESS)
+    await handler(req, res)
+
+    expect(status).toHaveBeenCalledWith(429)
+    expect(json).toHaveBeenCalledWith({
+      error: 'Too many challenge requests. Please try again later.',
+    })
+  })
+
+  it('rejects POST with 429 when rate limited', async () => {
+    // First issue a challenge so the verification path is reached
+    await putChallenge(ADDRESS, 'deadbeef')
+    mockIsRateLimited.mockResolvedValue(true)
+
+    const { req, res, status, json } = post({ address: ADDRESS, signature: 'aGVsbG8=' })
+    await handler(req, res)
+
+    expect(status).toHaveBeenCalledWith(429)
+    expect(json).toHaveBeenCalledWith({
+      error: 'Too many verification attempts. Please try again later.',
+    })
+  })
+
+  it('calls isRateLimited with the address for GET', async () => {
+    await handler(get(ADDRESS).req, get(ADDRESS).res)
+
+    expect(mockIsRateLimited).toHaveBeenCalledWith(ADDRESS)
+  })
+
+  it('calls isRateLimited with the address for POST', async () => {
+    await putChallenge(ADDRESS, 'deadbeef')
+    await handler(post({ address: ADDRESS, signature: 'c2lnbmF0dXJl' }).req, post({ address: ADDRESS, signature: 'c2lnbmF0dXJl' }).res)
+
+    expect(mockIsRateLimited).toHaveBeenCalledWith(ADDRESS)
   })
 })
 

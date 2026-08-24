@@ -46,6 +46,7 @@ Every mainnet deployment **must** be accompanied by a signed, annotated git tag 
 
 - [ ] Deploy and initialize the factory **atomically** — `initialize` runs as the contract's `__constructor`, so `scripts/deploy-contract.sh` (or an equivalent `stellar contract deploy --wasm ... -- --admin ... --treasury ... --fee_token ... --token_wasm_hash ... --base_fee ... --metadata_fee ...` invocation) deploys and initializes in a single transaction. Never deploy the WASM and initialize it as two separate transactions — that reopens a front-running window where an attacker's `initialize` call could win the race and seize the admin role (see the [Token Factory front-running writeup](https://github.com/Favourorg/Stellar-forge/issues/1005)).
 - [ ] Immediately after deployment, run `stellar contract invoke --id <contract-id> --network mainnet -- get_state` and confirm the returned `admin` field is **exactly** the intended admin address before publishing the contract ID anywhere (frontend `.env`, docs, service-worker cache key, announcements). `scripts/deploy-contract.sh` performs this check automatically and aborts if it fails.
+- [ ] If upgrading an existing factory (not a fresh deploy), call `migrate` immediately after `upgrade` to apply schema version 4 (adds `pending_admin` / `pending_admin_expiry` to `FactoryState`). Confirm `get_state().schema_version == 4` before proceeding.
 
 ## Release Validation
 
@@ -64,8 +65,10 @@ These items must be verified before the factory is accessible to end users on ma
 
 - [ ] Read the [Incident Response Runbook](./incident-response.md) in full and confirm the team understands every section.
 - [ ] Break-glass admin address is generated, funded with at least 5 XLM, and recorded in the deployment log (see [runbook section 7](./incident-response.md#7-break-glass-recovery-mechanism)).
+- [ ] **Verify break-glass account access before any incident:** confirm you can sign a transaction from the break-glass key. Emergency admin rotation now requires two transactions — `propose_admin` from the compromised key AND `accept_admin` from the break-glass key — so both keys must be accessible simultaneously (see [runbook step 4](./incident-response.md#4-immediate-response-first-five-minutes)).
+- [ ] On-chain event monitoring for `adm_prop` (rotation proposed) and `adm_acc` (rotation completed) is configured and alerting. An unexpected `adm_prop` event is actionable: the current admin can cancel via `cancel_admin_proposal` before `accept_admin` is called.
 - [ ] WASM hash monitoring script (`check-wasm-hash.sh`) is deployed on a cron schedule (≤ 5 minutes) and confirmed to send alerts.
-- [ ] Sentry alert rules for mainnet anomalous-fee events and admin transfers are active (see [runbook section 2](./incident-response.md#2-how-compromise-would-be-detected)).
+- [ ] Sentry alert rules for mainnet anomalous-fee events and admin rotation events are active (see [runbook section 2](./incident-response.md#2-how-compromise-would-be-detected)).
 - [ ] Incident commander and break-glass custodian contact details are documented in the team's private channel, not in this file.
 - [ ] Tabletop exercise (runbook section 10) has been completed and dated in the deployment log.
 

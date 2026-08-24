@@ -56,10 +56,56 @@ export interface EventPage {
   latestLedgerCloseTime: number | null
 }
 
-/** The two event topics ingest acts on. Others are ignored by design. */
+/**
+ * All 15 event topics from the factory contract.
+ *
+ * The indexer persists all of them (for historical query and audit trails);
+ * ingest only acts on 'created' and 'meta' to derive token rows, but the
+ * event store captures the full stream.
+ */
 export type IndexerEvent =
   | { type: 'created'; token: IndexedToken }
   | { type: 'meta'; address: string; metadataUri: string }
+  | { type: 'mint'; tokenAddress: string; to: string; amount: string; txHash: string | null }
+  | { type: 'burn'; tokenAddress: string; from: string; amount: string; txHash: string | null }
+  | {
+      type: 'transfer'
+      tokenAddress: string
+      from: string
+      to: string
+      amount: string
+      txHash: string | null
+    }
+  | {
+      type: 'approval'
+      tokenAddress: string
+      owner: string
+      spender: string
+      amount: string
+      txHash: string | null
+    }
+  | {
+      type: 'fees'
+      tokenAddress: string
+      baseFee: string
+      metadataFee: string
+      txHash: string | null
+    }
+  | { type: 'pause'; tokenAddress: string; txHash: string | null }
+  | { type: 'unpause'; tokenAddress: string; txHash: string | null }
+  | { type: 'adm_upd'; tokenAddress: string; newAdmin: string; txHash: string | null }
+  | { type: 'wl_add'; tokenAddress: string; address: string; txHash: string | null }
+  | { type: 'wl_rem'; tokenAddress: string; address: string; txHash: string | null }
+  | { type: 'wl_tog'; tokenAddress: string; txHash: string | null }
+  | { type: 'meta_frz'; tokenAddress: string; txHash: string | null }
+  | {
+      type: 'split_set'
+      tokenAddress: string
+      splitAmount: string
+      splitValue: string
+      txHash: string | null
+    }
+  | { type: 'split_clr'; tokenAddress: string; txHash: string | null }
 
 export interface IngestResult {
   backfilled: number
