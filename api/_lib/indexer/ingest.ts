@@ -68,9 +68,29 @@ export type IndexerEvent =
   | { type: 'meta'; address: string; metadataUri: string }
   | { type: 'mint'; tokenAddress: string; to: string; amount: string; txHash: string | null }
   | { type: 'burn'; tokenAddress: string; from: string; amount: string; txHash: string | null }
-  | { type: 'transfer'; tokenAddress: string; from: string; to: string; amount: string; txHash: string | null }
-  | { type: 'approval'; tokenAddress: string; owner: string; spender: string; amount: string; txHash: string | null }
-  | { type: 'fees'; tokenAddress: string; baseFee: string; metadataFee: string; txHash: string | null }
+  | {
+      type: 'transfer'
+      tokenAddress: string
+      from: string
+      to: string
+      amount: string
+      txHash: string | null
+    }
+  | {
+      type: 'approval'
+      tokenAddress: string
+      owner: string
+      spender: string
+      amount: string
+      txHash: string | null
+    }
+  | {
+      type: 'fees'
+      tokenAddress: string
+      baseFee: string
+      metadataFee: string
+      txHash: string | null
+    }
   | { type: 'pause'; tokenAddress: string; txHash: string | null }
   | { type: 'unpause'; tokenAddress: string; txHash: string | null }
   | { type: 'adm_upd'; tokenAddress: string; newAdmin: string; txHash: string | null }
@@ -78,7 +98,13 @@ export type IndexerEvent =
   | { type: 'wl_rem'; tokenAddress: string; address: string; txHash: string | null }
   | { type: 'wl_tog'; tokenAddress: string; txHash: string | null }
   | { type: 'meta_frz'; tokenAddress: string; txHash: string | null }
-  | { type: 'split_set'; tokenAddress: string; splitAmount: string; splitValue: string; txHash: string | null }
+  | {
+      type: 'split_set'
+      tokenAddress: string
+      splitAmount: string
+      splitValue: string
+      txHash: string | null
+    }
   | { type: 'split_clr'; tokenAddress: string; txHash: string | null }
 
 export interface IngestResult {
