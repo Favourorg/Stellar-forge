@@ -24,6 +24,7 @@ afterEach(() => {
 })
 
 describe('AnalyticsOptOut component', () => {
+  // ADR-005: REQ-ADR005-03, REQ-ADR005-07 - The control follows analytics configuration.
   it('renders the opt-out checkbox when VITE_PLAUSIBLE_DOMAIN is set', () => {
     render(<AnalyticsOptOut />)
     expect(screen.getByRole('checkbox', { name: /opt out of analytics/i })).toBeInTheDocument()
@@ -35,6 +36,7 @@ describe('AnalyticsOptOut component', () => {
     expect(container.firstChild).toBeNull()
   })
 
+  // ADR-005: REQ-ADR005-03, REQ-ADR005-04 - The control reflects persisted consent state.
   it('checkbox is unchecked when user has NOT opted out', () => {
     render(<AnalyticsOptOut />)
     const checkbox = screen.getByRole('checkbox', { name: /opt out of analytics/i })
@@ -48,6 +50,7 @@ describe('AnalyticsOptOut component', () => {
     expect(checkbox).toBeChecked()
   })
 
+  // ADR-005: REQ-ADR005-04, REQ-ADR005-05 - UI changes persist and apply immediately.
   it('checking the checkbox opts the user out immediately (persisted + service updated)', () => {
     render(<AnalyticsOptOut />)
     const checkbox = screen.getByRole('checkbox', { name: /opt out of analytics/i })
@@ -71,6 +74,7 @@ describe('AnalyticsOptOut component', () => {
     expect(localStorage.getItem('analytics_opt_out')).toBeNull()
   })
 
+  // ADR-005: REQ-ADR005-05, REQ-ADR005-08 - UI opt-out blocks subsequent tracking calls.
   it('analytics events are suppressed immediately after checking the opt-out box — no reload required', () => {
     const plausible = vi.fn()
     window.plausible = plausible
@@ -101,6 +105,7 @@ describe('AnalyticsOptOut component', () => {
     expect(plausible).toHaveBeenCalledOnce()
   })
 
+  // ADR-005: REQ-ADR005-03 - Opt-out control exposes an accessible name.
   it('has an accessible aria-label on the checkbox', () => {
     render(<AnalyticsOptOut />)
     const checkbox = screen.getByRole('checkbox', { name: /opt out of analytics/i })

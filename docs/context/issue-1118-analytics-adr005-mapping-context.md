@@ -1,6 +1,6 @@
 # Contexto de Ejecución: Issue #1118 - Analytics Privacy Consent Mapping & ADR-005 Enforcement
 
-- **Estado:** Fase 1 (Arquitectura definida)
+- **Estado:** Fase 2 (Implementación completada)
 - **Rama:** docs/1118-analytics-adr005-mapping
 - **Fecha:** Mon Aug 24 16:14:36 -05 2026
 - **Auditoría de Entorno:**
@@ -108,3 +108,19 @@ Para un test que cubra varios requisitos se usará una línea por requisito. El 
 
 - Fase 0: rama de trabajo creada y auditoría de entorno registrada.
 - Fase 1: matriz de trazabilidad, gap analysis, contrato de anotaciones y plan de enforcement definidos.
+- Fase 2: suites anotadas con `REQ-ADR005-*`, enforcement documentado en ADR-005 y stub marcado como supersedido. Pendiente de validación QA de Fase 3.
+
+## Resultado de Fase 2
+
+- `frontend/src/services/analytics.test.ts`: anotaciones de requisitos para estado, persistencia, eventos, pageviews y supresión global.
+- `frontend/src/components/AnalyticsOptOut.test.tsx`: anotaciones de requisitos para disponibilidad, persistencia, accesibilidad y efecto inmediato del control.
+- `frontend/scripts/check-analytics-bypass.mjs`: enforcement identificado explícitamente como `REQ-ADR005-08`.
+- `docs/adr/ADR-005-analytics-privacy-consent.md`: sección formal `Enforcement & Testing` añadida, incluyendo límites de evidencia y política de waivers.
+- `.kiro/specs/analytics-integration/requirements.md`: stub documentado como supersedido por ADR-005.
+
+### Validación de Fase 2
+
+- Suites de analytics: `28/28` tests pasan.
+- `node frontend/scripts/check-analytics-bypass.mjs`: pasa sin violaciones.
+- Errores en los archivos modificados: ninguno detectado.
+- Typecheck frontend: bloqueado por errores preexistentes en `frontend/src/test/ipfs.test.ts` (alrededor de las líneas 862, 864 y 1012); no relacionados con esta implementación.

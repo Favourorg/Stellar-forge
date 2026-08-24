@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Analytics Bypass Check — issue #948
+ * Analytics Bypass Check — issue #1118 / ADR-005 REQ-ADR005-08
  *
  * Scans the source tree for files that import directly from
  * `services/analytics` and use the raw trackEvent / trackPageView /
@@ -55,6 +55,8 @@ const ALLOWED_PATHS = [
 const TEST_FILE_PATTERN = /\.test\.(ts|tsx)$/
 
 // ----------------------------------------------------------------------------
+// ADR-005: REQ-ADR005-08 - These patterns enforce zero direct analytics bypasses.
+// Every production tracking call must remain behind the centralized, consent-aware API.
 // Patterns that indicate a bypass of the consent-aware API
 // ----------------------------------------------------------------------------
 

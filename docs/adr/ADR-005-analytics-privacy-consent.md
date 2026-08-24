@@ -100,3 +100,46 @@ could accidentally include addresses).
   justifying the exception.
 - Removing or weakening the opt-out check in `isEnabled()` / `isOptedOut()`
   requires updating this ADR and the test suite.
+
+## Enforcement & Testing
+
+ADR-005 is enforced at runtime, statically, and through automated tests. The
+traceability IDs below are the canonical links between this decision and its
+evidence:
+
+| Requirement | Runtime/test evidence | Static or QA enforcement |
+|---|---|---|
+| `REQ-ADR005-01` No PII or wallet addresses | `analytics.test.ts` verifies scalar props and documented payload shape | Caller inventory and payload review; no complex objects are permitted |
+| `REQ-ADR005-02` No cookies, fingerprinting, or cross-site tracking | Provider property, not fully unit-testable | Network/storage audit required in QA |
+| `REQ-ADR005-03` Opt-out is available when configured | `AnalyticsOptOut.test.tsx` verifies rendering and accessible control | Configuration guard |
+| `REQ-ADR005-04` Preference persistence | `analytics.test.ts` and `AnalyticsOptOut.test.tsx` verify `analytics_opt_out` | Browser reload verification in QA |
+| `REQ-ADR005-05` Immediate suppression and reactivation | Both suites verify in-session transitions without reload | `isOptedOut()` is evaluated on every tracking call |
+| `REQ-ADR005-06` Pageview/custom event payload contract | `analytics.test.ts` verifies pageview URL and scalar props | Payload and caller inventory review |
+| `REQ-ADR005-07` Disabled when domain is absent | Service and component tests verify zero calls/hidden control | `VITE_PLAUSIBLE_DOMAIN` configuration review |
+| `REQ-ADR005-08` Zero direct bypasses | Service tests verify public API behavior | `frontend/scripts/check-analytics-bypass.mjs` blocks direct imports and `window.plausible` calls |
+
+### Runtime enforcement
+
+`isEnabled()` requires both a configured `VITE_PLAUSIBLE_DOMAIN` and a false
+opt-out state. The preference is read for every `trackEvent()` and
+`trackPageView()` invocation. Failures from `localStorage` or Plausible are
+contained so analytics cannot affect the application experience.
+
+### Static enforcement and exceptions
+
+The bypass check recursively scans production TypeScript files, rejects direct
+analytics imports and calls to `window.plausible`, and allows only the service,
+hook, and documented `App.tsx` route-tracking caller. Any new allowlist entry
+requires a comment explaining why the centralized API remains the enforced
+boundary. The check complements, but does not replace, unit tests or payload
+review.
+
+### Testing and waiver policy
+
+Tests protecting a requirement must include an `ADR-005: REQ-ADR005-*`
+annotation. CI must run the bypass check and the analytics test suites. The
+absence of cookies, fingerprinting, and PII in provider/network behavior must
+also be confirmed during QA because those properties are not fully proven by
+the static scan. Any waiver must record the requirement, justification,
+residual risk, owner, expiry date, and tracking issue; no waiver is granted by
+this ADR.

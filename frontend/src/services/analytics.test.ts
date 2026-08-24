@@ -48,6 +48,7 @@ afterEach(() => {
 // isOptedOut / setOptOut
 // ---------------------------------------------------------------------------
 
+// ADR-005: REQ-ADR005-04 - Persisted opt-out state uses analytics_opt_out.
 describe('isOptedOut', () => {
   it('returns false when localStorage is empty', () => {
     expect(isOptedOut()).toBe(false)
@@ -64,6 +65,7 @@ describe('isOptedOut', () => {
   })
 })
 
+// ADR-005: REQ-ADR005-04 - Opt-out preference is persisted and removable.
 describe('setOptOut', () => {
   it('sets opt-out flag in localStorage when called with true', () => {
     setOptOut(true)
@@ -83,6 +85,8 @@ describe('setOptOut', () => {
 // trackEvent — opt-out suppression
 // ---------------------------------------------------------------------------
 
+// ADR-005: REQ-ADR005-01, REQ-ADR005-05, REQ-ADR005-06, REQ-ADR005-07
+// Consent-aware custom events accept scalar, non-PII props and honor runtime guards.
 describe('trackEvent', () => {
   it('fires window.plausible when analytics is enabled and user has NOT opted out', () => {
     const plausible = stubPlausible()
@@ -158,6 +162,7 @@ describe('trackEvent', () => {
 // trackPageView — opt-out suppression
 // ---------------------------------------------------------------------------
 
+// ADR-005: REQ-ADR005-05, REQ-ADR005-06, REQ-ADR005-07 - Page views honor consent and configuration.
 describe('trackPageView', () => {
   it('fires window.plausible when user has NOT opted out', () => {
     const plausible = stubPlausible()
@@ -206,6 +211,7 @@ describe('trackPageView', () => {
 // Full session simulation: every tracking call site suppressed after opt-out
 // ---------------------------------------------------------------------------
 
+// ADR-005: REQ-ADR005-05, REQ-ADR005-08 - All consent-aware call sites remain suppressed after opt-out.
 describe('opt-out suppresses ALL tracking call sites for the remainder of the session', () => {
   it('zero analytics events dispatched after opt-out across every call site', () => {
     const plausible = stubPlausible()
