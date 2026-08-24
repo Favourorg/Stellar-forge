@@ -3,6 +3,7 @@ import { Input, Button, ConfirmModal } from './UI'
 import { useWalletContext } from '../context/WalletContext'
 import { useStellarContext } from '../context/StellarContext'
 import { useToast } from '../context/ToastContext'
+import { useNetwork } from '../context/NetworkContext'
 import { useFactoryState } from '../hooks/useFactoryState'
 import { useTransaction, isTransactionInFlight } from '../hooks/useTransaction'
 import { useNetworkGuard } from '../hooks/useNetworkGuard'
@@ -26,6 +27,7 @@ export const AdminPanel: React.FC = () => {
   const { wallet } = useWalletContext()
   const { stellarService } = useStellarContext()
   const { addToast } = useToast()
+  const { network } = useNetwork()
   const { state, isLoading: stateLoading, refetch } = useFactoryState()
   const { blocked: networkBlocked, reason: networkReason } = useNetworkGuard()
 
@@ -37,6 +39,7 @@ export const AdminPanel: React.FC = () => {
   // Whitelist toggle state
   const [whitelistEnabled, setWhitelistEnabled] = useState(false)
   const [whitelistPending, setWhitelistPending] = useState(false)
+  const [showWhitelistConfirm, setShowWhitelistConfirm] = useState(false)
 
   const feesRef = useRef({ baseFee: '', metadataFee: '' })
 
@@ -118,6 +121,11 @@ export const AdminPanel: React.FC = () => {
   }
 
   async function handleWhitelistToggle() {
+    setShowWhitelistConfirm(true)
+  }
+
+  async function handleWhitelistConfirm() {
+    setShowWhitelistConfirm(false)
     const next = !whitelistEnabled
     setWhitelistPending(true)
     try {
@@ -242,9 +250,29 @@ export const AdminPanel: React.FC = () => {
           { label: 'Base Fee', value: `${baseFee} XLM` },
           { label: 'Metadata Fee', value: `${metadataFee} XLM` },
         ]}
+        mainnet={network === 'mainnet'}
+        confirmText="MAINNET"
         confirmLabel="Update Fees"
         onConfirm={handleConfirm}
         onCancel={() => setShowConfirm(false)}
+      />
+
+      <ConfirmModal
+        isOpen={showWhitelistConfirm}
+        title="Confirm Whitelist Toggle"
+        description={`You are about to ${whitelistEnabled ? 'disable' : 'enable'} whitelist enforcement on ${network === 'mainnet' ? 'MAINNET' : 'testnet'}. This affects all token creators.`}
+        details={[
+          {
+            label: 'Action',
+            value: whitelistEnabled ? 'Disable whitelist enforcement' : 'Enable whitelist enforcement',
+          },
+          { label: 'Network', value: network },
+        ]}
+        mainnet={network === 'mainnet'}
+        confirmText="MAINNET"
+        confirmLabel="Confirm"
+        onConfirm={handleWhitelistConfirm}
+        onCancel={() => setShowWhitelistConfirm(false)}
       />
     </div>
   )

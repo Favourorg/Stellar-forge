@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { Input, Button, ConfirmModal, InsufficientBalanceWarning } from './UI'
 import { isValidIPFSUri } from '../utils/validation'
 import { useToast } from '../context/ToastContext'
+import { useNetwork } from '../context/NetworkContext'
 import { useBalanceCheck } from '../hooks/useBalanceCheck'
 import { useNetworkGuard } from '../hooks/useNetworkGuard'
 import { FeeDisplay } from './FeeDisplay'
@@ -26,6 +27,7 @@ export const SetMetadataForm: React.FC<Props> = ({
   const [loading, setLoading] = useState(false)
   const [pending, setPending] = useState(false)
   const { addToast } = useToast()
+  const { network } = useNetwork()
   const { state: factoryState } = useFactoryState()
   // No IPFS readiness gate here: this form takes an ipfs:// URI that is
   // already pinned and passes it to the contract's `set_metadata`. It never
@@ -117,6 +119,8 @@ export const SetMetadataForm: React.FC<Props> = ({
           { label: 'Metadata URI', value: metadataUri },
           { label: 'Estimated Fee', value: feeXlm.toFixed(7) + ' XLM' },
         ]}
+        mainnet={network === 'mainnet'}
+        confirmText="MAINNET"
         onConfirm={handleConfirm}
         onCancel={() => setPending(false)}
         confirmLabel="Set Metadata"

@@ -419,6 +419,8 @@ export const MetadataForm: React.FC<MetadataFormProps> = ({ initialTokenAddress 
           { label: 'Image', value: imageFile?.name ?? '' },
           { label: 'Estimated Fee', value: `${metadataFeeXlm.toFixed(7)} XLM` },
         ]}
+        mainnet={network === 'mainnet'}
+        confirmText="MAINNET"
         onConfirm={handleConfirm}
         onCancel={() => setPendingConfirm(false)}
         confirmLabel="Upload & Set"

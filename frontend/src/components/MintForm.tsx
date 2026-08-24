@@ -320,6 +320,8 @@ export const MintForm: React.FC<MintFormProps> = ({
           { label: 'Amount', value: amount },
           { label: 'Estimated Fee', value: formatXLM(feePaymentStroops) },
         ]}
+        mainnet={network === 'mainnet'}
+        confirmText="MAINNET"
         onConfirm={handleConfirm}
         onCancel={() => setPending(false)}
         confirmLabel="Mint Tokens"

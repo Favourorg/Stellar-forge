@@ -1,23 +1,42 @@
 import { useState, useCallback } from 'react'
-import { TokenDeployParams } from '../types'
 import { isMainnet } from '../utils/network'
+
+interface MainnetConfirmDetails {
+  label: string
+  value: string | number
+}
 
 interface UseMainnetConfirmationReturn {
   showModal: boolean
-  tokenParams: TokenDeployParams | null
-  requestDeployment: (params: TokenDeployParams, onConfirm: () => void) => void
+  details: MainnetConfirmDetails[]
+  requestConfirmation: (details: MainnetConfirmDetails[], onConfirm: () => void) => void
   closeModal: () => void
-  confirmDeployment: () => void
+  confirmAction: () => void
+  /** Whether the app is currently connected to mainnet */
+  isMainnetNetwork: boolean
 }
 
+/**
+ * Generic mainnet confirmation gate.
+ *
+ * Checks `isMainnet()` and either shows the confirmation modal (mainnet) or
+ * calls `onConfirm` directly (testnet). This is a programmatic alternative to
+ * passing `mainnet={isMainnet()}` to `<ConfirmModal>` — use whichever fits
+ * your component's architecture.
+ *
+ * @deprecated Prefer `<ConfirmModal mainnet={isMainnet()} confirmText="..." />`
+ *   for components that already render a ConfirmModal. This hook exists for
+ *   cases where the confirmation gate must be handled programmatically (e.g.
+ *   when the form doesn't use ConfirmModal directly).
+ */
 export const useMainnetConfirmation = (): UseMainnetConfirmationReturn => {
   const [showModal, setShowModal] = useState(false)
-  const [tokenParams, setTokenParams] = useState<TokenDeployParams | null>(null)
+  const [details, setDetails] = useState<MainnetConfirmDetails[]>([])
   const [onConfirmCallback, setOnConfirmCallback] = useState<(() => void) | null>(null)
 
-  const requestDeployment = useCallback((params: TokenDeployParams, onConfirm: () => void) => {
+  const requestConfirmation = useCallback((confirmDetails: MainnetConfirmDetails[], onConfirm: () => void) => {
     if (isMainnet()) {
-      setTokenParams(params)
+      setDetails(confirmDetails)
       setOnConfirmCallback(() => onConfirm)
       setShowModal(true)
     } else {
@@ -28,11 +47,11 @@ export const useMainnetConfirmation = (): UseMainnetConfirmationReturn => {
 
   const closeModal = useCallback(() => {
     setShowModal(false)
-    setTokenParams(null)
+    setDetails([])
     setOnConfirmCallback(null)
   }, [])
 
-  const confirmDeployment = useCallback(() => {
+  const confirmAction = useCallback(() => {
     if (onConfirmCallback) {
       onConfirmCallback()
     }
@@ -41,9 +60,10 @@ export const useMainnetConfirmation = (): UseMainnetConfirmationReturn => {
 
   return {
     showModal,
-    tokenParams,
-    requestDeployment,
+    details,
+    requestConfirmation,
     closeModal,
-    confirmDeployment,
+    confirmAction,
+    isMainnetNetwork: isMainnet(),
   }
 }

@@ -40,4 +40,30 @@ export const DestructiveAction: Story = {
   },
 }
 
+export const MainnetMode: Story = {
+  args: {
+    title: 'Confirm Mainnet Deployment',
+    description: 'This action will cost real XLM on Mainnet.',
+    mainnet: true,
+    confirmText: 'MAINNET',
+    details: [
+      { label: 'Token Name', value: 'My Token' },
+      { label: 'Token Symbol', value: 'MTK' },
+      { label: 'Initial Supply', value: '1,000,000' },
+    ],
+  },
+}
+
+export const MainnetModeCustomText: Story = {
+  args: {
+    title: 'Confirm Mainnet Mint',
+    mainnet: true,
+    confirmText: 'MINT',
+    details: [
+      { label: 'Token', value: 'My Token (MTK)' },
+      { label: 'Amount', value: '500' },
+    ],
+  },
+}
+
 export const Closed: Story = { args: { isOpen: false } }

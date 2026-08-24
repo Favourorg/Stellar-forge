@@ -305,6 +305,8 @@ export const BurnForm: React.FC<BurnFormProps> = ({
           { label: 'Your Balance', value: balance },
           { label: 'Estimated Fee', value: ESTIMATED_FEE_DISPLAY },
         ]}
+        mainnet={network === 'mainnet'}
+        confirmText="MAINNET"
         onConfirm={handleConfirm}
         onCancel={() => setPending(false)}
         confirmLabel="Yes, Burn Permanently"

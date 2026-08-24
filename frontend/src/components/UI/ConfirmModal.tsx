@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { Button } from './Button'
 
 export interface DetailRow {
@@ -14,6 +14,10 @@ interface ConfirmModalProps {
   onConfirm: () => void
   onCancel: () => void
   confirmLabel?: string
+  /** Enable mainnet-gate mode: user must type confirmText to enable the confirm button */
+  mainnet?: boolean
+  /** The text the user must type to confirm (default: 'MAINNET') */
+  confirmText?: string
 }
 
 export const ConfirmModal: React.FC<ConfirmModalProps> = ({
@@ -24,12 +28,17 @@ export const ConfirmModal: React.FC<ConfirmModalProps> = ({
   onConfirm,
   onCancel,
   confirmLabel = 'Confirm',
+  mainnet = false,
+  confirmText = 'MAINNET',
 }) => {
   const cancelRef = useRef<HTMLButtonElement>(null)
+  const [typedText, setTypedText] = useState('')
+  const isConfirmed = typedText === confirmText
 
   useEffect(() => {
     if (!isOpen) return
     cancelRef.current?.focus()
+    setTypedText('') // Reset input every time the modal opens
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onCancel()
@@ -56,6 +65,18 @@ export const ConfirmModal: React.FC<ConfirmModalProps> = ({
             {title}
           </h2>
 
+          {mainnet && (
+            <div
+              className="bg-red-50 border border-red-200 rounded-lg p-4"
+              role="alert"
+              data-testid="mainnet-warning"
+            >
+              <p className="text-red-800 font-semibold text-sm">
+                ⚠️ This action cannot be undone and will cost real XLM on Mainnet
+              </p>
+            </div>
+          )}
+
           {description && (
             <p className="text-xs sm:text-sm text-gray-600 dark:text-gray-400">{description}</p>
           )}
@@ -74,6 +95,37 @@ export const ConfirmModal: React.FC<ConfirmModalProps> = ({
             ))}
           </div>
 
+          {mainnet && (
+            <div className="space-y-2">
+              <label
+                htmlFor="mainnet-confirm-input"
+                className="block text-sm font-medium text-gray-700 dark:text-gray-300"
+              >
+                Type &quot;{confirmText}&quot; to confirm on Mainnet
+              </label>
+              <input
+                id="mainnet-confirm-input"
+                type="text"
+                value={typedText}
+                onChange={(e) => setTypedText(e.target.value)}
+                placeholder={confirmText}
+                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg
+                           bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100
+                           focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500
+                           placeholder:text-gray-400 dark:placeholder:text-gray-500"
+                data-testid="mainnet-confirm-input"
+                aria-describedby="mainnet-confirm-help"
+              />
+              <p
+                id="mainnet-confirm-help"
+                className="text-xs text-gray-500 dark:text-gray-400"
+              >
+                This confirmation ensures you have reviewed all parameters carefully before submitting
+                a real-money transaction.
+              </p>
+            </div>
+          )}
+
           <div className="flex gap-2 sm:gap-3 justify-end pt-2 flex-wrap">
             <Button
               ref={cancelRef}
@@ -83,7 +135,13 @@ export const ConfirmModal: React.FC<ConfirmModalProps> = ({
             >
               Cancel
             </Button>
-            <Button variant="primary" onClick={onConfirm} className="flex-1 sm:flex-initial">
+            <Button
+              variant="primary"
+              onClick={onConfirm}
+              disabled={mainnet && !isConfirmed}
+              className="flex-1 sm:flex-initial"
+              data-testid="confirm-button"
+            >
               {confirmLabel}
             </Button>
           </div>

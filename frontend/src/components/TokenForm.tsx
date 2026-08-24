@@ -1,7 +1,6 @@
 import React, { useState, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Input } from './UI/Input'
-import { Button } from './UI/Button'
+import { Input, Button, ConfirmModal } from './UI'
 import { useToast } from '../context/ToastContext'
 import { useWalletContext } from '../context/WalletContext'
 import { useNetwork } from '../context/NetworkContext'
@@ -46,6 +45,7 @@ export const TokenForm: React.FC<TokenFormProps> = ({ onSubmit, isLoading = fals
 
   const [errors, setErrors] = useState<FormErrors>({})
   const [touched, setTouched] = useState<Record<string, boolean>>({})
+  const [pending, setPending] = useState(false)
 
   const validateField = useCallback(
     (field: string, value: unknown) => {
@@ -107,6 +107,16 @@ export const TokenForm: React.FC<TokenFormProps> = ({ onSubmit, isLoading = fals
       return
     }
 
+    try {
+      setPending(true)
+    } catch (error) {
+      logger.error('Form submission error:', error)
+      addToast(error instanceof Error ? error.message : t('tokenForm.submitError'), 'error')
+    }
+  }
+
+  const handleConfirm = async () => {
+    setPending(false)
     try {
       await onSubmit(formData)
     } catch (error) {
@@ -251,5 +261,23 @@ export const TokenForm: React.FC<TokenFormProps> = ({ onSubmit, isLoading = fals
         </p>
       )}
     </form>
+
+      <ConfirmModal
+        isOpen={pending}
+        title="Confirm Mainnet Deployment"
+        description="You are about to deploy a token on Mainnet. This action will cost real XLM."
+        details={[
+          { label: 'Token Name', value: formData.name },
+          { label: 'Token Symbol', value: formData.symbol },
+          { label: 'Decimals', value: formData.decimals },
+          { label: 'Initial Supply', value: formData.initialSupply },
+          ...(formData.maxSupply ? [{ label: 'Max Supply' as const, value: formData.maxSupply }] : []),
+        ]}
+        mainnet={network === 'mainnet'}
+        confirmText={formData.symbol}
+        onConfirm={handleConfirm}
+        onCancel={() => setPending(false)}
+        confirmLabel={t('tokenForm.deploy')}
+      />
   )
 }
