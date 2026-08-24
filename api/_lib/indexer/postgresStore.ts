@@ -6,7 +6,7 @@
  * testable. `createPostgresStore` adapts whichever driver the deployment
  * provides; `getStore` in `./store.ts` wires it up from the environment.
  *
- * Schema: `./migrations/001_init.sql`.
+ * Schema: `./migrations/001_init.sql`, then `./migrations/002_add_events.sql`.
  */
 
 import {
@@ -14,8 +14,11 @@ import {
   MAX_PAGE_LIMIT,
   type IndexedToken,
   type IndexerState,
+  type ListEventsOptions,
+  type ListEventsResult,
   type ListTokensOptions,
   type ListTokensResult,
+  type StoredEvent,
   type TokenStore,
 } from './types'
 
@@ -47,6 +50,24 @@ interface TokenRow {
 function num(value: number | string | null | undefined): number {
   if (value === null || value === undefined) return 0
   return typeof value === 'number' ? value : Number(value)
+}
+
+interface EventRow {
+  token_address: string
+  ledger_seq: number | string
+  topic: string
+  payload: unknown
+  tx_hash: string | null
+}
+
+function toEvent(row: EventRow): StoredEvent {
+  return {
+    tokenAddress: row.token_address,
+    ledgerSeq: num(row.ledger_seq),
+    topic: row.topic,
+    payload: row.payload,
+    txHash: row.tx_hash,
+  }
 }
 
 function toToken(row: TokenRow): IndexedToken {
@@ -224,6 +245,56 @@ export function createPostgresStore(sql: SqlExecutor): TokenStore {
          ON CONFLICT (id) DO UPDATE SET ${sets.join(', ')}`,
         params,
       )
+    },
+
+    async upsertEvents(events: StoredEvent[]): Promise<void> {
+      for (const e of events) {
+        // Idempotent on the (token_address, ledger_seq, topic) primary key, so
+        // re-ingesting a ledger range after a crash rewrites rows instead of
+        // duplicating them.
+        await sql(
+          `INSERT INTO token_events
+             (token_address, ledger_seq, topic, payload, tx_hash)
+           VALUES ($1, $2, $3, $4, $5)
+           ON CONFLICT (token_address, ledger_seq, topic) DO UPDATE SET
+             payload = EXCLUDED.payload,
+             tx_hash = EXCLUDED.tx_hash`,
+          [e.tokenAddress, e.ledgerSeq, e.topic, JSON.stringify(e.payload), e.txHash],
+        )
+      }
+    },
+
+    async listEvents(options: ListEventsOptions): Promise<ListEventsResult> {
+      const limit = Math.min(Math.max(options.limit, 1), MAX_PAGE_LIMIT)
+
+      const params: unknown[] = [options.tokenAddress]
+      let where = `token_address = $1`
+
+      if (options.cursor !== undefined) {
+        params.push(options.cursor)
+        where += ` AND ledger_seq < $${params.length}`
+      }
+
+      // One extra row to detect a further page without a second COUNT.
+      params.push(limit + 1)
+
+      const rows = await sql<EventRow>(
+        `SELECT token_address, ledger_seq, topic, payload, tx_hash
+           FROM token_events
+          WHERE ${where}
+          ORDER BY ledger_seq DESC, topic ASC
+          LIMIT $${params.length}`,
+        params,
+      )
+
+      const hasMore = rows.length > limit
+      const page = rows.slice(0, limit).map(toEvent)
+      const last = page[page.length - 1]
+
+      return {
+        events: page,
+        nextCursor: hasMore && last ? String(last.ledgerSeq) : null,
+      }
     },
   }
 }

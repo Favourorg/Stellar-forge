@@ -10,6 +10,7 @@ Instead, report it privately using one of the following channels:
 2. **Email** — send details to `security@stellarforge.app` with the subject line `[SECURITY] <brief description>`.
 
 Please include:
+
 - A clear description of the vulnerability and its impact.
 - Steps to reproduce (proof-of-concept code or exploit path).
 - Affected contract addresses or frontend versions.
@@ -19,24 +20,24 @@ We will acknowledge your report within **72 hours** and provide an estimated fix
 
 ## Scope
 
-| Component | In scope |
-|---|---|
-| Token factory Soroban contract (mainnet + testnet) | ✅ |
-| React frontend (wallet integration, transaction flow) | ✅ |
-| IPFS / Pinata integration | ✅ |
-| Admin key custody and access controls | ✅ |
-| Dependency vulnerabilities with active exploit paths | ✅ |
+| Component                                                        | In scope                             |
+| ---------------------------------------------------------------- | ------------------------------------ |
+| Token factory Soroban contract (mainnet + testnet)               | ✅                                   |
+| React frontend (wallet integration, transaction flow)            | ✅                                   |
+| IPFS / Pinata integration                                        | ✅                                   |
+| Admin key custody and access controls                            | ✅                                   |
+| Dependency vulnerabilities with active exploit paths             | ✅                                   |
 | Third-party services (Stellar network itself, Pinata, Freighter) | ❌ — report to the respective vendor |
-| Theoretical issues with no practical exploit path | ❌ |
+| Theoretical issues with no practical exploit path                | ❌                                   |
 
 ## Severity definitions
 
-| Severity | Description |
-|---|---|
+| Severity     | Description                                                                                    |
+| ------------ | ---------------------------------------------------------------------------------------------- |
 | **Critical** | Remote code execution, admin key theft, total loss of funds, contract upgrade to attacker WASM |
-| **High** | Partial fund loss, admin privilege escalation, persistent denial of service |
-| **Medium** | Temporary DoS, fee manipulation without fund loss, user-data leakage |
-| **Low** | Minor information disclosure, UX security issues |
+| **High**     | Partial fund loss, admin privilege escalation, persistent denial of service                    |
+| **Medium**   | Temporary DoS, fee manipulation without fund loss, user-data leakage                           |
+| **Low**      | Minor information disclosure, UX security issues                                               |
 
 ## Incident response
 
@@ -53,7 +54,7 @@ For details on how the team responds to a confirmed security incident — includ
 
 ### Admin key is a single point of trust
 
-The factory contract's `admin` address can upgrade the contract, change fees, redirect treasury funds, and transfer admin rights. Key custody is documented in the [Mainnet Deployment Checklist](./docs/mainnet-deployment-checklist.md). A compromised admin key is a **Critical** severity event; see the [Incident Response Runbook](./docs/incident-response.md) for the response procedure.
+The factory contract's `admin` address can upgrade the contract, change fees, redirect treasury funds, transfer admin rights, pause/unpause the factory, change the whitelist state, and update token metadata. Those privileged entrypoints require the exact admin authorization path enforced in `contracts/token-factory/src/lib.rs` (`admin.require_auth()` plus the admin identity check), and metadata writes remain subject to the `metadata_fee` gate, validation of the `ipfs://` URI, and the per-token freeze/version cap. Key custody is documented in the [Mainnet Deployment Checklist](./docs/mainnet-deployment-checklist.md). A compromised admin key is a **Critical** severity event; see the [Incident Response Runbook](./docs/incident-response.md) for the response procedure.
 
 ### Upgrade lacks an on-chain event (issue #9)
 

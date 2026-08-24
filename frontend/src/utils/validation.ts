@@ -326,11 +326,11 @@ export const TOKEN_DECIMALS_MAX_VALUE = 18
 /**
  * Maximum recommended batch size for `create_tokens_batch`.
  *
- * Derived from Soroban resource-cost benchmarks in docs/contract-abi.md.
- * At 20 tokens, the transaction uses approximately 75 % of the CPU-instruction
- * budget, leaving a 25 % safety margin below observed exhaustion at batch
- * size 30. Batches larger than this value will likely fail on-chain with a
- * resource-exhaustion error — after the simulation fee has already been spent.
+ * Mirrors `MAX_BATCH_SIZE` in `contracts/token-factory/src/lib.rs`, which is
+ * the source of truth and rejects oversized batches on-chain with
+ * `Error::BatchSizeExceeded`. This client-side copy exists only to give
+ * users early feedback before they pay a simulation fee — keep the two
+ * values in sync if the contract's limit ever changes.
  *
  * Split larger deployments into sequential calls of ≤ MAX_BATCH_SIZE each.
  */
