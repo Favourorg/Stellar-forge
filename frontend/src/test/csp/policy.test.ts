@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { buildCSPString, CSP_DIRECTIVES, type CSPDirectives } from '../../csp/policy'
+import { NETWORK_CONFIGS } from '../../config/stellar'
 
 describe('buildCSPString', () => {
   it('serializes directives into a valid CSP string', () => {
@@ -51,6 +52,29 @@ describe('buildCSPString', () => {
     expect(result).toContain('https://soroban-testnet.stellar.org')
     expect(result).toContain('https://api.pinata.cloud')
     expect(result).toContain('https://*.ingest.sentry.io')
+  })
+
+  it('connect-src matches the exact RPC and Horizon URLs in config/stellar.ts (testnet + mainnet)', () => {
+    // Regression guard: the CSP must never drift from the URLs the app actually
+    // issues requests to. Pulling them from the config (rather than hardcoding)
+    // makes this test fail on the *next* host change, not the current one.
+    const connectSrc = CSP_DIRECTIVES['connect-src'].join(' ')
+
+    for (const network of ['testnet', 'mainnet'] as const) {
+      const { horizonUrl, sorobanRpcUrl } = NETWORK_CONFIGS[network]
+      expect(connectSrc, `${network} horizonUrl`).toContain(horizonUrl)
+      expect(connectSrc, `${network} sorobanRpcUrl`).toContain(sorobanRpcUrl)
+    }
+  })
+
+  it('connect-src disallows the stale rpc-mainnet.stellar.org host', () => {
+    const connectSrc = CSP_DIRECTIVES['connect-src'].join(' ')
+    expect(connectSrc).not.toContain('rpc-mainnet.stellar.org')
+  })
+
+  it('connect-src contains the correct mainnet Soroban RPC host', () => {
+    const connectSrc = CSP_DIRECTIVES['connect-src'].join(' ')
+    expect(connectSrc).toContain('https://soroban-mainnet.stellar.org')
   })
 
   it('emits upgrade-insecure-requests as a bare keyword', () => {
