@@ -1,3 +1,60 @@
+# [1.7.0](https://github.com/Favourorg/Stellar-forge/compare/v1.6.0...v1.7.0) (2026-08-24)
+
+
+### Features
+
+* **api:** persist contract events in the indexer store (supersedes [#1138](https://github.com/Favourorg/Stellar-forge/issues/1138)) ([#1154](https://github.com/Favourorg/Stellar-forge/issues/1154)) ([45ad5bc](https://github.com/Favourorg/Stellar-forge/commit/45ad5bc0af5d6a8079746f03ff2399fc47be653b))
+
+# [1.6.0](https://github.com/Favourorg/Stellar-forge/compare/v1.5.11...v1.6.0) (2026-08-24)
+
+
+### Features
+
+* **ci:** add access-control documentation drift check ([#1112](https://github.com/Favourorg/Stellar-forge/issues/1112)) ([#1148](https://github.com/Favourorg/Stellar-forge/issues/1148)) ([7b41cfd](https://github.com/Favourorg/Stellar-forge/commit/7b41cfda11bb62a91fc6bbcfbfd5bf3063f69f9f))
+
+## [1.5.11](https://github.com/Favourorg/Stellar-forge/compare/v1.5.10...v1.5.11) (2026-08-24)
+
+
+### Bug Fixes
+
+* reclaim orphaned IPFS pins on failed set_metadata (Closes [#1096](https://github.com/Favourorg/Stellar-forge/issues/1096)) ([#1146](https://github.com/Favourorg/Stellar-forge/issues/1146)) ([d845880](https://github.com/Favourorg/Stellar-forge/commit/d84588094a620097ffcb3d66135201ffedc70ad8))
+
+## [1.5.10](https://github.com/Favourorg/Stellar-forge/compare/v1.5.9...v1.5.10) (2026-08-24)
+
+
+### Bug Fixes
+
+* **api:** add rate limiting to auth challenge endpoints ([#1144](https://github.com/Favourorg/Stellar-forge/issues/1144)) ([600e8a0](https://github.com/Favourorg/Stellar-forge/commit/600e8a057f98129ad93a520030c3224682da0400)), closes [#1101](https://github.com/Favourorg/Stellar-forge/issues/1101)
+* **api:** sanitize lastError in health/indexer to avoid leaking internal error details ([#1143](https://github.com/Favourorg/Stellar-forge/issues/1143)) ([c51d179](https://github.com/Favourorg/Stellar-forge/commit/c51d179b782507f167150b719309715fcf6225d9)), closes [#1103](https://github.com/Favourorg/Stellar-forge/issues/1103)
+
+## [1.5.9](https://github.com/Favourorg/Stellar-forge/compare/v1.5.8...v1.5.9) (2026-08-24)
+
+
+### Bug Fixes
+
+* **contracts:** fuzz the real burn entrypoint, not a reimplementation ([#1098](https://github.com/Favourorg/Stellar-forge/issues/1098)) ([#1137](https://github.com/Favourorg/Stellar-forge/issues/1137)) ([be8a342](https://github.com/Favourorg/Stellar-forge/commit/be8a3424d514423f9946635ff899440911bd3377))
+
+## [1.5.8](https://github.com/Favourorg/Stellar-forge/compare/v1.5.7...v1.5.8) (2026-08-24)
+
+
+### Bug Fixes
+
+* isolate per-recipient fee-split transfer failures from aborting the call ([#1136](https://github.com/Favourorg/Stellar-forge/issues/1136)) ([6e68f0d](https://github.com/Favourorg/Stellar-forge/commit/6e68f0d78f1272fa6a31cc6d8cb54859dc9fb83b))
+
+## [1.5.7](https://github.com/Favourorg/Stellar-forge/compare/v1.5.6...v1.5.7) (2026-08-24)
+
+
+### Bug Fixes
+
+* **contracts:** enforce MAX_BATCH_SIZE cap in create_tokens_batch (Closes [#1100](https://github.com/Favourorg/Stellar-forge/issues/1100)) ([#1135](https://github.com/Favourorg/Stellar-forge/issues/1135)) ([2ba33e5](https://github.com/Favourorg/Stellar-forge/commit/2ba33e5e5516b2e3e66388ebd3dcb4568a3b5a14))
+
+## [1.5.6](https://github.com/Favourorg/Stellar-forge/compare/v1.5.5...v1.5.6) (2026-08-24)
+
+
+### Bug Fixes
+
+* **infra:** consolidate vercel.json security headers (Closes [#1104](https://github.com/Favourorg/Stellar-forge/issues/1104)) ([#1134](https://github.com/Favourorg/Stellar-forge/issues/1134)) ([fc64bea](https://github.com/Favourorg/Stellar-forge/commit/fc64bea1d5185c43fe289214857246bfe014e51c))
+
 ## [1.5.5](https://github.com/Favourorg/Stellar-forge/compare/v1.5.4...v1.5.5) (2026-08-22)
 
 
