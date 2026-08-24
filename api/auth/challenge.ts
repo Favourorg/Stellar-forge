@@ -2,6 +2,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { randomBytes } from 'crypto'
 import { issueToken, verifyToken } from '../_lib/jwt'
 import { deleteChallenge, getChallenge, putChallenge } from '../_lib/challengeStore'
+import { isRateLimited } from '../_lib/rateLimit'
 
 // Challenge storage — TTL, one-time use and the durable/dev-fallback split all
 // live in `../_lib/challengeStore` (issue #1091). It used to be a Map in this
@@ -35,6 +36,13 @@ async function handleGetChallenge(req: VercelRequest, res: VercelResponse) {
     return
   }
 
+  // Rate limit per address to prevent abuse (challenge issuance has no
+  // proof-of-possession, so it gets a tighter window than upload endpoints)
+  if (await isRateLimited(address)) {
+    res.status(429).json({ error: 'Too many challenge requests. Please try again later.' })
+    return
+  }
+
   // Generate a new challenge for this address
   const challengeValue = randomBytes(32).toString('hex')
 
@@ -62,6 +70,13 @@ async function handleVerifyChallenge(req: VercelRequest, res: VercelResponse) {
 
   if (typeof signature !== 'string' || !signature) {
     res.status(400).json({ error: 'Missing signature.' })
+    return
+  }
+
+  // Rate limit per address to prevent brute-force probing of the
+  // signature-verification path
+  if (await isRateLimited(address)) {
+    res.status(429).json({ error: 'Too many verification attempts. Please try again later.' })
     return
   }
 
