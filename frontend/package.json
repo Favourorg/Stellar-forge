@@ -27,7 +27,7 @@
     "@sentry/react": "^10.70.0",
     "@stellar/freighter-api": "^6.0.1",
     "@tailwindcss/postcss": "^4.3.3",
-    "i18next": "^26.3.6",
+    "i18next": "^26.4.0",
     "qrcode.react": "^4.2.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
