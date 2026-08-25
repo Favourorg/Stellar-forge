@@ -372,8 +372,8 @@ Emits `adm_acc` with `(old_admin, new_admin)` on success.
 
 Errors:
 
-- `NoPendingProposal` (code 24) — no proposal is pending, or `new_admin` does not match the proposed address.
-- `ProposalExpired` (code 25) — the proposal's expiry ledger has passed. The expired proposal is cleared from state; the current admin must issue a new `propose_admin` call.
+- `NoPendingProposal` (code 26) — no proposal is pending, or `new_admin` does not match the proposed address.
+- `ProposalExpired` (code 27) — the proposal's expiry ledger has passed. The rejection reverts the call, so the expired proposal stays on record but can never be accepted; the current admin clears it with `cancel_admin_proposal` or replaces it with a new `propose_admin` call.
 
 ### `cancel_admin_proposal(current_admin)`
 
@@ -450,9 +450,9 @@ Read-only: returns `true` if `address` is on the whitelist.
 | 22   | `ZeroFeeSplitEntry`         | `set_fee_split` map contains an entry with `bps == 0`                                  |
 | 23   | `MetadataFrozen`            | metadata is frozen (via `freeze_metadata` or auto-freeze after max updates)            |
 | 24   | `TreasuryTransferFailed`    | payment/redirect of a fee share to `treasury` itself failed (no further fallback)      |
-| 24   | `BatchSizeExceeded`         | `create_tokens_batch` called with more than `MAX_BATCH_SIZE` (20) tokens               |
-| 24   | `NoPendingProposal`         | `accept_admin` called with no live proposal, or the caller is not the proposed address |
-| 25   | `ProposalExpired`           | the pending proposal's expiry ledger has passed; current admin must re-propose         |
+| 25   | `BatchSizeExceeded`         | `create_tokens_batch` called with more than `MAX_BATCH_SIZE` (20) tokens               |
+| 26   | `NoPendingProposal`         | `accept_admin` called with no live proposal, or the caller is not the proposed address |
+| 27   | `ProposalExpired`           | the pending proposal's expiry ledger has passed; current admin must re-propose         |
 
 ## Test/fuzz-only helpers
 

@@ -194,7 +194,7 @@
                         "symbol": "sv"
                       },
                       "val": {
-                        "u32": 3
+                        "u32": 4
                       }
                     },
                     {
@@ -212,7 +212,7 @@
                               "symbol": "admin"
                             },
                             "val": {
-                              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
+                              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
                             }
                           },
                           {
@@ -257,10 +257,26 @@
                           },
                           {
                             "key": {
+                              "symbol": "pending_admin"
+                            },
+                            "val": {
+                              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "pending_admin_expiry"
+                            },
+                            "val": {
+                              "u64": "17280"
+                            }
+                          },
+                          {
+                            "key": {
                               "symbol": "schema_version"
                             },
                             "val": {
-                              "u32": 3
+                              "u32": 4
                             }
                           },
                           {

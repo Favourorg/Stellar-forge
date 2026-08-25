@@ -210,13 +210,13 @@ pub enum Error {
     /// this is a hard error that aborts the call.
     TreasuryTransferFailed = 24,
     /// `create_tokens_batch` batch size exceeds `MAX_BATCH_SIZE`
-    BatchSizeExceeded = 24,
+    BatchSizeExceeded = 25,
     /// `accept_admin` called when no proposal is pending, or the proposed
     /// address does not match the caller
-    NoPendingProposal = 24,
+    NoPendingProposal = 26,
     /// The pending admin proposal has passed its expiry ledger and can no
     /// longer be accepted; the current admin must open a new proposal
-    ProposalExpired = 25,
+    ProposalExpired = 27,
 }
 
 #[contract]
@@ -485,7 +485,10 @@ impl TokenFactory {
             {
                 return Err(Error::TreasuryTransferFailed);
             }
-        } else if fee_client.try_transfer(payer, &state.treasury, &amount).is_err() {
+        } else if fee_client
+            .try_transfer(payer, &state.treasury, &amount)
+            .is_err()
+        {
             return Err(Error::TreasuryTransferFailed);
         }
         Ok(())
@@ -1603,6 +1606,15 @@ impl TokenFactory {
             }
         }
 
+        // The v3 walk is chunked, so it may still be mid-flight here. Every
+        // later step must wait: bumping the version marker past 3 would make
+        // the next `migrate` call skip the v3 block entirely and strand the
+        // `TokenInfo` entries beyond the cursor in `instance` storage forever.
+        // Return successfully so the caller simply calls `migrate` again.
+        if on_chain_version < 3 {
+            return Ok(());
+        }
+
         // Each future migration step follows the same pattern:
         //
         //   if on_chain_version < N {
@@ -1705,7 +1717,11 @@ impl TokenFactory {
     /// Does **not** complete the rotation — only `accept_admin` does that.
     /// There is no single-step rotation path: `transfer_admin` and
     /// `update_admin` both delegate here.
-    pub fn propose_admin(env: Env, current_admin: Address, new_admin: Address) -> Result<(), Error> {
+    pub fn propose_admin(
+        env: Env,
+        current_admin: Address,
+        new_admin: Address,
+    ) -> Result<(), Error> {
         current_admin.require_auth();
         let mut state = Self::load_state(&env)?;
         if state.admin != current_admin {
@@ -1752,14 +1768,19 @@ impl TokenFactory {
         if proposed != new_admin {
             return Err(Error::NoPendingProposal);
         }
-        let expiry = state.pending_admin_expiry.take().unwrap_or(0);
-        // Clear the proposal now — whether expired or accepted we don't want it live.
-        state.pending_admin = None;
+        let expiry = state.pending_admin_expiry.unwrap_or(0);
         if (env.ledger().sequence() as u64) >= expiry {
-            // Proposal expired — clear it and report.
-            Self::save_state(&env, &state);
+            // Returning an error reverts the whole invocation, so an expired
+            // proposal cannot be cleared from here — any write we made would
+            // be rolled back with the rest of the call. It simply stays on
+            // record as inert: it can never be accepted, and the current
+            // admin removes it with `cancel_admin_proposal` or replaces it by
+            // calling `propose_admin` again.
             return Err(Error::ProposalExpired);
         }
+        // Accepted — the proposal is consumed.
+        state.pending_admin = None;
+        state.pending_admin_expiry = None;
         let old_admin = state.admin.clone();
         state.admin = new_admin.clone();
         Self::save_state(&env, &state);

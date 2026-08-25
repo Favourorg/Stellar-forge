@@ -438,7 +438,7 @@
                         "symbol": "sv"
                       },
                       "val": {
-                        "u32": 3
+                        "u32": 4
                       }
                     },
                     {
@@ -501,10 +501,22 @@
                           },
                           {
                             "key": {
+                              "symbol": "pending_admin"
+                            },
+                            "val": "void"
+                          },
+                          {
+                            "key": {
+                              "symbol": "pending_admin_expiry"
+                            },
+                            "val": "void"
+                          },
+                          {
+                            "key": {
                               "symbol": "schema_version"
                             },
                             "val": {
-                              "u32": 3
+                              "u32": 4
                             }
                           },
                           {
