@@ -65,13 +65,19 @@ const tokenInfo = (overrides: Partial<TokenInfo> = {}): TokenInfo => ({
 
 /** Stub the IPFS gateway response that TokenDetail fetches metadata from. */
 const mockPinnedMetadata = (metadata: Record<string, unknown>) => {
+  const raw = JSON.stringify(metadata)
+  resolveTokenInfoByAddress.mockResolvedValue({
+    status: 'resolved',
+    ...tokenInfo({ metadataUri: 'ipfs://QmTestCID' }),
+  })
+
   vi.stubGlobal(
     'fetch',
     vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
       // getMetadata reads text() so it can size-check before parsing.
-      text: async () => JSON.stringify(metadata),
+      text: async () => raw,
     } as unknown as Response),
   )
 }
