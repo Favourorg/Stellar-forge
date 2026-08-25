@@ -1,3 +1,10 @@
+## [1.8.1](https://github.com/Favourorg/Stellar-forge/compare/v1.8.0...v1.8.1) (2026-08-25)
+
+
+### Bug Fixes
+
+* **api:** correct Freighter SEP-53 signature verification in auth challenge ([#1169](https://github.com/Favourorg/Stellar-forge/issues/1169)) ([21cbed6](https://github.com/Favourorg/Stellar-forge/commit/21cbed64699d8eef3796f7e3d895e4ba93ef427a))
+
 # [1.8.0](https://github.com/Favourorg/Stellar-forge/compare/v1.7.0...v1.8.0) (2026-08-24)
 
 
