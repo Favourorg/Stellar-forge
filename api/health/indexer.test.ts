@@ -43,9 +43,12 @@ function mockStore(overrides: Partial<IndexerState> = {}, tokenCount = 42): Mock
 
 let store: MockStore
 
+let storeHealth = { durableConfigured: true, usingDurableStore: true, lastDurableError: null }
+
 vi.mock('../_lib/indexer/store', () => ({
   getStore: async () => store,
   isDurableStoreConfigured: () => true,
+  getStoreHealth: () => storeHealth,
 }))
 
 // Import after mocking so the module picks up the hoisted mock.
@@ -54,6 +57,7 @@ import handler from './indexer'
 
 beforeEach(() => {
   store = mockStore()
+  storeHealth = { durableConfigured: true, usingDurableStore: true, lastDurableError: null }
 })
 
 // ——— tests ———
@@ -156,5 +160,44 @@ describe('GET /api/health/indexer', () => {
       expect(status).toHaveBeenCalledWith(405)
       expect(json).toHaveBeenCalledWith({ error: 'Method not allowed' })
     })
+  })
+})
+
+describe('reconciliation readiness (issue #1156)', () => {
+  it('reports ready when the indexer is durable, backfilled and current', async () => {
+    const { req, res, json } = fakeReqRes()
+    await handler(req, res)
+
+    const payload = json.mock.calls[0]?.[0] as Record<string, unknown>
+    expect(payload.reconciliationReady).toBe(true)
+    expect(payload.reconciliationBlocker).toBeNull()
+    expect(payload.durableStoreConnected).toBe(true)
+  })
+
+  it('reports the blocker while backfill is incomplete', async () => {
+    store = mockStore({ backfillComplete: false })
+
+    const { req, res, json } = fakeReqRes()
+    await handler(req, res)
+
+    const payload = json.mock.calls[0]?.[0] as Record<string, unknown>
+    expect(payload.reconciliationReady).toBe(false)
+    expect(payload.reconciliationBlocker).toBe('backfill_incomplete')
+  })
+
+  it('reports a silently degraded store', async () => {
+    storeHealth = {
+      durableConfigured: true,
+      usingDurableStore: false,
+      lastDurableError: null,
+    }
+
+    const { req, res, json } = fakeReqRes()
+    await handler(req, res)
+
+    const payload = json.mock.calls[0]?.[0] as Record<string, unknown>
+    expect(payload.durableStoreConnected).toBe(false)
+    expect(payload.reconciliationReady).toBe(false)
+    expect(payload.reconciliationBlocker).toBe('store_degraded')
   })
 })

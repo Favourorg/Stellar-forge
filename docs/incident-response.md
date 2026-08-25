@@ -20,6 +20,7 @@
 8. [Post-incident steps](#8-post-incident-steps)
 9. [Communication plan](#9-communication-plan)
 10. [Tabletop exercise checklist](#10-tabletop-exercise-checklist)
+11. [IPFS pin mass-unpin](#11-ipfs-pin-mass-unpin)
 
 ---
 
@@ -497,11 +498,76 @@ Run this exercise with the actual team at least once before mainnet launch and o
 
 ---
 
+## 11. IPFS pin mass-unpin
+
+> **Scope note:** unlike the rest of this runbook, this section is not about a compromised key. It is an operational failure mode with the same blast radius: permanent, irreversible loss of user data, caused by ordinary timing rather than an attacker.
+
+### 11.1 The failure mode
+
+`/api/cron/reconcile-pins` reclaims orphaned IPFS pins by unpinning every CID that the indexer does not list as referenced and that is older than the 24-hour grace window. That inference is only valid when the indexer's token set is complete. Three states leave it incomplete while every query still returns HTTP 200 (issue #1156):
+
+| State                      | Trigger                                                                                                                           |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| Store degraded to memory   | One failed Postgres connect on a cold start; the instance serves an empty in-memory store.                                        |
+| Backfill unfinished        | Backfill processes 200 tokens per 5-minute run — a few thousand tokens take many hours, and reconciliation runs on its own clock. |
+| Steady-state ingest behind | Recent `meta` events not yet applied.                                                                                             |
+
+In any of them the reconciler would have concluded that live, on-chain-referenced metadata was unreferenced garbage and unpinned it. The pins cannot be restored: the upload session and the original file are long gone, and users see broken images and descriptions everywhere their `ipfs://` URI is resolved.
+
+### 11.2 Safeguards now in place
+
+1. **Readiness gate.** `checkReconciliationReadiness()` refuses the unpin phase unless the store is durable and connected, `backfillComplete === true`, and `lagSeconds <= 15 min`. A refusal is logged as `[pin-reconciliation] skipping unpin phase — <reason>` and returned in the cron response as `skipped: true` with `skipReason: "not_ready"`.
+2. **No cached degrade.** `getStore()` retries the durable connection after 30s instead of caching an empty in-memory store for the instance's lifetime, and reports `durableConfigured && !usingDurableStore` through `getStoreHealth()`.
+3. **Circuit breaker.** A run that would unpin more than 10% of the account (above an absolute floor of 5 pins) refuses and logs `[pin-reconciliation] circuit breaker tripped`, whatever the gate said.
+4. **Dry run.** `?dryRun=1` (or `RECONCILE_PINS_DRY_RUN=true`) classifies and logs without calling Pinata.
+5. **Health signal.** `/api/health/indexer` exposes `reconciliationReady`, `reconciliationBlocker` and `durableStoreConnected`.
+
+### 11.3 Detection
+
+```bash
+# Is reconciliation allowed to delete anything right now, and if not, why?
+curl -s https://<deployment>/api/health/indexer | jq '{
+  reconciliationReady, reconciliationBlocker, durableStoreConnected,
+  backfillComplete, lagSeconds, indexedCount
+}'
+```
+
+Page on either of these:
+
+- `durableStoreConnected = false` while `durable = true` — the instance is reading an empty store.
+- Any `cleaned` value in a reconcile-pins run that is large relative to the account, or a log line containing `circuit breaker tripped`.
+
+### 11.4 If a mass unpin has already happened
+
+1. **Stop further runs immediately.** Remove `/api/cron/reconcile-pins` from the root `vercel.json` `crons` array and redeploy, or unset `CRON_SECRET` in the project so every invocation returns 401. Do not wait to finish diagnosing.
+2. **Establish the blast radius.** Diff the affected CIDs against the on-chain `meta` events (the authoritative reference set) rather than against the indexer, which is the component under suspicion.
+3. **Attempt recovery before the data ages out.** A CID that any other IPFS node still holds can be re-pinned by hash — `POST /pinning/pinByHash` with `hashToPin` — and public gateways may still have it cached. This window is short; try it first, in parallel with the rest of the response.
+4. **Fix the underlying state** (restore the durable store, let backfill finish) and confirm `reconciliationReady = true` on the health endpoint.
+5. **Re-enable with a dry run first.** Invoke `?dryRun=1` manually and read `wouldUnpin` in the response before restoring the schedule.
+6. **Notify affected token creators** using the template in section 9.1, adapted: their metadata is unrecoverable unless re-uploaded, and re-uploading requires a new `set_metadata` transaction.
+
+### 11.5 Deliberately exceeding the circuit breaker
+
+Only after a dry run has been reviewed by a second person:
+
+```bash
+curl -s -H "Authorization: Bearer $CRON_SECRET" \
+  "https://<deployment>/api/cron/reconcile-pins?dryRun=1" | jq '.wouldUnpin'
+
+# Reviewed and confirmed as genuine orphans:
+curl -s -H "Authorization: Bearer $CRON_SECRET" \
+  "https://<deployment>/api/cron/reconcile-pins?override=1" | jq '{cleaned, errors}'
+```
+
+---
+
 ## See also
 
 - [Mainnet deployment checklist](./mainnet-deployment-checklist.md)
 - [SECURITY.md](../SECURITY.md) — responsible disclosure policy
 - [docs/contract-abi.md](./contract-abi.md) — contract interface reference
+- [docs/indexer.md](./indexer.md) — indexer freshness, and the safety gate destructive consumers must pass
 - Issue #9 — upgrade event emission (closes the WASM-change detection gap)
 - Issue #32 — forensic WASM comparison tooling
 - Issue #36 — Sentry correlation for faster anomaly detection
+- Issue #1156 — pin reconciliation mass-unpin (section 11)
