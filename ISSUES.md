@@ -8,7 +8,7 @@ This file tracks issues identified during the August 2026 codebase audit (30 iss
 | 2 | — | — | *(pending)* | Open |
 | 3 | — | — | *(pending)* | Open |
 | 4 | — | — | *(pending)* | Open |
-| 5 | — | — | *(pending)* | Open |
+| **5** | **API (`api/auth/challenge.ts`)** | **High** | **`verifyStellarSignature` used wrong payload + broken `tweetnacl` import — every login silently rejected** | **✅ Resolved** |
 | 6 | — | — | *(pending)* | Open |
 | 7 | — | — | *(pending)* | Open |
 | 8 | — | — | *(pending)* | Open |
@@ -81,3 +81,51 @@ If IP-based rate limiting is needed in the future (e.g., for issue #1101), re-ad
 string (Vercel's documented behaviour), with a fallback to `x-real-ip` or
 `req.socket.remoteAddress`. Do **not** attempt multi-hop parsing unless deploying behind
 a custom proxy with Vercel's Enterprise Trusted Proxy feature enabled.
+
+---
+
+## Issue 5 — `verifyStellarSignature` wrong SEP-53 payload + broken `tweetnacl` import
+
+**Area:** API (`api/auth/challenge.ts`)  
+**Severity:** High  
+**Status:** ✅ Resolved
+
+### Description
+
+`verifyStellarSignature` (challenge.ts:118–140 before fix) had three compounding bugs
+that caused **every POST `/api/auth/challenge` login attempt to silently return 401**:
+
+1. **Wrong message payload**: The function verified the raw `challenge` string
+   (`Buffer.from(message, 'utf-8')`). Freighter follows **SEP-53**, which requires
+   hashing `SHA256("Stellar Signed Message:\n" + challenge)` before signing. The
+   backend and frontend were signing/verifying completely different byte sequences.
+
+2. **Dead `Keypair` construction**: `Keypair.fromPublicKey(address)` was called but
+   its return value never used. The actual bytes came from `StrKey.decodeEd25519PublicKey`,
+   which was passed to `tweetnacl` — itself broken (see below).
+
+3. **Broken `tweetnacl` import**: `const { sign } = await import('tweetnacl')` attempts
+   named-export destructuring from a CJS module; `sign` is `undefined` at runtime.
+   Every `sign.detached.verify(...)` call threw `TypeError: Cannot read properties
+   of undefined (reading 'detached')`, which the catch block turned into `return false`.
+   `tweetnacl` was also only a transitive dependency, not declared in `package.json`.
+
+### Resolution
+
+`verifyStellarSignature` was rewritten to:
+- Construct the SEP-53 payload: `SHA256("Stellar Signed Message:\n" + challenge)`
+  using Node's built-in `crypto` module (no new dependencies).
+- Decode the base64 signature to raw bytes.
+- Verify with `Keypair.fromPublicKey(address).verify(hash, signatureBytes)` from
+  `stellar-sdk` (already in `package.json`) — the one call that does all the work.
+- Remove all `tweetnacl`, `StrKey`, and dead `Keypair` code.
+- Rename the parameter `signatureXdr → signatureBase64` and update the JSDoc and
+  inline comments to accurately describe the SEP-53 wire format.
+
+Four cryptographic unit tests were added to `challenge.test.ts` covering:
+- Valid signature → 200 + JWT
+- Tampered signature → 401
+- Signature for wrong challenge → 401
+- Malformed base64 → 401 (no unhandled exception / no 500)
+
+The stale comment block documenting the `tweetnacl` bug was removed.
