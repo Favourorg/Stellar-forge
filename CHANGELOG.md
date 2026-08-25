@@ -1,3 +1,10 @@
+## [1.8.3](https://github.com/Favourorg/Stellar-forge/compare/v1.8.2...v1.8.3) (2026-08-25)
+
+
+### Bug Fixes
+
+* **api:** require CID ownership to unpin IPFS content (IDOR) ([#1172](https://github.com/Favourorg/Stellar-forge/issues/1172)) ([70fd048](https://github.com/Favourorg/Stellar-forge/commit/70fd0485df0f58e8ea9d7ff3eec3af2036c76d95)), closes [#1155](https://github.com/Favourorg/Stellar-forge/issues/1155) [#1049](https://github.com/Favourorg/Stellar-forge/issues/1049)
+
 ## [1.8.2](https://github.com/Favourorg/Stellar-forge/compare/v1.8.1...v1.8.2) (2026-08-25)
 
 ### Bug Fixes
