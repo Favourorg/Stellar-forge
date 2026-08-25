@@ -135,6 +135,13 @@ export type SortOrder = 'newest' | 'oldest' | 'alphabetical'
  * rotation is three events — `adm_prop` (proposed), `adm_acc` (accepted by
  * the new admin), `adm_can` (cancelled by the current admin) — matching the
  * two-step rotation the contract enforces.
+ *
+ * `adm_dep` is emitted *in addition to* `adm_prop` when the rotation was
+ * driven through one of the deprecated `transfer_admin` / `update_admin`
+ * aliases, which pre-date the two-step model. It carries the entrypoint that
+ * was used, so an operator can tell that some tooling still assumes a rotation
+ * completes in one transaction — the condition that precedes an abandoned
+ * proposal expiring (issue #1159).
  */
 export type ContractEventType =
   | 'init'
@@ -152,6 +159,7 @@ export type ContractEventType =
   | 'adm_prop'
   | 'adm_acc'
   | 'adm_can'
+  | 'adm_dep'
   | 'wl_add'
   | 'wl_rm'
   | 'wl_tog'

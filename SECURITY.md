@@ -60,6 +60,12 @@ The factory contract's `admin` address can upgrade the contract, change fees, re
 
 The `upgrade` function currently emits no Soroban event. Detection of a malicious WASM replacement currently requires active polling of the on-chain WASM hash. The monitoring script is documented in the [Incident Response Runbook](./docs/incident-response.md#22-wasm-hash-polling-required-until-issue-9-is-resolved).
 
+### Admin rotation takes two transactions (issue #1159)
+
+`propose_admin` records a successor; only `accept_admin`, signed by that successor, actually rotates the admin, and the proposal expires after ~28.8 hours. The `transfer_admin` and `update_admin` names are **deprecated aliases** that delegate to `propose_admin` — they used to rotate in one transaction and no longer do. To make that downgrade impossible to miss, they return an `AdminRotationReceipt` with `rotation_complete: false` instead of `void`, and emit an `adm_dep` event naming the deprecated entrypoint alongside the usual `adm_prop`.
+
+The operational hazard is retiring the outgoing key while a proposal is merely pending: if `accept_admin` never lands, the proposal expires, the factory stays under the old key, and there is no guardian override or timelock bypass — governance is lost permanently. The rotation procedure is in the [Mainnet Deployment Checklist](./docs/mainnet-deployment-checklist.md#admin-key-rotation); stale pending proposals are monitored by `scripts/check-pending-admin-proposal.sh` ([runbook §2.5](./docs/incident-response.md#25-stale-pending-admin-proposals)).
+
 ### IPFS unpin requires CID ownership (issue #1155)
 
 `POST /api/ipfs/unpin` requires more than a valid JWT: any wallet can obtain one for free via the challenge/response flow, so JWT possession alone does not prove a right to delete someone else's pinned content. The endpoint additionally checks the requesting wallet address against an ownership record captured at upload time (`api/_lib/pinOwnership.ts`, populated by `upload-json.ts` / `upload-file.ts`). A CID with no ownership record on file is **denied by default** — it is never treated as unpinnable-by-anyone. See `api/ipfs/unpin.ts` and its regression tests in `api/ipfs/unpin.test.ts`.

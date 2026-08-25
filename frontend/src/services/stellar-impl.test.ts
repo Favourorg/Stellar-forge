@@ -80,6 +80,13 @@ const XDR = {
     value:
       'AAAAEAAAAAEAAAACAAAAEgAAAAAAAAAA/7SpxpEMV33pXktl+ZP53F+vX2pv4CdwdZDOdAw7Z/kAAAASAAAAAAAAAAB7ANe3xwFAZ5WBGpHb4OKOc//iQMFL1TPn/ZAo86i36Q==',
   },
+  // (current_admin, new_admin, expiry_ledger, deprecated_entrypoint) — emitted
+  // alongside adm_prop when the proposal came from transfer_admin/update_admin.
+  adm_dep: {
+    topic1: 'AAAADwAAAAdhZG1fZGVwAA==',
+    value:
+      'AAAAEAAAAAEAAAAEAAAAEgAAAAAAAAAA/7SpxpEMV33pXktl+ZP53F+vX2pv4CdwdZDOdAw7Z/kAAAASAAAAAAAAAAB7ANe3xwFAZ5WBGpHb4OKOc//iQMFL1TPn/ZAo86i36QAAAAUAAAAAAAAH0AAAAA8AAAAOdHJhbnNmZXJfYWRtaW4AAA==',
+  },
   fee_redir: {
     topic1: 'AAAADwAAAAlmZWVfcmVkaXIAAAA=',
     value:
@@ -130,12 +137,13 @@ describe('CONTRACT_TOPIC_MAP', () => {
     'adm_prop',
     'adm_acc',
     'adm_can',
+    'adm_dep',
     'wl_add',
     'wl_rm',
     'wl_tog',
   ] as const
 
-  it('contains exactly the eighteen contract topics', () => {
+  it('contains exactly the nineteen contract topics', () => {
     expect(Object.keys(CONTRACT_TOPIC_MAP).sort()).toEqual([...EXPECTED_TOPICS].sort())
   })
 
@@ -143,6 +151,7 @@ describe('CONTRACT_TOPIC_MAP', () => {
     expect(CONTRACT_TOPIC_MAP['adm_prop']).toBe('adm_prop')
     expect(CONTRACT_TOPIC_MAP['adm_acc']).toBe('adm_acc')
     expect(CONTRACT_TOPIC_MAP['adm_can']).toBe('adm_can')
+    expect(CONTRACT_TOPIC_MAP['adm_dep']).toBe('adm_dep')
   })
 
   it('does NOT contain the legacy admin_update or single-step adm_upd keys', () => {
@@ -336,6 +345,21 @@ describe('parseRpcEvent – admin rotation (adm_prop / adm_acc / adm_can)', () =
     const retiredTopic = 'AAAADwAAAAdhZG1fdXBkAA==' // scvSymbol("adm_upd")
     const raw = makeRaw('adm_acc', { topic: [FACTORY_TOPIC, retiredTopic] })
     expect(await parseRpcEvent(raw)).toBeNull()
+  })
+
+  // Issue #1159: a rotation started through transfer_admin/update_admin looks
+  // identical on-chain to one started through propose_admin, except for this
+  // extra event. Dropping it would hide the fact that some tooling still
+  // assumes a rotation completes in a single transaction.
+  it('decodes an adm_dep event — proposal raised through a deprecated alias', async () => {
+    const result = await parseRpcEvent(makeRaw('adm_dep'))
+    expect(result).not.toBeNull()
+    expect(result!.type).toBe('adm_dep')
+    expect(result!.data.currentAdmin).toBe(ADDR1)
+    expect(result!.data.newAdmin).toBe(ADDR2)
+    expect(result!.data.expiryLedger).toBe('2000')
+    // Names the entrypoint that was used, so the stale caller can be found.
+    expect(result!.data.deprecatedEntrypoint).toBe('transfer_admin')
   })
 })
 

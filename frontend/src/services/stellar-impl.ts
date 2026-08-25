@@ -432,9 +432,10 @@ function scValToString(val: xdr.ScVal | undefined): string {
  * Admin rotation is two-step, so there is no single `adm_upd` topic: the
  * contract emits `adm_prop` when a rotation is proposed, `adm_acc` when the
  * proposed admin accepts it, and `adm_can` when the current admin cancels a
- * pending proposal.
+ * pending proposal.  `adm_dep` rides alongside `adm_prop` when the proposal
+ * came from the deprecated `transfer_admin` / `update_admin` aliases.
  *
- * Audit of all eighteen contract topics (lib.rs → frontend):
+ * Audit of all nineteen contract topics (lib.rs → frontend):
  *   init      → 'init'      (factory init)
  *   created   → 'created'   (token deployed)
  *   meta      → 'meta'      (metadata URI set)
@@ -450,6 +451,7 @@ function scValToString(val: xdr.ScVal | undefined): string {
  *   adm_prop  → 'adm_prop'  (admin rotation proposed)
  *   adm_acc   → 'adm_acc'   (admin rotation accepted — admin changed)
  *   adm_can   → 'adm_can'   (pending admin rotation cancelled)
+ *   adm_dep   → 'adm_dep'   (rotation proposed via a deprecated alias)
  *   wl_add    → 'wl_add'   (address added to whitelist)
  *   wl_rm     → 'wl_rm'    (address removed from whitelist)
  *   wl_tog    → 'wl_tog'   (whitelist enforcement toggled)
@@ -470,6 +472,7 @@ export const CONTRACT_TOPIC_MAP: Record<string, ContractEventType> = {
   adm_prop: 'adm_prop',
   adm_acc: 'adm_acc',
   adm_can: 'adm_can',
+  adm_dep: 'adm_dep',
   wl_add: 'wl_add',
   wl_rm: 'wl_rm',
   wl_tog: 'wl_tog',
@@ -535,6 +538,15 @@ export async function parseRpcEvent(raw: RpcEventResponse): Promise<ContractEven
       case 'adm_can':
         data.currentAdmin = scValToString(items[0])
         data.cancelledAdmin = scValToString(items[1])
+        break
+      case 'adm_dep':
+        data.currentAdmin = scValToString(items[0])
+        data.newAdmin = scValToString(items[1])
+        data.expiryLedger = scValToString(items[2])
+        // The deprecated entrypoint the caller used — `transfer_admin` or
+        // `update_admin`. Neither completes the rotation; `accept_admin` must
+        // still be called before the expiry ledger above.
+        data.deprecatedEntrypoint = scValToString(items[3])
         break
       case 'fee_redir':
         data.recipient = scValToString(items[0])
