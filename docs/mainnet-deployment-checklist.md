@@ -66,10 +66,27 @@ These items must be verified before the factory is accessible to end users on ma
 - [ ] Read the [Incident Response Runbook](./incident-response.md) in full and confirm the team understands every section.
 - [ ] Break-glass admin address is generated, funded with at least 5 XLM, and recorded in the deployment log (see [runbook section 7](./incident-response.md#7-break-glass-recovery-mechanism)).
 - [ ] **Verify break-glass account access before any incident:** confirm you can sign a transaction from the break-glass key. Emergency admin rotation now requires two transactions — `propose_admin` from the compromised key AND `accept_admin` from the break-glass key — so both keys must be accessible simultaneously (see [runbook step 4](./incident-response.md#4-immediate-response-first-five-minutes)).
-- [ ] On-chain event monitoring for `adm_prop` (rotation proposed) and `adm_acc` (rotation completed) is configured and alerting. An unexpected `adm_prop` event is actionable: the current admin can cancel via `cancel_admin_proposal` before `accept_admin` is called.
+- [ ] On-chain event monitoring for `adm_prop` (rotation proposed), `adm_acc` (rotation completed) and `adm_dep` (rotation proposed through a deprecated alias) is configured and alerting. An unexpected `adm_prop` event is actionable: the current admin can cancel via `cancel_admin_proposal` before `accept_admin` is called. An `adm_dep` event means some caller still uses `transfer_admin` / `update_admin` and may assume the rotation is already complete — track it down.
+- [ ] Stale-proposal monitoring script (`check-pending-admin-proposal.sh`) is deployed on a cron schedule (≤ 15 minutes) and confirmed to alert well inside the ~28.8-hour proposal TTL (see [runbook section 2.5](./incident-response.md#25-stale-pending-admin-proposals)).
 - [ ] WASM hash monitoring script (`check-wasm-hash.sh`) is deployed on a cron schedule (≤ 5 minutes) and confirmed to send alerts.
 - [ ] Sentry alert rules for mainnet anomalous-fee events and admin rotation events are active (see [runbook section 2](./incident-response.md#2-how-compromise-would-be-detected)).
 - [ ] Incident commander and break-glass custodian contact details are documented in the team's private channel, not in this file.
 - [ ] Tabletop exercise (runbook section 10) has been completed and dated in the deployment log.
+
+## Admin Key Rotation
+
+**Every admin rotation takes two transactions. The first one changes nothing.** Work through these in order — steps 4 and 5 are what make the rotation real, and step 6 is the only thing that authorises retiring the outgoing key.
+
+- [ ] 1. Confirm the **incoming** key can sign on mainnet (submit any trivial transaction from it). A key that cannot sign cannot call `accept_admin`, and the rotation will lapse.
+- [ ] 2. Confirm the incoming key's custodian is available **now** and knows a proposal is coming. Acceptance must happen within `ADMIN_PROPOSAL_TTL_LEDGERS` — 17,280 ledgers, ~28.8 hours — or the proposal expires.
+- [ ] 3. From the **current** admin key, call `propose_admin --current_admin <old> --new_admin <new>`.
+     Do **not** use `transfer_admin` / `update_admin`: they are deprecated aliases that delegate to `propose_admin`, return `rotation_complete: false`, and emit `adm_dep` precisely because they do not finish the job ([issue #1159](https://github.com/Favourorg/Stellar-forge/issues/1159)).
+- [ ] 4. Verify the proposal was recorded: `get_state()` shows `pending_admin = <new>` and a `pending_admin_expiry` in the future. Note the expiry ledger.
+- [ ] 5. From the **new** admin key, call `accept_admin --new_admin <new>`. This is the transaction that actually rotates the admin.
+- [ ] 6. **Verify before decommissioning anything:** `get_state()` shows `admin = <new>` **and** `pending_admin = null`, and the transaction emitted `adm_acc`. Until both are true, the factory is still controlled by the old key.
+- [ ] 7. Only after step 6 passes, retire the old key. Retiring it earlier — while a proposal is merely pending — means that if `accept_admin` never lands, the proposal expires and **nobody can ever administer the factory again**: no guardian override, no timelock bypass, and re-proposing requires the key you just destroyed.
+- [ ] 8. If the window is going to lapse, call `cancel_admin_proposal` from the current admin and restart from step 1 rather than letting it expire unnoticed. `check-pending-admin-proposal.sh` (above) is what tells you this is happening.
+
+> The same sequence applies to emergency rotation to the break-glass address — see [runbook section 7.4](./incident-response.md#74-activating-the-break-glass-account).
 
 > See [SECURITY.md](../SECURITY.md) for the responsible disclosure policy and further security context.

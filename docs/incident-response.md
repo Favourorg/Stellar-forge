@@ -73,6 +73,7 @@ Alert on:
 
 - Any `adm_prop` event (admin rotation proposed — act immediately if unexpected; you have until `accept_admin` is called or the proposal expires to cancel via `cancel_admin_proposal`)
 - Any `adm_acc` event (admin rotation completed — if unexpected, the admin key is compromised)
+- Any `adm_dep` event (a rotation was proposed through the deprecated `transfer_admin` / `update_admin` entrypoints — the caller's tooling may still assume rotation completes in one transaction; see [§2.5](#25-stale-pending-admin-proposals))
 - Any `fees` event with unusually large values
 - Any `pause` event not preceded by a planned maintenance notice
 
@@ -100,6 +101,32 @@ Store `EXPECTED_HASH` after each intentional upgrade and update the script immed
 ### 2.4 User reports
 
 Token creators reporting sudden fee increases or failed `create_token` calls with no contract-level change on your end are a strong indicator of fee manipulation.
+
+### 2.5 Stale pending admin proposals
+
+**What this catches:** a rotation that was started and never finished. `propose_admin` (and the deprecated `transfer_admin` / `update_admin` aliases, which delegate to it) only _records_ a successor — the rotation takes effect when the proposed admin calls `accept_admin`, and the proposal lapses after `ADMIN_PROPOSAL_TTL_LEDGERS` (17,280 ledgers ≈ **28.8 hours**). A proposal left pending is not merely untidy: if the outgoing key is decommissioned in the belief that the rotation completed, the factory is permanently stuck under a key that no longer exists once the proposal expires. There is no guardian override and no timelock bypass (issue #1159).
+
+**Alert on:** a pending proposal older than **6 hours** (warn) or **12 hours** (page). Both thresholds sit far enough inside the ~28.8-hour TTL that a human can still act — either by getting `accept_admin` signed, or by cancelling and restarting the rotation while the _current_ admin key is unquestionably still available.
+
+Run `scripts/check-pending-admin-proposal.sh` on a cron schedule (every 15 minutes is ample):
+
+```bash
+FACTORY_CONTRACT_ID=C... \
+STELLAR_NETWORK=mainnet \
+WARN_AFTER_HOURS=6 \
+PAGE_AFTER_HOURS=12 \
+  ./scripts/check-pending-admin-proposal.sh
+```
+
+It reads `get_state()`, and exits `0` when no proposal is pending, `1` on a warn-threshold breach, `2` on a page-threshold breach, and `3` when the proposal has already expired (the rotation must now be restarted from the current admin key). Wire non-zero exits into the same alert channel as `check-wasm-hash.sh`.
+
+**On alert, in order:**
+
+1. Confirm the proposal is expected. If it is **not**, call `cancel_admin_proposal` from the current admin immediately — an unexpected proposal is an admin-key compromise until proven otherwise (see [§4 step 3](#step-3--attempt-to-pause-the-factory-if-admin-key-is-still-operable)).
+2. If it is expected, contact the incoming key's custodian and get `accept_admin` signed.
+3. If the incoming custodian cannot sign before expiry, cancel the proposal rather than letting it lapse silently, and re-propose when both parties are ready. **Do not** retire the outgoing key in the meantime.
+
+**Why the TTL is not longer.** A 28.8-hour window was kept deliberately rather than extended, and there is no "renew" entrypoint: extending a live proposal would require a call from the _current_ admin, which is exactly the key that is unavailable in the scenario a longer TTL is meant to rescue — so it buys nothing there, while a long-lived proposal is a standing, accept-anytime claim on the factory if the proposed key is later lost or changes hands. The mitigation for a slow handover is procedural, not on-chain: verify the incoming key can sign _before_ proposing (see the deployment checklist), monitor with the script above, and re-propose if the window lapses. Re-proposing is always available while the current admin key exists — which is why that key must not be decommissioned until `accept_admin` has succeeded.
 
 ---
 
@@ -267,8 +294,10 @@ If the hashes differ and no authorised upgrade was performed, treat the contract
 ### 6.1 Rotate the admin key
 
 1. Generate a new admin keypair on an air-gapped machine or hardware wallet.
-2. Once the break-glass account holds admin rights, call `transfer_admin` from the break-glass account to the new admin address.
-3. Revoke the compromised key from all systems immediately.
+2. Confirm the new keypair can sign a transaction on mainnet **before** it is proposed as admin.
+3. Once the break-glass account holds admin rights, call `propose_admin` from the break-glass account naming the new admin address.
+4. Call `accept_admin` **from the new admin key**, then verify with `get_state()` that `admin` is the new address and `pending_admin` is `null`. The rotation is not complete until this check passes.
+5. Revoke the compromised key from all systems immediately. Do not revoke the break-glass key until step 4 has been verified.
 
 ### 6.2 Re-audit admin key custody
 
@@ -317,11 +346,13 @@ This section documents the pre-agreed backup admin account that allows recovery 
 
 ### 7.1 What the break-glass account is
 
-The break-glass account is a **separate Stellar keypair** held by a designated break-glass custodian. It is never used for routine operations. Its sole purpose is to receive admin rights via `transfer_admin` in an emergency, then:
+The break-glass account is a **separate Stellar keypair** held by a designated break-glass custodian. It is never used for routine operations. Its sole purpose is to receive admin rights — by calling `accept_admin` on a proposal raised by the current admin — in an emergency, then:
 
 1. Pause the factory.
-2. Transfer admin to a freshly-generated recovery key.
+2. Rotate admin to a freshly-generated recovery key (`propose_admin` from break-glass, `accept_admin` from the recovery key).
 3. Facilitate any necessary fee or WASM restoration.
+
+Because acceptance requires the incoming key to sign, the break-glass custodian must be reachable and able to sign **within ~28.8 hours** of the proposal, or the rotation lapses and has to be restarted from the compromised key.
 
 ### 7.2 Custody requirements
 
@@ -353,17 +384,40 @@ Add `BREAK_GLASS_ADDRESS` to the deployment log. The private key stays on the ha
 
 ### 7.4 Activating the break-glass account
 
-When a compromise is confirmed and the primary admin key is still operable, immediately transfer admin rights to the break-glass address:
+When a compromise is confirmed and the primary admin key is still operable, rotate admin rights to the break-glass address. This is **two transactions** — the first alone changes nothing.
+
+**Step 1 — propose, from the primary admin key:**
 
 ```bash
 stellar contract invoke \
   --id "$FACTORY_CONTRACT_ID" \
   --source "$ADMIN_SECRET_KEY" \
   --network mainnet \
-  -- transfer_admin \
-  --admin "$ADMIN_ADDRESS" \
+  -- propose_admin \
+  --current_admin "$ADMIN_ADDRESS" \
   --new_admin "$BREAK_GLASS_ADDRESS"
 ```
+
+**Step 2 — accept, from the break-glass key (required; within ~28.8 hours):**
+
+```bash
+stellar contract invoke \
+  --id "$FACTORY_CONTRACT_ID" \
+  --source "$BREAK_GLASS_SECRET_KEY" \
+  --network mainnet \
+  -- accept_admin \
+  --new_admin "$BREAK_GLASS_ADDRESS"
+```
+
+**Step 3 — verify before treating the rotation as done:**
+
+```bash
+stellar contract invoke --id "$FACTORY_CONTRACT_ID" --network mainnet -- get_state \
+  | jq '{admin, pending_admin}'
+# admin must be $BREAK_GLASS_ADDRESS and pending_admin must be null
+```
+
+> ⚠️ **Do not use the deprecated `transfer_admin` / `update_admin` entrypoints.** They delegate to `propose_admin` and complete nothing on their own — they return `rotation_complete: false` and emit `adm_dep` to say so, but any runbook or script that treats their success as "rotated" is wrong (issue #1159). If step 2 is never executed, the proposal expires and admin stays with the original key; if that key has been retired in the meantime, the factory's governance is lost permanently.
 
 ### 7.5 Multisig threshold (recommended for mainnet)
 
@@ -385,7 +439,7 @@ stellar transaction new \
   --signer "$SIGNER_C_PUBLIC_KEY:1"
 ```
 
-With multisig, `transfer_admin` and `upgrade` calls require assembling a transaction and collecting M signatures before submission. This introduces latency in an emergency but dramatically reduces the blast radius of any single key compromise.
+With multisig, `propose_admin` / `accept_admin` and `upgrade` calls require assembling a transaction and collecting M signatures before submission — note this applies to **both** halves of a rotation, so budget signing time for each within the ~28.8-hour proposal TTL. This introduces latency in an emergency but dramatically reduces the blast radius of any single key compromise.
 
 ---
 
@@ -491,7 +545,8 @@ Run this exercise with the actual team at least once before mainnet launch and o
 - [ ] WASM hash monitoring script is deployed and confirmed alerting.
 - [ ] Sentry alert rules for anomalous fee events are active.
 - [ ] Incident commander and break-glass custodian can reach each other out of band (phone, not just Slack).
-- [ ] Walk through section 4 step-by-step on testnet: pause, transfer_admin to break-glass, verify.
+- [ ] Walk through section 4 step-by-step on testnet: pause, `propose_admin` to break-glass, `accept_admin` **from the break-glass key**, then verify `get_state()` reports the new `admin` with `pending_admin: null`. Rehearse both signatures — a rotation that stops after the proposal is the failure mode this exercise exists to catch.
+- [ ] Confirm the stale-proposal monitor (`check-pending-admin-proposal.sh`) fires: leave a testnet proposal pending and check the alert lands.
 - [ ] Walk through section 5.4 WASM integrity check on testnet.
 - [ ] Confirm that the communication templates in section 9 are up to date.
 - [ ] Document who participated and the date. File in the deployment log.

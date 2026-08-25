@@ -379,11 +379,30 @@ Errors:
 
 Cancel a live proposal. Only the current admin may cancel. Idempotent when no proposal is pending. Emits `adm_can` with `(current_admin, cancelled_address)`.
 
-### `transfer_admin(admin, new_admin)` / `update_admin(current_admin, new_admin)` — legacy aliases
+### `transfer_admin(admin, new_admin)` / `update_admin(current_admin, new_admin)` — deprecated
 
-These names are retained for ABI compatibility with tooling built before the two-step model was introduced. **Both now delegate entirely to `propose_admin`** — neither completes the rotation on its own. Callers using these names will get a proposal recorded; the proposed admin must still call `accept_admin` to take effect.
+> ⚠️ **Deprecated. These do not complete a rotation.** Use `propose_admin` + `accept_admin` directly. Do **not** decommission the outgoing admin key until `accept_admin` has succeeded — see [issue #1159](https://github.com/Favourorg/Stellar-forge/issues/1159).
 
-Before this change both entrypoints performed an immediate, unverified single-step rotation. There is now **no single-step rotation path** in the contract. All admin rotations require two transactions: one from the current admin (propose) and one from the new admin (accept).
+These names are retained so tooling built before the two-step model keeps working. **Both delegate to `propose_admin`** — neither completes the rotation on its own. Before the two-step model both performed an immediate, unverified single-step rotation; there is now **no single-step rotation path** in the contract. Every rotation takes two transactions: propose (current admin) and accept (new admin).
+
+Because that downgrade would otherwise be invisible to a caller — a successful transaction that used to mean "rotated" now means "proposed" — both entrypoints report the difference twice over:
+
+**1. Return value.** They return an `AdminRotationReceipt` rather than `void`:
+
+| Field                | Type      | Value                                                                                                                |
+| -------------------- | --------- | -------------------------------------------------------------------------------------------------------------------- |
+| `rotation_complete`  | `bool`    | Always `false` — `state.admin` is unchanged.                                                                         |
+| `pending_admin`      | `Address` | The address that must accept.                                                                                        |
+| `expires_at_ledger`  | `u64`     | Ledger at which the proposal lapses; after this only a new proposal from the current admin can restart the rotation. |
+| `required_next_call` | `Symbol`  | `accept_admin`.                                                                                                      |
+
+A client that decodes the old `void` return fails loudly on this value instead of silently reporting success.
+
+**2. Event.** They emit `adm_dep` with `(current_admin, new_admin, expiry_ledger, deprecated_entrypoint)` **in addition to** `adm_prop`. Existing `adm_prop` monitoring is unaffected; `adm_dep` is the distinct signal that some caller is still driving rotations through a pre-two-step entrypoint, which is the condition that precedes an abandoned proposal quietly expiring.
+
+Errors and auth are identical to `propose_admin`.
+
+Operational guidance for completing and monitoring a rotation lives in [`docs/incident-response.md` §2.5](./incident-response.md#25-stale-pending-admin-proposals) and the [mainnet deployment checklist](./mainnet-deployment-checklist.md).
 
 ### `upgrade(admin, new_wasm_hash)`
 
@@ -462,27 +481,28 @@ Read-only: returns `true` if `address` is on the whitelist.
 
 The contract emits Soroban events on a `(factory, action)` topic. The frontend parses them via `frontend/src/services/stellar-impl.ts`. Events:
 
-| Action      | Payload                                     | Trigger                                                                            |
-| ----------- | ------------------------------------------- | ---------------------------------------------------------------------------------- |
-| `init`      | `(admin)`                                   | `initialize`                                                                       |
-| `init`      | `(admin)`                                   | `__constructor`                                                                    |
-| `created`   | `(token_address, creator, name, symbol)`    | `create_token` / `create_tokens_batch`                                             |
-| `meta`      | `(token_address, metadata_uri, version)`    | `set_metadata` (every update)                                                      |
-| `meta_frz`  | `(token_address, admin)`                    | `freeze_metadata`                                                                  |
-| `mint`      | `(token_address, to, amount)`               | `mint_tokens`                                                                      |
-| `burn`      | `(token_address, from, amount)`             | `burn`                                                                             |
-| `fees`      | `(base_fee, metadata_fee)`                  | `update_fees`                                                                      |
-| `split_set` | `(admin, splits)`                           | `set_fee_split` (non-empty)                                                        |
-| `split_clr` | `(admin)`                                   | `set_fee_split` (empty — clears split)                                             |
-| `fee_redir` | `(recipient, share)`                        | `distribute_fee` (recipient `try_transfer` failed; share redirected to `treasury`) |
-| `pause`     | `(admin)`                                   | `pause`                                                                            |
-| `unpause`   | `(admin)`                                   | `unpause`                                                                          |
-| `adm_prop`  | `(current_admin, new_admin, expiry_ledger)` | `propose_admin` / `transfer_admin` / `update_admin`                                |
-| `adm_acc`   | `(old_admin, new_admin)`                    | `accept_admin`                                                                     |
-| `adm_can`   | `(current_admin, cancelled_admin)`          | `cancel_admin_proposal`                                                            |
-| `wl_add`    | `(address)`                                 | `add_to_whitelist`                                                                 |
-| `wl_rm`     | `(address)`                                 | `remove_from_whitelist`                                                            |
-| `wl_tog`    | `(enabled)`                                 | `set_whitelist_enabled`                                                            |
+| Action      | Payload                                                            | Trigger                                                                            |
+| ----------- | ------------------------------------------------------------------ | ---------------------------------------------------------------------------------- |
+| `init`      | `(admin)`                                                          | `initialize`                                                                       |
+| `init`      | `(admin)`                                                          | `__constructor`                                                                    |
+| `created`   | `(token_address, creator, name, symbol)`                           | `create_token` / `create_tokens_batch`                                             |
+| `meta`      | `(token_address, metadata_uri, version)`                           | `set_metadata` (every update)                                                      |
+| `meta_frz`  | `(token_address, admin)`                                           | `freeze_metadata`                                                                  |
+| `mint`      | `(token_address, to, amount)`                                      | `mint_tokens`                                                                      |
+| `burn`      | `(token_address, from, amount)`                                    | `burn`                                                                             |
+| `fees`      | `(base_fee, metadata_fee)`                                         | `update_fees`                                                                      |
+| `split_set` | `(admin, splits)`                                                  | `set_fee_split` (non-empty)                                                        |
+| `split_clr` | `(admin)`                                                          | `set_fee_split` (empty — clears split)                                             |
+| `fee_redir` | `(recipient, share)`                                               | `distribute_fee` (recipient `try_transfer` failed; share redirected to `treasury`) |
+| `pause`     | `(admin)`                                                          | `pause`                                                                            |
+| `unpause`   | `(admin)`                                                          | `unpause`                                                                          |
+| `adm_prop`  | `(current_admin, new_admin, expiry_ledger)`                        | `propose_admin` / `transfer_admin` / `update_admin`                                |
+| `adm_acc`   | `(old_admin, new_admin)`                                           | `accept_admin`                                                                     |
+| `adm_can`   | `(current_admin, cancelled_admin)`                                 | `cancel_admin_proposal`                                                            |
+| `adm_dep`   | `(current_admin, new_admin, expiry_ledger, deprecated_entrypoint)` | `transfer_admin` / `update_admin` (emitted alongside `adm_prop`)                   |
+| `wl_add`    | `(address)`                                                        | `add_to_whitelist`                                                                 |
+| `wl_rm`     | `(address)`                                                        | `remove_from_whitelist`                                                            |
+| `wl_tog`    | `(enabled)`                                                        | `set_whitelist_enabled`                                                            |
 
 ## Batch creation UI
 

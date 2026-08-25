@@ -7,7 +7,7 @@ use soroban_sdk::{
     contract, contractimpl,
     testutils::{Address as _, Events as _, Ledger as _},
     token::{StellarAssetClient, TokenClient},
-    Address, BytesN, Env, Map, MuxedAddress, String,
+    Address, BytesN, Env, Map, MuxedAddress, String, Symbol,
 };
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
@@ -4265,6 +4265,134 @@ fn test_transfer_admin_and_update_admin_produce_same_state() {
     // Both should record the correct pending_admin.
     assert_eq!(via_transfer.0, Some(via_transfer.1));
     assert_eq!(via_update.0, Some(via_update.1));
+}
+
+// ── Issue #1159: the legacy aliases must not look like a finished rotation ───
+//
+// `transfer_admin` / `update_admin` used to complete a rotation in one
+// transaction. They now delegate to `propose_admin`, and the danger is that
+// the downgrade is *invisible*: tooling and runbooks written against the old
+// semantics see a successful transaction, assume the handover is done, and
+// decommission the outgoing key — after which nobody can complete or restart
+// the rotation once the proposal expires. Both entrypoints therefore return an
+// `AdminRotationReceipt` that says the rotation is not complete, and emit an
+// extra `adm_dep` event alongside `adm_prop`.
+
+/// `transfer_admin`'s return value must state, on its own, that the rotation
+/// has not happened yet and name the call that would complete it.
+#[test]
+fn test_transfer_admin_receipt_signals_incomplete_rotation() {
+    let s = Setup::new();
+    let new_admin = Address::generate(&s.env);
+
+    let receipt = s.client.transfer_admin(&s.admin, &new_admin);
+
+    assert!(!receipt.rotation_complete);
+    assert_eq!(receipt.pending_admin, new_admin);
+    assert_eq!(
+        receipt.required_next_call,
+        Symbol::new(&s.env, "accept_admin")
+    );
+    // The receipt's expiry is the one actually recorded in state, so a caller
+    // can schedule the follow-up from the return value alone.
+    let state = s.client.get_state();
+    assert_eq!(state.pending_admin_expiry, Some(receipt.expires_at_ledger));
+    assert_eq!(state.admin, s.admin);
+}
+
+/// Same contract for `update_admin` — the other legacy name.
+#[test]
+fn test_update_admin_receipt_signals_incomplete_rotation() {
+    let s = Setup::new();
+    let new_admin = Address::generate(&s.env);
+
+    let receipt = s.client.update_admin(&s.admin, &new_admin);
+
+    assert!(!receipt.rotation_complete);
+    assert_eq!(receipt.pending_admin, new_admin);
+    assert_eq!(
+        receipt.required_next_call,
+        Symbol::new(&s.env, "accept_admin")
+    );
+    assert_eq!(
+        s.client.get_state().pending_admin_expiry,
+        Some(receipt.expires_at_ledger)
+    );
+    assert_eq!(s.client.get_state().admin, s.admin);
+}
+
+/// A rotation driven through a deprecated alias must leave a distinct trace in
+/// the event stream: `adm_prop` *and* `adm_dep`, where `propose_admin` emits
+/// only `adm_prop`. That difference is what lets monitoring spot tooling still
+/// running on the pre-two-step assumption.
+#[test]
+fn test_legacy_aliases_emit_an_extra_deprecation_event() {
+    let s = Setup::new();
+    let new_admin = Address::generate(&s.env);
+
+    s.client.propose_admin(&s.admin, &new_admin);
+    assert_eq!(factory_event_count(&s), 1);
+
+    s.client.transfer_admin(&s.admin, &new_admin);
+    assert_eq!(factory_event_count(&s), 2);
+
+    s.client.update_admin(&s.admin, &new_admin);
+    assert_eq!(factory_event_count(&s), 2);
+}
+
+/// Acceptance criterion for issue #1159, stated as the failure it guards
+/// against: calling `transfer_admin` and nothing else does **not** rotate the
+/// admin — not immediately, and not after the proposal has expired. An
+/// operator who decommissions the old key at this point has bricked the
+/// factory's governance, which is why the call reports itself as incomplete.
+#[test]
+fn test_transfer_admin_alone_never_rotates_admin_even_after_expiry() {
+    let s = Setup::new();
+    let new_admin = Address::generate(&s.env);
+
+    s.client.transfer_admin(&s.admin, &new_admin);
+    assert_eq!(s.client.get_state().admin, s.admin);
+
+    // Let the proposal lapse without anyone calling accept_admin.
+    s.env.ledger().with_mut(|li| {
+        li.sequence_number = li
+            .sequence_number
+            .saturating_add(ADMIN_PROPOSAL_TTL_LEDGERS as u32 + 1);
+    });
+
+    // Still the original admin — the rotation never took effect...
+    assert_eq!(s.client.get_state().admin, s.admin);
+    // ...and can no longer be completed: only a fresh proposal from the
+    // current (old) admin key can restart it.
+    assert_eq!(
+        s.client.try_accept_admin(&new_admin),
+        Err(Ok(Error::ProposalExpired))
+    );
+    assert_eq!(s.client.get_state().admin, s.admin);
+    // The old admin retains every privilege, confirming the handover is inert.
+    s.client.pause(&s.admin);
+    assert!(s.client.get_state().paused);
+}
+
+/// Same for `update_admin`.
+#[test]
+fn test_update_admin_alone_never_rotates_admin_even_after_expiry() {
+    let s = Setup::new();
+    let new_admin = Address::generate(&s.env);
+
+    s.client.update_admin(&s.admin, &new_admin);
+
+    s.env.ledger().with_mut(|li| {
+        li.sequence_number = li
+            .sequence_number
+            .saturating_add(ADMIN_PROPOSAL_TTL_LEDGERS as u32 + 1);
+    });
+
+    assert_eq!(
+        s.client.try_accept_admin(&new_admin),
+        Err(Ok(Error::ProposalExpired))
+    );
+    assert_eq!(s.client.get_state().admin, s.admin);
 }
 
 // ── migrate: schema-v3 chunked walk must be resumable ───────────────────────

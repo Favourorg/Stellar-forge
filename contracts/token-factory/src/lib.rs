@@ -10,7 +10,7 @@
 
 use soroban_sdk::{
     contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, token, vec,
-    Address, BytesN, Env, IntoVal, Map, String, TryFromVal, Val, Vec,
+    Address, BytesN, Env, IntoVal, Map, String, Symbol, TryFromVal, Val, Vec,
 };
 
 /// Minimal interface for initializing a deployed SEP-41 token contract.
@@ -97,6 +97,16 @@ pub const CURRENT_SCHEMA_VERSION: u32 = 4;
 /// The current admin may always cancel a proposal early via
 /// `cancel_admin_proposal`; an expired proposal is treated the same as a
 /// cancelled one.
+///
+/// This window was deliberately kept rather than extended, and there is no
+/// entrypoint to renew a live proposal: renewal would have to be authorized by
+/// the *current* admin — the very key that is unavailable in the scenario a
+/// longer TTL would be meant to rescue — while a long-lived proposal is a
+/// standing, accept-anytime claim on the factory if the proposed key is later
+/// lost or changes hands. A handover that needs longer is handled
+/// procedurally: verify the incoming key can sign before proposing, monitor
+/// for stale proposals, and re-propose if the window lapses. See
+/// `docs/incident-response.md` section 2.5.
 pub const ADMIN_PROPOSAL_TTL_LEDGERS: u64 = 17_280;
 
 #[contracttype]
@@ -168,6 +178,37 @@ pub struct FactoryState {
     /// proposal is live. A proposal is live iff `pending_admin.is_some()` AND
     /// the current ledger sequence has not yet reached this value.
     pub pending_admin_expiry: Option<u64>,
+}
+
+/// What a call to the legacy `transfer_admin` / `update_admin` aliases
+/// actually did — returned so no caller can mistake a *proposal* for a
+/// *completed* rotation (issue #1159).
+///
+/// Before two-step rotation existed, both aliases moved `state.admin` in a
+/// single transaction. They now delegate to `propose_admin`, which records a
+/// proposal that the incoming admin must accept within
+/// `ADMIN_PROPOSAL_TTL_LEDGERS` ledgers. A caller built against the old
+/// semantics would otherwise see a successful transaction and conclude the
+/// rotation was done — and, following the old runbook, decommission the
+/// outgoing key while the factory is still owned by it. Returning a struct
+/// rather than `()` makes that impossible to miss: the value is
+/// self-describing, and any client decoding the old `void` return fails
+/// loudly instead of silently succeeding.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AdminRotationReceipt {
+    /// Always `false` from these entrypoints — the rotation is *pending*, not
+    /// applied. `state.admin` is unchanged until `accept_admin` runs.
+    pub rotation_complete: bool,
+    /// The address that must call `required_next_call` to finish the rotation.
+    pub pending_admin: Address,
+    /// Ledger sequence at which the proposal expires. Once reached, the
+    /// proposal can never be accepted and the rotation must be restarted from
+    /// the *current* admin key — which is why that key must not be
+    /// decommissioned before `accept_admin` has succeeded.
+    pub expires_at_ledger: u64,
+    /// The entrypoint that still has to be called: `accept_admin`.
+    pub required_next_call: Symbol,
 }
 
 #[contracterror]
@@ -1713,8 +1754,11 @@ impl TokenFactory {
     /// takes effect.
     ///
     /// Does **not** complete the rotation — only `accept_admin` does that.
-    /// There is no single-step rotation path: `transfer_admin` and
-    /// `update_admin` both delegate here.
+    /// There is no single-step rotation path: the deprecated `transfer_admin`
+    /// and `update_admin` aliases both delegate here, and additionally emit
+    /// `adm_dep` and return an `AdminRotationReceipt` so a caller written
+    /// against the old single-step semantics cannot mistake the proposal for a
+    /// finished rotation.
     pub fn propose_admin(
         env: Env,
         current_admin: Address,
@@ -1817,22 +1861,75 @@ impl TokenFactory {
         Ok(())
     }
 
-    /// Initiate an admin rotation via the legacy `transfer_admin` name.
+    /// **Deprecated** — initiate an admin rotation via the legacy
+    /// `transfer_admin` name. Use `propose_admin` + `accept_admin` instead.
     ///
     /// Delegates to `propose_admin` so **no single-step rotation path
-    /// remains**. Callers using this name get step-1 (proposal) only;
-    /// the proposed admin must still call `accept_admin` to complete the
-    /// handover. Retained for ABI compatibility with tooling built before the
-    /// two-step model was introduced.
-    pub fn transfer_admin(env: Env, admin: Address, new_admin: Address) -> Result<(), Error> {
-        Self::propose_admin(env, admin, new_admin)
+    /// remains**: this records step 1 only, and the proposed admin must still
+    /// call `accept_admin` within `ADMIN_PROPOSAL_TTL_LEDGERS` ledgers for the
+    /// rotation to take effect. Retained so tooling built against the old name
+    /// keeps working — but *not* silently: it returns an
+    /// [`AdminRotationReceipt`] with `rotation_complete: false` and emits an
+    /// extra `adm_dep` event naming the deprecated entrypoint, so neither a
+    /// caller reading the return value nor an indexer reading the event stream
+    /// can conclude the rotation is finished (issue #1159).
+    ///
+    /// Do not decommission `admin`'s key until `accept_admin` has succeeded.
+    pub fn transfer_admin(
+        env: Env,
+        admin: Address,
+        new_admin: Address,
+    ) -> Result<AdminRotationReceipt, Error> {
+        let alias = Symbol::new(&env, "transfer_admin");
+        Self::propose_admin_via_legacy_alias(env, admin, new_admin, alias)
     }
 
-    /// Initiate an admin rotation via the legacy `update_admin` name.
+    /// **Deprecated** — initiate an admin rotation via the legacy
+    /// `update_admin` name. See `transfer_admin` above; identical behavior,
+    /// with `update_admin` reported as the deprecated entrypoint.
+    pub fn update_admin(
+        env: Env,
+        current_admin: Address,
+        new_admin: Address,
+    ) -> Result<AdminRotationReceipt, Error> {
+        let alias = Symbol::new(&env, "update_admin");
+        Self::propose_admin_via_legacy_alias(env, current_admin, new_admin, alias)
+    }
+
+    /// Shared body of the two deprecated aliases: propose the rotation, then
+    /// announce — in both the event stream and the return value — that this
+    /// is a proposal and nothing more.
     ///
-    /// Delegates to `propose_admin` — see `transfer_admin` note above.
-    pub fn update_admin(env: Env, current_admin: Address, new_admin: Address) -> Result<(), Error> {
-        Self::propose_admin(env, current_admin, new_admin)
+    /// The `adm_dep` event is emitted *in addition to* `adm_prop`, not instead
+    /// of it, so existing rotation monitoring keeps working unchanged while
+    /// gaining a distinct signal that some caller is still driving rotations
+    /// through a pre-two-step entrypoint — the exact condition that precedes
+    /// an abandoned, expiring proposal.
+    fn propose_admin_via_legacy_alias(
+        env: Env,
+        current_admin: Address,
+        new_admin: Address,
+        deprecated_entrypoint: Symbol,
+    ) -> Result<AdminRotationReceipt, Error> {
+        Self::propose_admin(env.clone(), current_admin.clone(), new_admin.clone())?;
+        // `propose_admin` has just written this, so it is always `Some`; the
+        // fallback keeps the no-unwrap lint satisfied without a panic path.
+        let expires_at_ledger = Self::load_state(&env)?.pending_admin_expiry.unwrap_or(0);
+        env.events().publish(
+            (symbol_short!("factory"), symbol_short!("adm_dep")),
+            (
+                current_admin,
+                new_admin.clone(),
+                expires_at_ledger,
+                deprecated_entrypoint,
+            ),
+        );
+        Ok(AdminRotationReceipt {
+            rotation_complete: false,
+            pending_admin: new_admin,
+            expires_at_ledger,
+            required_next_call: Symbol::new(&env, "accept_admin"),
+        })
     }
 
     pub fn get_state(env: Env) -> Result<FactoryState, Error> {
