@@ -1,3 +1,10 @@
+## [1.8.4](https://github.com/Favourorg/Stellar-forge/compare/v1.8.3...v1.8.4) (2026-08-25)
+
+
+### Bug Fixes
+
+* **api:** stop pin reconciliation mass-unpinning referenced metadata ([#1173](https://github.com/Favourorg/Stellar-forge/issues/1173)) ([d2a122a](https://github.com/Favourorg/Stellar-forge/commit/d2a122a411ef6eb00947467a60ac2b4d94a783e1)), closes [#1156](https://github.com/Favourorg/Stellar-forge/issues/1156)
+
 ## [1.8.3](https://github.com/Favourorg/Stellar-forge/compare/v1.8.2...v1.8.3) (2026-08-25)
 
 
