@@ -23,10 +23,7 @@ function fakeReqRes(method = 'GET') {
 
 type MockStore = Pick<TokenStore, 'getState' | 'countTokens'>
 
-function mockStore(
-  overrides: Partial<IndexerState> = {},
-  tokenCount = 42,
-): MockStore {
+function mockStore(overrides: Partial<IndexerState> = {}, tokenCount = 42): MockStore {
   const state: IndexerState = {
     lastCursor: 'abc',
     lastLedger: 12345,
@@ -100,7 +97,8 @@ describe('GET /api/health/indexer', () => {
     })
 
     it('never contains raw driver error strings in the response', async () => {
-      const rawError = 'connect() to PostgreSQL at postgresql://admin:hunter2@internal-db-1.example.com:5432/stellarforge failed: could not connect to server: Connection refused'
+      const rawError =
+        'connect() to PostgreSQL at postgresql://admin:hunter2@internal-db-1.example.com:5432/stellarforge failed: could not connect to server: Connection refused'
       store = mockStore({ lastError: rawError })
 
       const { req, res, json } = fakeReqRes()

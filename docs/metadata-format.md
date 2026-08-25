@@ -93,16 +93,16 @@ Pinata API credentials (`PINATA_API_KEY`, `PINATA_API_SECRET`) live in the **ser
 
 ## Where these are enforced
 
-| Layer | Location | Notes |
-| --- | --- | --- |
+| Layer                     | Location                                              | Notes                                                            |
+| ------------------------- | ----------------------------------------------------- | ---------------------------------------------------------------- |
 | Integrity (authoritative) | `verifyCIDMatch()` in `frontend/src/services/ipfs.ts` | Verifies CID matches content before parsing; rejects on mismatch |
-| Read (authoritative) | `getMetadata` in `frontend/src/services/ipfs.ts` | The only check that binds for externally-pinned metadata |
-| Write (advisory) | `MetadataForm.tsx`, `MetadataUploadForm.tsx` | Better UX; trivially bypassed by pinning directly |
-| Render (defence in depth) | `TokenDetail.tsx`, `TokenExplorer.tsx` | Bounds height regardless of character count |
-| Layer                     | Location                                         | Notes                                                    |
-| ------------------------- | ------------------------------------------------ | -------------------------------------------------------- |
-| Read (authoritative)      | `getMetadata` in `frontend/src/services/ipfs.ts` | The only check that binds for externally-pinned metadata |
-| Write (advisory)          | `MetadataForm.tsx`, `MetadataUploadForm.tsx`     | Better UX; trivially bypassed by pinning directly        |
-| Render (defence in depth) | `TokenDetail.tsx`, `TokenExplorer.tsx`           | Bounds height regardless of character count              |
+| Read (authoritative)      | `getMetadata` in `frontend/src/services/ipfs.ts`      | The only check that binds for externally-pinned metadata         |
+| Write (advisory)          | `MetadataForm.tsx`, `MetadataUploadForm.tsx`          | Better UX; trivially bypassed by pinning directly                |
+| Render (defence in depth) | `TokenDetail.tsx`, `TokenExplorer.tsx`                | Bounds height regardless of character count                      |
+| Layer                     | Location                                              | Notes                                                            |
+| ------------------------- | ------------------------------------------------      | --------------------------------------------------------         |
+| Read (authoritative)      | `getMetadata` in `frontend/src/services/ipfs.ts`      | The only check that binds for externally-pinned metadata         |
+| Write (advisory)          | `MetadataForm.tsx`, `MetadataUploadForm.tsx`          | Better UX; trivially bypassed by pinning directly                |
+| Render (defence in depth) | `TokenDetail.tsx`, `TokenExplorer.tsx`                | Bounds height regardless of character count                      |
 
 Constants live in `frontend/src/services/ipfs.ts` as `MAX_METADATA_NAME_LENGTH` and `MAX_METADATA_DESCRIPTION_LENGTH`. Update this document if you change them.

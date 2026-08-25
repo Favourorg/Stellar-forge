@@ -5,7 +5,7 @@ extern crate std;
 use super::*;
 use soroban_sdk::{
     contract, contractimpl,
-    testutils::{Address as _, Events as _},
+    testutils::{Address as _, Events as _, Ledger as _},
     token::{StellarAssetClient, TokenClient},
     Address, BytesN, Env, Map, MuxedAddress, String,
 };
@@ -1783,17 +1783,28 @@ fn test_expired_proposal_cannot_be_accepted() {
 
     // Advance the ledger past the TTL.
     s.env.ledger().with_mut(|li| {
-        li.sequence_number = li.sequence_number.saturating_add(ADMIN_PROPOSAL_TTL_LEDGERS as u32 + 1);
+        li.sequence_number = li
+            .sequence_number
+            .saturating_add(ADMIN_PROPOSAL_TTL_LEDGERS as u32 + 1);
     });
 
     assert_eq!(
         s.client.try_accept_admin(&new_admin),
         Err(Ok(Error::ProposalExpired))
     );
-    // After expiry the state must be cleared so the admin can propose again.
+    // The rejection reverts the whole call, so the expired proposal is still
+    // on record — inert, never acceptable, and harmless. The admin clears it
+    // by cancelling, or replaces it by proposing again.
     let state = s.client.get_state();
-    assert_eq!(state.pending_admin, None);
+    assert_eq!(state.pending_admin, Some(new_admin.clone()));
     assert_eq!(state.admin, s.admin);
+
+    // Re-proposing overwrites the expired entry with a fresh expiry window,
+    // and the new proposal is acceptable.
+    s.client.propose_admin(&s.admin, &new_admin);
+    s.client.accept_admin(&new_admin);
+    assert_eq!(s.client.get_state().admin, new_admin);
+    assert_eq!(s.client.get_state().pending_admin, None);
 }
 
 #[test]

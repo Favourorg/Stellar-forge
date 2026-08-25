@@ -43,11 +43,7 @@ function sanitizeIndexerError(raw: string | null): string | null {
   }
 
   // Query-level timeouts
-  if (
-    lower.includes('timeout') ||
-    lower.includes('timed out') ||
-    lower.includes('query timeout')
-  ) {
+  if (lower.includes('timeout') || lower.includes('timed out') || lower.includes('query timeout')) {
     return 'query_timeout'
   }
 

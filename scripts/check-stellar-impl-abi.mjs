@@ -117,7 +117,9 @@ function extractContractCalls(content) {
     }
 
     if (parenDepth !== 0) {
-      console.warn(`WARNING: Could not find matching paren for ${functionName} at line ${lineNumber}`)
+      console.warn(
+        `WARNING: Could not find matching paren for ${functionName} at line ${lineNumber}`,
+      )
       continue
     }
 
@@ -208,7 +210,9 @@ function validate() {
     // (e.g., method vs function syntax, receiver implicit vs explicit).
     // In a real parser, we'd do proper AST matching.
     if (Math.abs(argumentCount - expectedArgCount) <= 1) {
-      console.log(`✓ ${functionName} at ${location}: ${argumentCount} args (expected ~${expectedArgCount})`)
+      console.log(
+        `✓ ${functionName} at ${location}: ${argumentCount} args (expected ~${expectedArgCount})`,
+      )
     } else {
       console.error(
         `✗ ${functionName} at ${location}: ${argumentCount} args, expected ~${expectedArgCount}`,

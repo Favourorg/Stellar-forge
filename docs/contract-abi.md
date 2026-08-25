@@ -351,10 +351,10 @@ Read the current split (empty map means no split).
 
 Propose a new admin address. The current admin calls this to name a successor. The proposal is stored in `FactoryState` and expires after `ADMIN_PROPOSAL_TTL_LEDGERS` ledgers (~28 hours at 6 seconds/ledger). If a second proposal is issued before the first is accepted or cancelled, it **overwrites** the first, resetting the expiry.
 
-| Param           | Type      | Description                                                   |
-| --------------- | --------- | ------------------------------------------------------------- |
-| `current_admin` | `Address` | Current admin; must authorize this call.                      |
-| `new_admin`     | `Address` | Proposed successor. Must differ from `current_admin`.         |
+| Param           | Type      | Description                                           |
+| --------------- | --------- | ----------------------------------------------------- |
+| `current_admin` | `Address` | Current admin; must authorize this call.              |
+| `new_admin`     | `Address` | Proposed successor. Must differ from `current_admin`. |
 
 Emits `adm_prop` with `(current_admin, new_admin, expiry_ledger)`.
 
@@ -364,15 +364,16 @@ Errors: `Unauthorized` if caller is not the current admin; `InvalidParameters` f
 
 Complete a pending rotation. **The proposed admin** calls this, proving they control the proposed key. Only succeeds when a live (non-expired) proposal exists for `new_admin`.
 
-| Param       | Type      | Description                                                          |
-| ----------- | --------- | -------------------------------------------------------------------- |
-| `new_admin` | `Address` | The address that was named in the most recent `propose_admin` call.  |
+| Param       | Type      | Description                                                         |
+| ----------- | --------- | ------------------------------------------------------------------- |
+| `new_admin` | `Address` | The address that was named in the most recent `propose_admin` call. |
 
 Emits `adm_acc` with `(old_admin, new_admin)` on success.
 
 Errors:
-- `NoPendingProposal` (code 24) — no proposal is pending, or `new_admin` does not match the proposed address.
-- `ProposalExpired` (code 25) — the proposal's expiry ledger has passed. The expired proposal is cleared from state; the current admin must issue a new `propose_admin` call.
+
+- `NoPendingProposal` (code 26) — no proposal is pending, or `new_admin` does not match the proposed address.
+- `ProposalExpired` (code 27) — the proposal's expiry ledger has passed. The rejection reverts the call, so the expired proposal stays on record but can never be accepted; the current admin clears it with `cancel_admin_proposal` or replaces it with a new `propose_admin` call.
 
 ### `cancel_admin_proposal(current_admin)`
 
@@ -423,35 +424,35 @@ Read-only: returns `true` if `address` is on the whitelist.
 
 ## Errors
 
-| Code | Symbol                      | When                                                                                  |
-| ---- | --------------------------- | ------------------------------------------------------------------------------------- |
-| 1    | `InsufficientFee`           | `fee_payment < required_fee`                                                          |
-| 2    | `Unauthorized`              | caller is not allowed for this operation                                              |
-| 3    | `InvalidParameters`         | argument out of range or malformed                                                    |
-| 4    | `TokenNotFound`             | unknown token index or address                                                        |
-| 5    | `MetadataAlreadySet`        | _(deprecated — retained for ABI compatibility; no longer returned by `set_metadata`)_ |
-| 6    | `AlreadyInitialized`        | double-initialize attempt                                                             |
-| 7    | `BurnAmountExceedsBalance`  | `burn` > balance                                                                      |
-| 8    | `BurnNotEnabled`            | burning on a token that has been disabled                                             |
-| 9    | `InvalidBurnAmount`         | zero or negative burn                                                                 |
-| 10   | `ContractPaused`            | operation blocked because factory is paused                                           |
-| 11   | `Reentrancy`                | concurrent reentrant call detected                                                    |
-| 12   | `ArithmeticOverflow`        | checked-op failed                                                                     |
-| 13   | `StateNotFound`             | factory not yet initialized                                                           |
-| 14   | `InvalidTokenParams`        | name/symbol validation failed during token creation                                   |
-| 15   | `InvalidDecimals`           | decimals outside `[0, 18]`                                                            |
-| 16   | `MaxSupplyExceeded`         | mint would exceed cap                                                                 |
-| 17   | `InvalidFeeSplit`           | `set_fee_split` map bps do not sum to 10_000                                          |
-| 18   | `TooManyFeeSplitRecipients` | `set_fee_split` map has more than `MAX_FEE_SPLIT_RECIPIENTS` (10) recipients          |
-| 19   | `AlreadyBackfilled`         | `backfill_capped_supply` already applied for this token                               |
-| 20   | `NotWhitelisted`            | creator is not on the whitelist when enforcement is enabled                           |
-| 21   | `InvalidMetadataUri`        | URI is empty, missing `ipfs://` prefix, exceeds 128 bytes, or has no CID              |
-| 22   | `ZeroFeeSplitEntry`         | `set_fee_split` map contains an entry with `bps == 0`                                 |
-| 23   | `MetadataFrozen`            | metadata is frozen (via `freeze_metadata` or auto-freeze after max updates)           |
-| 24   | `TreasuryTransferFailed`    | payment/redirect of a fee share to `treasury` itself failed (no further fallback)     |
-| 24   | `BatchSizeExceeded`         | `create_tokens_batch` called with more than `MAX_BATCH_SIZE` (20) tokens              |
-| 24   | `NoPendingProposal`         | `accept_admin` called with no live proposal, or the caller is not the proposed address |
-| 25   | `ProposalExpired`           | the pending proposal's expiry ledger has passed; current admin must re-propose         |
+| Code | Symbol                      | When                                                                                   |
+| ---- | --------------------------- | -------------------------------------------------------------------------------------- |
+| 1    | `InsufficientFee`           | `fee_payment < required_fee`                                                           |
+| 2    | `Unauthorized`              | caller is not allowed for this operation                                               |
+| 3    | `InvalidParameters`         | argument out of range or malformed                                                     |
+| 4    | `TokenNotFound`             | unknown token index or address                                                         |
+| 5    | `MetadataAlreadySet`        | _(deprecated — retained for ABI compatibility; no longer returned by `set_metadata`)_  |
+| 6    | `AlreadyInitialized`        | double-initialize attempt                                                              |
+| 7    | `BurnAmountExceedsBalance`  | `burn` > balance                                                                       |
+| 8    | `BurnNotEnabled`            | burning on a token that has been disabled                                              |
+| 9    | `InvalidBurnAmount`         | zero or negative burn                                                                  |
+| 10   | `ContractPaused`            | operation blocked because factory is paused                                            |
+| 11   | `Reentrancy`                | concurrent reentrant call detected                                                     |
+| 12   | `ArithmeticOverflow`        | checked-op failed                                                                      |
+| 13   | `StateNotFound`             | factory not yet initialized                                                            |
+| 14   | `InvalidTokenParams`        | name/symbol validation failed during token creation                                    |
+| 15   | `InvalidDecimals`           | decimals outside `[0, 18]`                                                             |
+| 16   | `MaxSupplyExceeded`         | mint would exceed cap                                                                  |
+| 17   | `InvalidFeeSplit`           | `set_fee_split` map bps do not sum to 10_000                                           |
+| 18   | `TooManyFeeSplitRecipients` | `set_fee_split` map has more than `MAX_FEE_SPLIT_RECIPIENTS` (10) recipients           |
+| 19   | `AlreadyBackfilled`         | `backfill_capped_supply` already applied for this token                                |
+| 20   | `NotWhitelisted`            | creator is not on the whitelist when enforcement is enabled                            |
+| 21   | `InvalidMetadataUri`        | URI is empty, missing `ipfs://` prefix, exceeds 128 bytes, or has no CID               |
+| 22   | `ZeroFeeSplitEntry`         | `set_fee_split` map contains an entry with `bps == 0`                                  |
+| 23   | `MetadataFrozen`            | metadata is frozen (via `freeze_metadata` or auto-freeze after max updates)            |
+| 24   | `TreasuryTransferFailed`    | payment/redirect of a fee share to `treasury` itself failed (no further fallback)      |
+| 25   | `BatchSizeExceeded`         | `create_tokens_batch` called with more than `MAX_BATCH_SIZE` (20) tokens               |
+| 26   | `NoPendingProposal`         | `accept_admin` called with no live proposal, or the caller is not the proposed address |
+| 27   | `ProposalExpired`           | the pending proposal's expiry ledger has passed; current admin must re-propose         |
 
 ## Test/fuzz-only helpers
 
@@ -461,27 +462,27 @@ Read-only: returns `true` if `address` is on the whitelist.
 
 The contract emits Soroban events on a `(factory, action)` topic. The frontend parses them via `frontend/src/services/stellar-impl.ts`. Events:
 
-| Action      | Payload                                  | Trigger                                |
-| ----------- | ---------------------------------------- | -------------------------------------- |
-| `init`      | `(admin)`                                | `initialize`                           |
-| `init`      | `(admin)`                                | `__constructor`                        |
-| `created`   | `(token_address, creator, name, symbol)` | `create_token` / `create_tokens_batch` |
-| `meta`      | `(token_address, metadata_uri, version)` | `set_metadata` (every update)          |
-| `meta_frz`  | `(token_address, admin)`                 | `freeze_metadata`                      |
-| `mint`      | `(token_address, to, amount)`            | `mint_tokens`                          |
-| `burn`      | `(token_address, from, amount)`          | `burn`                                 |
-| `fees`      | `(base_fee, metadata_fee)`               | `update_fees`                          |
-| `split_set` | `(admin, splits)`                        | `set_fee_split` (non-empty)            |
-| `split_clr` | `(admin)`                                | `set_fee_split` (empty — clears split) |
-| `fee_redir` | `(recipient, share)`                     | `distribute_fee` (recipient `try_transfer` failed; share redirected to `treasury`) |
-| `pause`     | `(admin)`                                | `pause`                                |
-| `unpause`   | `(admin)`                                | `unpause`                              |
-| `adm_prop`  | `(current_admin, new_admin, expiry_ledger)` | `propose_admin` / `transfer_admin` / `update_admin` |
-| `adm_acc`   | `(old_admin, new_admin)`                    | `accept_admin`                                      |
-| `adm_can`   | `(current_admin, cancelled_admin)`          | `cancel_admin_proposal`                             |
-| `wl_add`    | `(address)`                              | `add_to_whitelist`                     |
-| `wl_rm`     | `(address)`                              | `remove_from_whitelist`                |
-| `wl_tog`    | `(enabled)`                              | `set_whitelist_enabled`                |
+| Action      | Payload                                     | Trigger                                                                            |
+| ----------- | ------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `init`      | `(admin)`                                   | `initialize`                                                                       |
+| `init`      | `(admin)`                                   | `__constructor`                                                                    |
+| `created`   | `(token_address, creator, name, symbol)`    | `create_token` / `create_tokens_batch`                                             |
+| `meta`      | `(token_address, metadata_uri, version)`    | `set_metadata` (every update)                                                      |
+| `meta_frz`  | `(token_address, admin)`                    | `freeze_metadata`                                                                  |
+| `mint`      | `(token_address, to, amount)`               | `mint_tokens`                                                                      |
+| `burn`      | `(token_address, from, amount)`             | `burn`                                                                             |
+| `fees`      | `(base_fee, metadata_fee)`                  | `update_fees`                                                                      |
+| `split_set` | `(admin, splits)`                           | `set_fee_split` (non-empty)                                                        |
+| `split_clr` | `(admin)`                                   | `set_fee_split` (empty — clears split)                                             |
+| `fee_redir` | `(recipient, share)`                        | `distribute_fee` (recipient `try_transfer` failed; share redirected to `treasury`) |
+| `pause`     | `(admin)`                                   | `pause`                                                                            |
+| `unpause`   | `(admin)`                                   | `unpause`                                                                          |
+| `adm_prop`  | `(current_admin, new_admin, expiry_ledger)` | `propose_admin` / `transfer_admin` / `update_admin`                                |
+| `adm_acc`   | `(old_admin, new_admin)`                    | `accept_admin`                                                                     |
+| `adm_can`   | `(current_admin, cancelled_admin)`          | `cancel_admin_proposal`                                                            |
+| `wl_add`    | `(address)`                                 | `add_to_whitelist`                                                                 |
+| `wl_rm`     | `(address)`                                 | `remove_from_whitelist`                                                            |
+| `wl_tog`    | `(enabled)`                                 | `set_whitelist_enabled`                                                            |
 
 ## Batch creation UI
 

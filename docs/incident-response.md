@@ -27,15 +27,15 @@
 
 The factory contract's `admin` address is a single point of catastrophic trust. An attacker in possession of the admin key can:
 
-| Action | Effect |
-|---|---|
-| `update_fees(admin, base_fee, metadata_fee)` | Set arbitrarily high fees to drain users who call the contract |
-| `set_fee_split(admin, splits)` | Redirect collected fees to an attacker-controlled address |
-| `upgrade(admin, new_wasm_hash)` | Replace the contract with arbitrary attacker code |
-| `propose_admin(admin, attacker_address)` | Begin a rotation to an attacker-controlled address; the attacker then calls `accept_admin` to complete the transfer |
-| `pause(admin)` | Halt the factory, denying service to all token creators |
+| Action                                       | Effect                                                                                                              |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `update_fees(admin, base_fee, metadata_fee)` | Set arbitrarily high fees to drain users who call the contract                                                      |
+| `set_fee_split(admin, splits)`               | Redirect collected fees to an attacker-controlled address                                                           |
+| `upgrade(admin, new_wasm_hash)`              | Replace the contract with arbitrary attacker code                                                                   |
+| `propose_admin(admin, attacker_address)`     | Begin a rotation to an attacker-controlled address; the attacker then calls `accept_admin` to complete the transfer |
+| `pause(admin)`                               | Halt the factory, denying service to all token creators                                                             |
 
-**Two-step rotation reduces but does not eliminate admin-rotation risk.** The two-step model (`propose_admin` + `accept_admin`) prevents accidental rotation to an uncontrolled address — the incoming key must prove it can sign. However, an attacker who already holds the current admin key can still complete the rotation to their own address by controlling both steps. Detection window: a `propose_admin` call emits an `adm_prop` event that is visible on-chain *before* `accept_admin` completes the transfer, giving operators a window to cancel via `cancel_admin_proposal` if the proposal is unauthorized.
+**Two-step rotation reduces but does not eliminate admin-rotation risk.** The two-step model (`propose_admin` + `accept_admin`) prevents accidental rotation to an uncontrolled address — the incoming key must prove it can sign. However, an attacker who already holds the current admin key can still complete the rotation to their own address by controlling both steps. Detection window: a `propose_admin` call emits an `adm_prop` event that is visible on-chain _before_ `accept_admin` completes the transfer, giving operators a window to cancel via `cancel_admin_proposal` if the proposal is unauthorized.
 
 **Upgrade detection gap:** `upgrade` currently emits no on-chain event (see issue #9). Until event emission is added, detection of a malicious WASM swap requires active polling of the on-chain WASM hash. This runbook treats upgrade detection latency as high-risk and calls it out explicitly.
 
@@ -48,12 +48,14 @@ Detection relies on multiple independent signals. Any single signal is enough to
 ### 2.1 Sentry error correlation (fastest for client-side anomalies)
 
 All Sentry events captured during transaction lifecycles are tagged with `network`, `contractId`, and `functionName` (see issue #944). An unusual spike in:
+
 - `functionName: deployToken` errors with `InsufficientFee` codes (fee manipulation)
 - `functionName: pollTransaction` failures across many unrelated users
 
 should trigger investigation of the admin state.
 
 Set a Sentry alert rule:
+
 - Filter: `network = mainnet`, `functionName = deployToken`, `code = InsufficientFee`
 - Condition: event count > 3 in 5 minutes
 - Action: page on-call channel immediately
@@ -67,6 +69,7 @@ curl -N "https://horizon.stellar.org/accounts/<FACTORY_CONTRACT>/operations?curs
 ```
 
 Alert on:
+
 - Any `adm_prop` event (admin rotation proposed — act immediately if unexpected; you have until `accept_admin` is called or the proposal expires to cancel via `cancel_admin_proposal`)
 - Any `adm_acc` event (admin rotation completed — if unexpected, the admin key is compromised)
 - Any `fees` event with unusually large values
@@ -103,13 +106,13 @@ Token creators reporting sudden fee increases or failed `create_token` calls wit
 
 Maintain a live copy of this table in a private team channel. Do not embed real names or personal contact details in this public document.
 
-| Role | Responsibility | Contact |
-|---|---|---|
-| **Incident commander** | Declares the incident, coordinates all actions, is the single decision-maker | *See team contact list* |
-| **Admin key custodian** | Has access to the hardware wallet / multisig device holding the admin key | *See team contact list* |
-| **Break-glass custodian** | Has access to the backup admin (break-glass) account | *See team contact list* |
-| **Communications lead** | Drafts and publishes user-facing notices | *See team contact list* |
-| **Legal / compliance** | Advises on disclosure obligations | *See team contact list* |
+| Role                      | Responsibility                                                               | Contact                 |
+| ------------------------- | ---------------------------------------------------------------------------- | ----------------------- |
+| **Incident commander**    | Declares the incident, coordinates all actions, is the single decision-maker | _See team contact list_ |
+| **Admin key custodian**   | Has access to the hardware wallet / multisig device holding the admin key    | _See team contact list_ |
+| **Break-glass custodian** | Has access to the backup admin (break-glass) account                         | _See team contact list_ |
+| **Communications lead**   | Drafts and publishes user-facing notices                                     | _See team contact list_ |
+| **Legal / compliance**    | Advises on disclosure obligations                                            | _See team contact list_ |
 
 Minimum team size for executing on-chain recovery: **two people** (incident commander + admin key custodian). Never execute admin-level transactions alone.
 
@@ -169,6 +172,7 @@ stellar contract invoke \
 If the admin key is still operable but you suspect imminent key-theft (e.g. private key was exposed in logs), rotate to the pre-agreed break-glass account using the two-step flow:
 
 **Step 4a — Propose the break-glass address as new admin:**
+
 ```bash
 stellar contract invoke \
   --id "$FACTORY_CONTRACT_ID" \
@@ -180,6 +184,7 @@ stellar contract invoke \
 ```
 
 **Step 4b — Accept from the break-glass account (must be done within ~28 hours):**
+
 ```bash
 stellar contract invoke \
   --id "$FACTORY_CONTRACT_ID" \
@@ -267,6 +272,7 @@ If the hashes differ and no authorised upgrade was performed, treat the contract
 ### 6.2 Re-audit admin key custody
 
 Before unpausing the factory, conduct an emergency review of how the admin key was compromised:
+
 - Was it stored insecurely (clipboard, environment variable, unencrypted file)?
 - Was the hardware wallet device physically accessed?
 - Was phishing involved?
@@ -278,6 +284,7 @@ Document findings and apply remediation before resuming operations.
 A `upgrade` to attacker-controlled WASM is the most severe scenario. The existing contract at the original address is now malicious and **must not be used**.
 
 Recovery steps:
+
 1. Deploy a **new** factory contract at a fresh contract address.
 2. Re-initialize with the new admin address.
 3. Notify all integrators and the frontend config must be updated.
@@ -286,6 +293,7 @@ Recovery steps:
 ### 6.4 Unpause
 
 Only unpause after:
+
 - [ ] Admin key custody is restored to a known-good state.
 - [ ] WASM integrity is confirmed against the known-good hash.
 - [ ] Fee configuration is verified to be correct.
@@ -309,18 +317,19 @@ This section documents the pre-agreed backup admin account that allows recovery 
 ### 7.1 What the break-glass account is
 
 The break-glass account is a **separate Stellar keypair** held by a designated break-glass custodian. It is never used for routine operations. Its sole purpose is to receive admin rights via `transfer_admin` in an emergency, then:
+
 1. Pause the factory.
 2. Transfer admin to a freshly-generated recovery key.
 3. Facilitate any necessary fee or WASM restoration.
 
 ### 7.2 Custody requirements
 
-| Requirement | Detail |
-|---|---|
-| Storage | Hardware wallet (Ledger or equivalent) held by the break-glass custodian |
-| Location | Physically separate from the primary admin hardware wallet |
-| Access | Break-glass custodian only; known to the incident commander |
-| Testing | Confirmed usable (non-zero XLM balance, key unlocked) at least once per quarter |
+| Requirement | Detail                                                                          |
+| ----------- | ------------------------------------------------------------------------------- |
+| Storage     | Hardware wallet (Ledger or equivalent) held by the break-glass custodian        |
+| Location    | Physically separate from the primary admin hardware wallet                      |
+| Access      | Break-glass custodian only; known to the incident commander                     |
+| Testing     | Confirmed usable (non-zero XLM balance, key unlocked) at least once per quarter |
 
 ### 7.3 Setting up the break-glass address
 
@@ -401,6 +410,7 @@ Document any differences as potential attacker modifications.
 ### 8.2 Full deployment log audit
 
 Review:
+
 - When did the admin key leave the hardware wallet?
 - Which machines accessed it?
 - What processes had `ADMIN_SECRET_KEY` in their environment?
@@ -420,12 +430,12 @@ Review:
 
 ### 8.5 Disclosure timeline
 
-| Time | Action |
-|---|---|
-| T+0 | Incident declared, factory paused |
-| T+1 h | Internal post-mortem started |
-| T+24 h | Initial public notice posted (see below) |
-| T+72 h | Full incident report published |
+| Time   | Action                                    |
+| ------ | ----------------------------------------- |
+| T+0    | Incident declared, factory paused         |
+| T+1 h  | Internal post-mortem started              |
+| T+24 h | Initial public notice posted (see below)  |
+| T+72 h | Full incident report published            |
 | T+30 d | Follow-up confirming remediation complete |
 
 > Note: StellarForge operates in the "emerging markets fintech-adjacent" space. Depending on the jurisdiction of affected users and the scale of financial impact, applicable data-breach or financial-services notification laws may set shorter or stricter timelines than those above. Consult Legal before publishing the T+24 h notice.

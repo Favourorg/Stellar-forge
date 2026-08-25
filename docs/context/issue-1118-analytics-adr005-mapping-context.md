@@ -30,26 +30,26 @@
 
 ### Requisitos normalizados y matriz ADR -> evidencia
 
-| ID | Requisito de ADR-005 | Evidencia actual | Cobertura | Gap / decisión |
-|---|---|---|---|---|
-| `REQ-ADR005-01` | No recopilar PII ni direcciones de wallet. | `UT-06` comprueba tipos de props escalares; los tests ejercitan `symbol`, `amount` y `success`. | Parcial | Ampliar tests con una lista explícita de campos prohibidos y revisión de todos los callers. No waiver: es una garantía de privacidad. |
-| `REQ-ADR005-02` | No usar cookies, fingerprinting ni tracking cross-site. | Ninguna aserción en las dos suites; el CI no inspecciona cookies ni configuración del proveedor. | No cubierta por tests | Mantener la afirmación como propiedad del proveedor y añadir un check documental/configuracional en Fase 2. No waiver para cookies propias; documentar el límite de verificación sobre Plausible. |
-| `REQ-ADR005-03` | El opt-out debe estar disponible cuando analytics está configurado. | `CT-01` renderiza el checkbox con dominio; `CT-02` verifica que se oculta sin dominio. | Cubierta | Sin ampliación requerida; añadir anotación ADR en la implementación del test. |
-| `REQ-ADR005-04` | Persistir la preferencia en `localStorage` bajo `analytics_opt_out`. | `UT-04`, `UT-05`, `CT-05`, `CT-06` verifican escritura, eliminación y lectura persistida. | Cubierta | Añadir caso de almacenamiento no disponible si se busca cubrir la tolerancia declarada por el servicio. |
-| `REQ-ADR005-05` | Leer el consentimiento en cada tracking call y aplicar el cambio inmediatamente en la sesión. | `UT-08`, `UT-09`, `UT-14`, `UT-15`, `UT-18`, `CT-07`, `CT-08` cubren supresión y reactivación sin reload. | Cubierta | Sin waiver. Conservar pruebas de transición opt-in/opt-out. |
-| `REQ-ADR005-06` | Enviar únicamente `pageview` y eventos custom con nombre y props no-PII. | `UT-06`, `UT-07`, `UT-10`, `UT-11`, `UT-12`, `UT-13` verifican forma de llamadas y pageview con URL. | Parcial | Añadir catálogo verificable de nombres/eventos permitidos o justificar que el nombre es input controlado por callers. Validar que la URL no incorpora wallet. |
-| `REQ-ADR005-07` | No realizar llamadas si `VITE_PLAUSIBLE_DOMAIN` no está configurado. | `UT-10`, `UT-16`, `CT-02` verifican ausencia de llamadas/renderizado. | Cubierta | Sin ampliación requerida; cubrir también dominio whitespace si la política lo exige. |
-| `REQ-ADR005-08` | Todo tracking debe pasar por `trackEvent`/`trackPageView`; no se permite `window.plausible` directo. | `CI-01` rechaza imports directos fuera de allowlist; `CI-02` rechaza llamadas `window.plausible`; `UT-17`, `UT-18` cubren API pública. | Cubierta con limitación | Fase 2 debe hacer que CI también verifique la existencia y ejecución de sus tests. La allowlist de `App.tsx` requiere revisión explícita ante cambios. |
+| ID              | Requisito de ADR-005                                                                                 | Evidencia actual                                                                                                                       | Cobertura               | Gap / decisión                                                                                                                                                                                    |
+| --------------- | ---------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `REQ-ADR005-01` | No recopilar PII ni direcciones de wallet.                                                           | `UT-06` comprueba tipos de props escalares; los tests ejercitan `symbol`, `amount` y `success`.                                        | Parcial                 | Ampliar tests con una lista explícita de campos prohibidos y revisión de todos los callers. No waiver: es una garantía de privacidad.                                                             |
+| `REQ-ADR005-02` | No usar cookies, fingerprinting ni tracking cross-site.                                              | Ninguna aserción en las dos suites; el CI no inspecciona cookies ni configuración del proveedor.                                       | No cubierta por tests   | Mantener la afirmación como propiedad del proveedor y añadir un check documental/configuracional en Fase 2. No waiver para cookies propias; documentar el límite de verificación sobre Plausible. |
+| `REQ-ADR005-03` | El opt-out debe estar disponible cuando analytics está configurado.                                  | `CT-01` renderiza el checkbox con dominio; `CT-02` verifica que se oculta sin dominio.                                                 | Cubierta                | Sin ampliación requerida; añadir anotación ADR en la implementación del test.                                                                                                                     |
+| `REQ-ADR005-04` | Persistir la preferencia en `localStorage` bajo `analytics_opt_out`.                                 | `UT-04`, `UT-05`, `CT-05`, `CT-06` verifican escritura, eliminación y lectura persistida.                                              | Cubierta                | Añadir caso de almacenamiento no disponible si se busca cubrir la tolerancia declarada por el servicio.                                                                                           |
+| `REQ-ADR005-05` | Leer el consentimiento en cada tracking call y aplicar el cambio inmediatamente en la sesión.        | `UT-08`, `UT-09`, `UT-14`, `UT-15`, `UT-18`, `CT-07`, `CT-08` cubren supresión y reactivación sin reload.                              | Cubierta                | Sin waiver. Conservar pruebas de transición opt-in/opt-out.                                                                                                                                       |
+| `REQ-ADR005-06` | Enviar únicamente `pageview` y eventos custom con nombre y props no-PII.                             | `UT-06`, `UT-07`, `UT-10`, `UT-11`, `UT-12`, `UT-13` verifican forma de llamadas y pageview con URL.                                   | Parcial                 | Añadir catálogo verificable de nombres/eventos permitidos o justificar que el nombre es input controlado por callers. Validar que la URL no incorpora wallet.                                     |
+| `REQ-ADR005-07` | No realizar llamadas si `VITE_PLAUSIBLE_DOMAIN` no está configurado.                                 | `UT-10`, `UT-16`, `CT-02` verifican ausencia de llamadas/renderizado.                                                                  | Cubierta                | Sin ampliación requerida; cubrir también dominio whitespace si la política lo exige.                                                                                                              |
+| `REQ-ADR005-08` | Todo tracking debe pasar por `trackEvent`/`trackPageView`; no se permite `window.plausible` directo. | `CI-01` rechaza imports directos fuera de allowlist; `CI-02` rechaza llamadas `window.plausible`; `UT-17`, `UT-18` cubren API pública. | Cubierta con limitación | Fase 2 debe hacer que CI también verifique la existencia y ejecución de sus tests. La allowlist de `App.tsx` requiere revisión explícita ante cambios.                                            |
 
 ### Matriz inversa evidencia -> requisito
 
-| Evidencia | Requisitos protegidos | Observación |
-|---|---|---|
-| `analytics.test.ts` (`UT-01` a `UT-05`) | `REQ-ADR005-03`, `REQ-ADR005-04` | La suite del servicio cubre estado y persistencia, no UI. |
-| `analytics.test.ts` (`UT-06` a `UT-13`) | `REQ-ADR005-01`, `REQ-ADR005-06`, `REQ-ADR005-07` | La restricción de tipos no constituye por sí sola una prueba exhaustiva de PII. |
-| `analytics.test.ts` (`UT-14` a `UT-18`) | `REQ-ADR005-05`, `REQ-ADR005-07`, `REQ-ADR005-08` | Cubre supresión inmediata y ausencia de API global, no todos los callers productivos. |
-| `AnalyticsOptOut.test.tsx` (`CT-01` a `CT-09`) | `REQ-ADR005-03`, `REQ-ADR005-04`, `REQ-ADR005-05` | Confirma accesibilidad básica mediante `aria-label`; no prueba integración en footer/App. |
-| `check-analytics-bypass.mjs` (`CI-01`, `CI-02`) | `REQ-ADR005-08` | Escanea `.ts/.tsx`, omite tests y aplica una allowlist explícita. No prueba privacidad del payload. |
+| Evidencia                                       | Requisitos protegidos                             | Observación                                                                                         |
+| ----------------------------------------------- | ------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `analytics.test.ts` (`UT-01` a `UT-05`)         | `REQ-ADR005-03`, `REQ-ADR005-04`                  | La suite del servicio cubre estado y persistencia, no UI.                                           |
+| `analytics.test.ts` (`UT-06` a `UT-13`)         | `REQ-ADR005-01`, `REQ-ADR005-06`, `REQ-ADR005-07` | La restricción de tipos no constituye por sí sola una prueba exhaustiva de PII.                     |
+| `analytics.test.ts` (`UT-14` a `UT-18`)         | `REQ-ADR005-05`, `REQ-ADR005-07`, `REQ-ADR005-08` | Cubre supresión inmediata y ausencia de API global, no todos los callers productivos.               |
+| `AnalyticsOptOut.test.tsx` (`CT-01` a `CT-09`)  | `REQ-ADR005-03`, `REQ-ADR005-04`, `REQ-ADR005-05` | Confirma accesibilidad básica mediante `aria-label`; no prueba integración en footer/App.           |
+| `check-analytics-bypass.mjs` (`CI-01`, `CI-02`) | `REQ-ADR005-08`                                   | Escanea `.ts/.tsx`, omite tests y aplica una allowlist explícita. No prueba privacidad del payload. |
 
 ## Gap Analysis y Enforcement
 
@@ -147,16 +147,16 @@ Para un test que cubra varios requisitos se usará una línea por requisito. El 
 
 ### Matriz de validación final
 
-| Requisito | Resultado QA | Evidencia | Estado formal |
-|---|---|---|---|
-| `REQ-ADR005-01` No PII ni wallets | Payload escalar y ausencia de wallet verificados; auditoría de callers pendiente | `analytics.test.ts`, revisión de payload | Parcial |
-| `REQ-ADR005-02` Sin cookies/fingerprinting/cross-site tracking | No cubierto por unit tests; falta evidencia de navegador/red y proveedor | Requiere QA de integración | Bloqueado |
-| `REQ-ADR005-03` Opt-out disponible | Renderizado y accesibilidad pasan | `AnalyticsOptOut.test.tsx` | Aprobado |
-| `REQ-ADR005-04` Persistencia `analytics_opt_out` | Escritura, eliminación, relectura y reset simulado pasan | Ambas suites | Aprobado |
-| `REQ-ADR005-05` Efecto inmediato | Supresión/reactivación y toggle spam pasan | Ambas suites | Aprobado |
-| `REQ-ADR005-06` Payload pageview/custom no-PII | Forma y props escalares pasan; catálogo de eventos sigue abierto | `analytics.test.ts` | Parcial |
-| `REQ-ADR005-07` Dominio ausente deshabilita analytics | Cero llamadas y control oculto pasan | Ambas suites | Aprobado |
-| `REQ-ADR005-08` Cero bypasses | Script CI pasa con cero violaciones | `check-analytics-bypass.mjs` | Aprobado |
+| Requisito                                                      | Resultado QA                                                                     | Evidencia                                | Estado formal |
+| -------------------------------------------------------------- | -------------------------------------------------------------------------------- | ---------------------------------------- | ------------- |
+| `REQ-ADR005-01` No PII ni wallets                              | Payload escalar y ausencia de wallet verificados; auditoría de callers pendiente | `analytics.test.ts`, revisión de payload | Parcial       |
+| `REQ-ADR005-02` Sin cookies/fingerprinting/cross-site tracking | No cubierto por unit tests; falta evidencia de navegador/red y proveedor         | Requiere QA de integración               | Bloqueado     |
+| `REQ-ADR005-03` Opt-out disponible                             | Renderizado y accesibilidad pasan                                                | `AnalyticsOptOut.test.tsx`               | Aprobado      |
+| `REQ-ADR005-04` Persistencia `analytics_opt_out`               | Escritura, eliminación, relectura y reset simulado pasan                         | Ambas suites                             | Aprobado      |
+| `REQ-ADR005-05` Efecto inmediato                               | Supresión/reactivación y toggle spam pasan                                       | Ambas suites                             | Aprobado      |
+| `REQ-ADR005-06` Payload pageview/custom no-PII                 | Forma y props escalares pasan; catálogo de eventos sigue abierto                 | `analytics.test.ts`                      | Parcial       |
+| `REQ-ADR005-07` Dominio ausente deshabilita analytics          | Cero llamadas y control oculto pasan                                             | Ambas suites                             | Aprobado      |
+| `REQ-ADR005-08` Cero bypasses                                  | Script CI pasa con cero violaciones                                              | `check-analytics-bypass.mjs`             | Aprobado      |
 
 ### Veredicto
 

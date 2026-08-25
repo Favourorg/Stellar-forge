@@ -60,6 +60,10 @@ The factory contract's `admin` address can upgrade the contract, change fees, re
 
 The `upgrade` function currently emits no Soroban event. Detection of a malicious WASM replacement currently requires active polling of the on-chain WASM hash. The monitoring script is documented in the [Incident Response Runbook](./docs/incident-response.md#22-wasm-hash-polling-required-until-issue-9-is-resolved).
 
+### IPFS unpin requires CID ownership (issue #1155)
+
+`POST /api/ipfs/unpin` requires more than a valid JWT: any wallet can obtain one for free via the challenge/response flow, so JWT possession alone does not prove a right to delete someone else's pinned content. The endpoint additionally checks the requesting wallet address against an ownership record captured at upload time (`api/_lib/pinOwnership.ts`, populated by `upload-json.ts` / `upload-file.ts`). A CID with no ownership record on file is **denied by default** — it is never treated as unpinnable-by-anyone. See `api/ipfs/unpin.ts` and its regression tests in `api/ipfs/unpin.test.ts`.
+
 ### Content Security Policy
 
 A strict CSP is enforced both as a `<meta>` tag and via HTTP response headers on the hosted deployment. See the [README](./README.md#content-security-policy-csp) for configuration details.

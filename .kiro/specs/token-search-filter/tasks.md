@@ -1,12 +1,14 @@
 # Tasks: Token Search & Filtering (MVP — Client-Side)
 
 ## Task 1: Add Search State & Input Handler
+
 - [ ] 1.1 Add `nameSymbolSearch` state and setter to TokenExplorer.tsx
 - [ ] 1.2 Create `debouncedNameSymbolSearch` using existing `useDebounce` hook (300ms)
 - [ ] 1.3 Add input change handler that updates `nameSymbolSearch` state
 - [ ] 1.4 Verify debouncing prevents excessive re-renders (test with React DevTools)
 
 ## Task 2: Implement Client-Side Name/Symbol Filter Logic
+
 - [ ] 2.1 Refactor `getFilteredTokens()` to apply both creator AND name/symbol filters
 - [ ] 2.2 Filter matches name field case-insensitively (substring match)
 - [ ] 2.3 Filter matches symbol field case-insensitively (substring match)
@@ -16,6 +18,7 @@
 - [ ] 2.7 Fallback gracefully when metadata is unavailable (use address-only search)
 
 ## Task 3: Add Search UI Components
+
 - [ ] 3.1 Add search input field above the token list
 - [ ] 3.2 Placeholder text: "Search by token name, symbol, or address..."
 - [ ] 3.3 Add clear button (×) that resets search when clicked
@@ -24,6 +27,7 @@
 - [ ] 3.6 Update empty state message: distinguish "no matches" from "no tokens exist"
 
 ## Task 4: Add Loading & Empty State UX
+
 - [ ] 4.1 Show spinner while search is debouncing (optional, high polish)
 - [ ] 4.2 Show distinct empty state when no tokens match filters
 - [ ] 4.3 Empty state has clear call-to-action: "Clear search" or "Browse all tokens"
@@ -31,6 +35,7 @@
 - [ ] 4.5 Pagination still works while search is active (user can page through filtered results)
 
 ## Task 5: Write Tests
+
 - [ ] 5.1 Test exact name match (case-insensitive)
 - [ ] 5.2 Test partial/substring name match
 - [ ] 5.3 Test symbol match (case-insensitive)
@@ -44,12 +49,14 @@
 - [ ] 5.11 Test metadata unavailable fallback (search by address only)
 
 ## Task 6: Documentation & Architecture Note
+
 - [ ] 6.1 Add code comment in `getFilteredTokens()` explaining client-side architecture choice
 - [ ] 6.2 Document scaling tradeoff: "Client-side search scales to ~1000 tokens"
 - [ ] 6.3 Add TODO comment linking to M6 migration path (Option B: indexer-backed search)
 - [ ] 6.4 Update ISSUES.md: close issue #1107, reference this spec, link to follow-up M6 task
 
 ## Acceptance Criteria (All Must Pass)
+
 - ✅ Users can search tokens by name (case-insensitive, substring)
 - ✅ Users can search tokens by symbol (case-insensitive, substring)
 - ✅ Users can search tokens by contract address

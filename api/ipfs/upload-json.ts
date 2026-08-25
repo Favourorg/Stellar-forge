@@ -3,6 +3,7 @@ import { isRateLimited } from '../_lib/rateLimit'
 import { PINATA_API_URL, pinataHeaders } from '../_lib/pinata'
 import { validateTokenMetadata } from '../_lib/schemaValidation'
 import { verifyToken } from '../_lib/jwt'
+import { recordPinOwner } from '../_lib/pinOwnership'
 
 interface UploadJsonBody {
   metadata: unknown
@@ -49,7 +50,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     typeof body.metadata !== 'object' ||
     body.metadata === null
   ) {
-    res.status(400).json({ error: 'Request body must include { metadata: object, name: string }.' })
+    res.status(400).json({
+      error: 'Request body must include { metadata: object, name: string }.',
+    })
     return
   }
 
@@ -66,7 +69,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     headers = pinataHeaders({ 'Content-Type': 'application/json' })
   } catch (err) {
-    res.status(500).json({ error: err instanceof Error ? err.message : 'Server misconfiguration.' })
+    res.status(500).json({
+      error: err instanceof Error ? err.message : 'Server misconfiguration.',
+    })
     return
   }
 
@@ -87,6 +92,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const data = (await pinataRes.json()) as { IpfsHash: string }
+
+    try {
+      await recordPinOwner(data.IpfsHash, walletAddress)
+    } catch (err) {
+      console.error('Failed to record pin owner:', err)
+    }
+
     res.status(200).json({ cid: data.IpfsHash })
   } catch {
     res.status(500).json({ error: 'Unexpected error while uploading metadata to IPFS.' })

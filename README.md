@@ -292,11 +292,11 @@ The authoritative, field-by-field reference — including parameter tables, ever
 
 ### Errors
 
-All fallible entrypoints return `Result<T, Error>`. See the full table (25 variants, e.g. `InsufficientFee`, `Unauthorized`, `ContractPaused`, `MaxSupplyExceeded`, `InvalidFeeSplit`, `NoPendingProposal`, `ProposalExpired`) in [`docs/contract-abi.md`](./docs/contract-abi.md#errors).
+All fallible entrypoints return `Result<T, Error>`. See the full table (27 variants, e.g. `InsufficientFee`, `Unauthorized`, `ContractPaused`, `MaxSupplyExceeded`, `InvalidFeeSplit`, `NoPendingProposal`, `ProposalExpired`) in [`docs/contract-abi.md`](./docs/contract-abi.md#errors).
 
 ### Events
 
-The contract publishes Soroban events on `(factory, action)` topics — `init`, `created`, `meta`, `mint`, `burn`, `fees`, `pause`, `unpause`, `adm_upd` — parsed by the frontend in `frontend/src/services/stellar-impl.ts` and rendered in the Transaction History view. See [`docs/contract-abi.md`](./docs/contract-abi.md#events) for the exact payload of each.
+The contract publishes Soroban events on `(factory, action)` topics — `init`, `created`, `meta`, `mint`, `burn`, `fees`, `pause`, `unpause`, `adm_prop`, `adm_acc`, `adm_can` — parsed by the frontend in `frontend/src/services/stellar-impl.ts` and rendered in the Transaction History view. See [`docs/contract-abi.md`](./docs/contract-abi.md#events) for the exact payload of each.
 
 ## Usage
 
@@ -980,7 +980,7 @@ The factory contract supports in-place WASM upgrades without redeploying or migr
 | 1       | Initial versioned schema — added `schema_version` field to `FactoryState`                                                                                                                                                                                                                                                                                                                                                                                                  |
 | 2       | Max-supply accounting fix (issue #1006) — `deploy_one` now seeds the per-token supply counter with `initial_supply`; version bump only, no `FactoryState` field changes. Pre-fix capped tokens must be back-filled individually via `backfill_capped_supply` (see [docs/contract-abi.md](./docs/contract-abi.md#supply-cap-accounting))                                                                                                                                    |
 | 3       | Persistent-storage migration (issue #1007) — per-token bookkeeping (`TokenInfo`, `TokenIndex`, `Metadata`, `owner`, `supply`, `CreatorTokens`) moves out of the shared `instance` ledger entry into `persistent` storage, keeping `instance` storage O(1) in `token_count`. `TokenInfo` migrates in bounded, resumable chunks per `migrate` call; everything else migrates lazily on next access (see [docs/contract-abi.md](./docs/contract-abi.md#storage-architecture)) |
-| 4       | Two-step admin rotation — added `pending_admin: Option<Address>` and `pending_admin_expiry: Option<u64>` to `FactoryState`; new `propose_admin`, `accept_admin`, `cancel_admin_proposal` entrypoints; `transfer_admin` and `update_admin` now delegate to `propose_admin` (no single-step rotation path remains). New error codes 24 (`NoPendingProposal`) and 25 (`ProposalExpired`). New events `adm_prop`, `adm_acc`, `adm_can`. |
+| 4       | Two-step admin rotation — added `pending_admin: Option<Address>` and `pending_admin_expiry: Option<u64>` to `FactoryState`; new `propose_admin`, `accept_admin`, `cancel_admin_proposal` entrypoints; `transfer_admin` and `update_admin` now delegate to `propose_admin` (no single-step rotation path remains). New error codes 26 (`NoPendingProposal`) and 27 (`ProposalExpired`). New events `adm_prop`, `adm_acc`, `adm_can`.                                        |
 
 ### Adding a new migration (version N → N+1)
 

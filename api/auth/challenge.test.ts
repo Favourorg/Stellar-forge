@@ -200,12 +200,14 @@ describe('rate limiting', () => {
 
   it('calls isRateLimited with the address for POST', async () => {
     await putChallenge(ADDRESS, 'deadbeef')
-    await handler(post({ address: ADDRESS, signature: 'c2lnbmF0dXJl' }).req, post({ address: ADDRESS, signature: 'c2lnbmF0dXJl' }).res)
+    await handler(
+      post({ address: ADDRESS, signature: 'c2lnbmF0dXJl' }).req,
+      post({ address: ADDRESS, signature: 'c2lnbmF0dXJl' }).res,
+    )
 
     expect(mockIsRateLimited).toHaveBeenCalledWith(ADDRESS)
   })
 })
-
 
 /**
  * Cryptographic round-trip tests for verifyStellarSignature.
@@ -310,4 +312,3 @@ describe('verifyStellarSignature — cryptographic paths', () => {
     expect(status).toHaveBeenCalledWith(401)
   })
 })
-

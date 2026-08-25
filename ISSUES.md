@@ -2,38 +2,38 @@
 
 This file tracks issues identified during the August 2026 codebase audit (30 issues total).
 
-| # | Area | Severity | Title | Status |
-|---|------|----------|-------|--------|
-| 1 | — | — | *(pending)* | Open |
-| 2 | — | — | *(pending)* | Open |
-| 3 | — | — | *(pending)* | Open |
-| 4 | — | — | *(pending)* | Open |
-| **5** | **API (`api/auth/challenge.ts`)** | **High** | **`verifyStellarSignature` used wrong payload + broken `tweetnacl` import — every login silently rejected** | **✅ Resolved** |
-| 6 | — | — | *(pending)* | Open |
-| 7 | — | — | *(pending)* | Open |
-| 8 | — | — | *(pending)* | Open |
-| 9 | — | — | *(pending)* | Open |
-| 10 | — | — | *(pending)* | Open |
-| 11 | — | — | *(pending)* | Open |
-| 12 | — | — | *(pending)* | Open |
-| 13 | — | — | *(pending)* | Open |
-| 14 | — | — | *(pending)* | Open |
-| 15 | — | — | *(pending)* | Open |
-| 16 | — | — | *(pending)* | Open |
-| 17 | — | — | *(pending)* | Open |
-| 18 | — | — | *(pending)* | Open |
-| 19 | — | — | *(pending)* | Open |
-| 20 | — | — | *(pending)* | Open |
-| 21 | — | — | *(pending)* | Open |
-| 22 | — | — | *(pending)* | Open |
-| 23 | — | — | *(pending)* | Open |
-| 24 | — | — | *(pending)* | Open |
-| 25 | — | — | *(pending)* | Open |
-| **26** | **API (`api/_lib/rateLimit.ts`)** | **Medium-Low** | **`clientIp()` had inverted/incorrect X-Forwarded-For parsing** | **✅ Resolved** |
-| 27 | — | — | *(pending)* | Open |
-| 28 | — | — | *(pending)* | Open |
-| 29 | — | — | *(pending)* | Open |
-| 30 | — | — | *(pending)* | Open |
+| #      | Area                              | Severity       | Title                                                                                                       | Status          |
+| ------ | --------------------------------- | -------------- | ----------------------------------------------------------------------------------------------------------- | --------------- |
+| 1      | —                                 | —              | _(pending)_                                                                                                 | Open            |
+| 2      | —                                 | —              | _(pending)_                                                                                                 | Open            |
+| 3      | —                                 | —              | _(pending)_                                                                                                 | Open            |
+| 4      | —                                 | —              | _(pending)_                                                                                                 | Open            |
+| **5**  | **API (`api/auth/challenge.ts`)** | **High**       | **`verifyStellarSignature` used wrong payload + broken `tweetnacl` import — every login silently rejected** | **✅ Resolved** |
+| 6      | —                                 | —              | _(pending)_                                                                                                 | Open            |
+| 7      | —                                 | —              | _(pending)_                                                                                                 | Open            |
+| 8      | —                                 | —              | _(pending)_                                                                                                 | Open            |
+| 9      | —                                 | —              | _(pending)_                                                                                                 | Open            |
+| 10     | —                                 | —              | _(pending)_                                                                                                 | Open            |
+| 11     | —                                 | —              | _(pending)_                                                                                                 | Open            |
+| 12     | —                                 | —              | _(pending)_                                                                                                 | Open            |
+| 13     | —                                 | —              | _(pending)_                                                                                                 | Open            |
+| 14     | —                                 | —              | _(pending)_                                                                                                 | Open            |
+| 15     | —                                 | —              | _(pending)_                                                                                                 | Open            |
+| 16     | —                                 | —              | _(pending)_                                                                                                 | Open            |
+| 17     | —                                 | —              | _(pending)_                                                                                                 | Open            |
+| 18     | —                                 | —              | _(pending)_                                                                                                 | Open            |
+| 19     | —                                 | —              | _(pending)_                                                                                                 | Open            |
+| 20     | —                                 | —              | _(pending)_                                                                                                 | Open            |
+| 21     | —                                 | —              | _(pending)_                                                                                                 | Open            |
+| 22     | —                                 | —              | _(pending)_                                                                                                 | Open            |
+| 23     | —                                 | —              | _(pending)_                                                                                                 | Open            |
+| 24     | —                                 | —              | _(pending)_                                                                                                 | Open            |
+| 25     | —                                 | —              | _(pending)_                                                                                                 | Open            |
+| **26** | **API (`api/_lib/rateLimit.ts`)** | **Medium-Low** | **`clientIp()` had inverted/incorrect X-Forwarded-For parsing**                                             | **✅ Resolved** |
+| 27     | —                                 | —              | _(pending)_                                                                                                 | Open            |
+| 28     | —                                 | —              | _(pending)_                                                                                                 | Open            |
+| 29     | —                                 | —              | _(pending)_                                                                                                 | Open            |
+| 30     | —                                 | —              | _(pending)_                                                                                                 | Open            |
 
 ---
 
@@ -55,8 +55,8 @@ This was wrong in two compounding ways:
 1. **Standard XFF semantics**: The client IP is the **leftmost** entry; subsequent entries
    are proxies appended in order. Taking the rightmost yields a proxy IP, not the client.
 2. **Vercel's actual behaviour**: [Vercel's documentation](https://vercel.com/docs/headers/request-headers#x-forwarded-for)
-   states that `x-forwarded-for` contains *"The public IP address of the client that made
-   the request"* and that Vercel **overwrites** the header (does not forward external IPs)
+   states that `x-forwarded-for` contains _"The public IP address of the client that made
+   the request"_ and that Vercel **overwrites** the header (does not forward external IPs)
    to prevent IP spoofing. On Vercel, the header is always a single IP — the real client
    IP — making multi-hop parsing entirely moot.
 
@@ -107,12 +107,13 @@ that caused **every POST `/api/auth/challenge` login attempt to silently return 
 3. **Broken `tweetnacl` import**: `const { sign } = await import('tweetnacl')` attempts
    named-export destructuring from a CJS module; `sign` is `undefined` at runtime.
    Every `sign.detached.verify(...)` call threw `TypeError: Cannot read properties
-   of undefined (reading 'detached')`, which the catch block turned into `return false`.
+of undefined (reading 'detached')`, which the catch block turned into `return false`.
    `tweetnacl` was also only a transitive dependency, not declared in `package.json`.
 
 ### Resolution
 
 `verifyStellarSignature` was rewritten to:
+
 - Construct the SEP-53 payload: `SHA256("Stellar Signed Message:\n" + challenge)`
   using Node's built-in `crypto` module (no new dependencies).
 - Decode the base64 signature to raw bytes.
@@ -123,6 +124,7 @@ that caused **every POST `/api/auth/challenge` login attempt to silently return 
   inline comments to accurately describe the SEP-53 wire format.
 
 Four cryptographic unit tests were added to `challenge.test.ts` covering:
+
 - Valid signature → 200 + JWT
 - Tampered signature → 401
 - Signature for wrong challenge → 401

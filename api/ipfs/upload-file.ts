@@ -4,6 +4,7 @@ import { isRateLimited } from '../_lib/rateLimit'
 import { PINATA_API_URL, pinataHeaders } from '../_lib/pinata'
 import { validateFileMagicBytes } from '../_lib/fileValidation'
 import { verifyToken } from '../_lib/jwt'
+import { recordPinOwner } from '../_lib/pinOwnership'
 
 // Kept just under Vercel's 4.5MB serverless function request-body ceiling.
 const MAX_FILE_SIZE = 4 * 1024 * 1024
@@ -143,6 +144,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const data = (await pinataRes.json()) as { IpfsHash: string }
+
+    try {
+      await recordPinOwner(data.IpfsHash, walletAddress)
+    } catch (err) {
+      console.error('Failed to record pin owner:', err)
+    }
+
     res.status(200).json({ cid: data.IpfsHash })
   } catch {
     res.status(500).json({ error: 'Unexpected error while uploading to IPFS.' })

@@ -130,9 +130,11 @@ export type SortOrder = 'newest' | 'oldest' | 'alphabetical'
  * `symbol_short!` value. Kept in sync with `contracts/token-factory/src/lib.rs`
  * by `scripts/check-event-topic-drift.sh` in CI.
  *
- * Note `adm_upd`, not `admin_update`: the frontend previously used a name the
- * contract never emitted, so admin rotations were silently dropped from the
- * event stream (issue #1014).
+ * `adm_upd` was the single-step admin-change event and no longer exists:
+ * `transfer_admin` / `update_admin` now delegate to `propose_admin`, so admin
+ * rotation is three events — `adm_prop` (proposed), `adm_acc` (accepted by
+ * the new admin), `adm_can` (cancelled by the current admin) — matching the
+ * two-step rotation the contract enforces.
  */
 export type ContractEventType =
   | 'init'
@@ -142,11 +144,14 @@ export type ContractEventType =
   | 'mint'
   | 'burn'
   | 'fees'
+  | 'fee_redir'
   | 'split_set'
   | 'split_clr'
   | 'pause'
   | 'unpause'
-  | 'adm_upd'
+  | 'adm_prop'
+  | 'adm_acc'
+  | 'adm_can'
   | 'wl_add'
   | 'wl_rm'
   | 'wl_tog'

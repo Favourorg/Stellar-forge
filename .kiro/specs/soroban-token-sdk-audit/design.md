@@ -23,12 +23,14 @@ A professional smart contract audit of `soroban_token_contract.wasm` (from `stel
 ### Option B: Document provenance and require explicit risk acceptance (chosen)
 
 Create `docs/token-wasm-provenance.md` that:
+
 - Identifies the canonical upstream source
 - States the honest audit status (not independently audited by this project)
 - Provides a deployment log template so every deployer records their specific hash and decision
 - Links to the mainnet checklist item that enforces this before any production deploy
 
 This approach:
+
 - Closes the unsourced "audited" claim gap immediately
 - Creates an enforceable gate in the deployment process
 - Provides an upgrade path when a future audit is completed
@@ -41,6 +43,7 @@ This approach:
 ### `docs/token-wasm-provenance.md`
 
 Sections:
+
 1. **What is `token_wasm_hash`?** — explains the security dependency
 2. **Upstream reference implementation** — table of source, SDK version, maintainer
 3. **Audit status** — honest declaration of current state; explains what "well-reviewed" vs "audited" means

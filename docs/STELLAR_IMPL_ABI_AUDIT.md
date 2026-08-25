@@ -21,6 +21,7 @@ TypeScript never caught this because `contract.call(...)` accepts a variadic `..
 ### Why It Happened
 
 Every write path independently hand-builds its argument list:
+
 - `deployToken`
 - `mintTokens`
 - `burnTokens`
@@ -77,6 +78,7 @@ All existing call sites pass with zero modifications required:
 ## Integration into CI
 
 The check runs in the `drift-checks` job in `.github/workflows/ci.yml`, alongside:
+
 - `check-abi-doc-drift.sh` (verifies ABI documentation)
 - `check-event-topic-drift.sh` (verifies event topics)
 - `check-validation-drift.sh` (verifies validation bounds)
@@ -125,10 +127,12 @@ CI will fail and prevent the broken code from being merged.
 ## Limitations & Future Enhancements
 
 ### Current Scope
+
 - Counts arguments only; does not validate argument types or order within the argument list
 - Regex-based parsing; does not use a full TypeScript AST parser
 
 ### Potential Improvements (M6+)
+
 1. **Type validation**: Compare argument types (e.g., `Address` vs `u32`) against Rust parameter types
 2. **Order validation**: Ensure arguments are reordered intentionally, not accidentally
 3. **Rust-to-TypeScript codegen**: Generate a typed argument builder from `lib.rs` signatures (removes manual argument construction entirely)
@@ -140,13 +144,14 @@ The unchecked item at `docs/CODEBASE_AUDIT_CHECKLIST.md:102-104` is now marked d
 
 ```markdown
 - [x] Add AST-based parameter validation comparing stellar-impl.ts to contract signatures
-  Implementation: scripts/check-stellar-impl-abi.mjs (integrated into CI)
-  Reference: docs/STELLAR_IMPL_ABI_AUDIT.md
+      Implementation: scripts/check-stellar-impl-abi.mjs (integrated into CI)
+      Reference: docs/STELLAR_IMPL_ABI_AUDIT.md
 ```
 
 This mechanism replaces the manual-audit approach used to resolve issue #5 with an automated, continuous check that runs on every CI job, ensuring the gap cannot silently regress.
 
 ## See Also
+
 - **Issue #5**: CRITICAL token deployment failures (RESOLVED)
 - **Issue #946**: Contract interface drift detection (RESOLVED)
 - **docs/CODEBASE_AUDIT_CHECKLIST.md**: Full audit context

@@ -28,6 +28,7 @@ Resolved via Issue 25. See [`requirements.md`](./requirements.md) for context an
 ### Task 3 — Confirm README.md has no unsourced audit claims ✅
 
 Step 4 in the deployment guide already contained the correct provenance notice:
+
 - Pinned-tag instruction (do NOT use `main`)
 - Reference to `docs/token-wasm-provenance.md`
 - Explicit statement that the project has not commissioned an independent audit
@@ -38,6 +39,7 @@ No unsourced "audited" claims found. No change required to README.md.
 ### Task 4 — Create `docs/token-wasm-provenance.md` ✅
 
 Created [`docs/token-wasm-provenance.md`](../../docs/token-wasm-provenance.md) with:
+
 - Explanation of the `token_wasm_hash` security dependency
 - Upstream source table (repository, path, interface, SDK version)
 - Honest audit status declaration
@@ -68,14 +70,15 @@ See git history for commit details.
 
 ## Files changed
 
-| File | Change |
-|---|---|
-| `docs/token-wasm-provenance.md` | Created — definitive provenance and audit status document |
-| `docs/mainnet-deployment-checklist.md` | Updated — added WASM provenance audit line item |
-| `README.md` | Already correct — no changes required |
-| `.kiro/specs/soroban-token-sdk-audit/requirements.md` | Created — this spec's requirements |
-| `.kiro/specs/soroban-token-sdk-audit/design.md` | Created — this spec's design |
-| `.kiro/specs/soroban-token-sdk-audit/tasks.md` | Created — this file |
+| File                                                  | Change                                                    |
+| ----------------------------------------------------- | --------------------------------------------------------- |
+| `docs/token-wasm-provenance.md`                       | Created — definitive provenance and audit status document |
+| `docs/mainnet-deployment-checklist.md`                | Updated — added WASM provenance audit line item           |
+| `README.md`                                           | Already correct — no changes required                     |
+| `.kiro/specs/soroban-token-sdk-audit/requirements.md` | Created — this spec's requirements                        |
+| `.kiro/specs/soroban-token-sdk-audit/design.md`       | Created — this spec's design                              |
+| `.kiro/specs/soroban-token-sdk-audit/tasks.md`        | Created — this file                                       |
+
 # Tasks: Soroban Token SDK Security Audit
 
 - [ ] 1. Execute full cargo-audit check on contracts workspace
