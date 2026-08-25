@@ -1,3 +1,10 @@
+## [1.8.6](https://github.com/Favourorg/Stellar-forge/compare/v1.8.5...v1.8.6) (2026-08-25)
+
+
+### Bug Fixes
+
+* **contract:** signal incomplete rotation from legacy admin aliases ([#1159](https://github.com/Favourorg/Stellar-forge/issues/1159)) ([#1175](https://github.com/Favourorg/Stellar-forge/issues/1175)) ([6dcaf07](https://github.com/Favourorg/Stellar-forge/commit/6dcaf07f2fa8b41c5e052d1bd0b433cc8aac8562))
+
 ## [1.8.5](https://github.com/Favourorg/Stellar-forge/compare/v1.8.4...v1.8.5) (2026-08-25)
 
 
