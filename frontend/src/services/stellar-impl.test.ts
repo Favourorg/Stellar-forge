@@ -63,10 +63,27 @@ const XDR = {
     topic1: 'AAAADwAAAAd1bnBhdXNlAA==',
     value: 'AAAAEAAAAAEAAAABAAAAEgAAAAAAAAAA/7SpxpEMV33pXktl+ZP53F+vX2pv4CdwdZDOdAw7Z/k=',
   },
-  adm_upd: {
-    topic1: 'AAAADwAAAAdhZG1fdXBkAA==',
+  // Admin rotation is two-step: adm_prop (proposed) → adm_acc (accepted),
+  // or adm_can (cancelled by the current admin). There is no adm_upd topic.
+  adm_prop: {
+    topic1: 'AAAADwAAAAhhZG1fcHJvcA==',
+    value:
+      'AAAAEAAAAAEAAAADAAAAEgAAAAAAAAAA/7SpxpEMV33pXktl+ZP53F+vX2pv4CdwdZDOdAw7Z/kAAAASAAAAAAAAAAB7ANe3xwFAZ5WBGpHb4OKOc//iQMFL1TPn/ZAo86i36QAAAAUAAAAAAAAH0A==',
+  },
+  adm_acc: {
+    topic1: 'AAAADwAAAAdhZG1fYWNjAA==',
     value:
       'AAAAEAAAAAEAAAACAAAAEgAAAAAAAAAA/7SpxpEMV33pXktl+ZP53F+vX2pv4CdwdZDOdAw7Z/kAAAASAAAAAAAAAAB7ANe3xwFAZ5WBGpHb4OKOc//iQMFL1TPn/ZAo86i36Q==',
+  },
+  adm_can: {
+    topic1: 'AAAADwAAAAdhZG1fY2FuAA==',
+    value:
+      'AAAAEAAAAAEAAAACAAAAEgAAAAAAAAAA/7SpxpEMV33pXktl+ZP53F+vX2pv4CdwdZDOdAw7Z/kAAAASAAAAAAAAAAB7ANe3xwFAZ5WBGpHb4OKOc//iQMFL1TPn/ZAo86i36Q==',
+  },
+  fee_redir: {
+    topic1: 'AAAADwAAAAlmZWVfcmVkaXIAAAA=',
+    value:
+      'AAAAEAAAAAEAAAACAAAAEgAAAAAAAAAAewDXt8cBQGeVgRqR2+DijnP/4kDBS9Uz5/2QKPOot+kAAAAKAAAAAAAAAAAAAAAAAA9CQA==',
   },
 } as const
 
@@ -105,26 +122,32 @@ describe('CONTRACT_TOPIC_MAP', () => {
     'mint',
     'burn',
     'fees',
+    'fee_redir',
     'split_set',
     'split_clr',
     'pause',
     'unpause',
-    'adm_upd',
+    'adm_prop',
+    'adm_acc',
+    'adm_can',
     'wl_add',
     'wl_rm',
     'wl_tog',
   ] as const
 
-  it('contains exactly the fifteen contract topics', () => {
+  it('contains exactly the eighteen contract topics', () => {
     expect(Object.keys(CONTRACT_TOPIC_MAP).sort()).toEqual([...EXPECTED_TOPICS].sort())
   })
 
-  it('maps adm_upd to adm_upd (not admin_update)', () => {
-    expect(CONTRACT_TOPIC_MAP['adm_upd']).toBe('adm_upd')
+  it('maps each two-step admin-rotation topic to itself', () => {
+    expect(CONTRACT_TOPIC_MAP['adm_prop']).toBe('adm_prop')
+    expect(CONTRACT_TOPIC_MAP['adm_acc']).toBe('adm_acc')
+    expect(CONTRACT_TOPIC_MAP['adm_can']).toBe('adm_can')
   })
 
-  it('does NOT contain the legacy admin_update key', () => {
+  it('does NOT contain the legacy admin_update or single-step adm_upd keys', () => {
     expect(CONTRACT_TOPIC_MAP).not.toHaveProperty('admin_update')
+    expect(CONTRACT_TOPIC_MAP).not.toHaveProperty('adm_upd')
   })
 })
 
@@ -144,7 +167,7 @@ describe('parseRpcEvent – edge cases', () => {
   it('returns null for an unrecognised topic (e.g. admin_update)', async () => {
     // The old, incorrect topic string that used to be in the frontend
     const unknownTopic = 'AAAADwAAAAxhZG1pbl91cGRhdGU=' // scvSymbol("admin_update")
-    const raw = makeRaw('adm_upd', { topic: [FACTORY_TOPIC, unknownTopic] })
+    const raw = makeRaw('adm_acc', { topic: [FACTORY_TOPIC, unknownTopic] })
     expect(await parseRpcEvent(raw)).toBeNull()
   })
 
@@ -254,28 +277,47 @@ describe('parseRpcEvent – unpause', () => {
   })
 })
 
-// ── parseRpcEvent – adm_upd (THE KEY REGRESSION TEST) ────────────────────────
+// ── parseRpcEvent – admin rotation (THE KEY REGRESSION TESTS) ───────────────
 
-describe('parseRpcEvent – adm_upd (admin rotation)', () => {
+describe('parseRpcEvent – admin rotation (adm_prop / adm_acc / adm_can)', () => {
   /**
-   * This is the regression test for the adm_upd vs admin_update mismatch.
+   * These are the regression tests for the admin-topic mismatch.
    *
-   * Before the fix, the frontend EVENT_TOPICS contained 'admin_update' while
-   * the contract emits symbol_short!("adm_upd").  The decoded topic 'adm_upd'
-   * was not in the allow-list, so parseRpcEvent returned null and every
-   * admin-rotation event was silently dropped from Transaction History and
-   * CSV exports.
+   * The frontend EVENT_TOPICS first contained 'admin_update', then the
+   * single-step 'adm_upd'; the contract now performs a two-step rotation and
+   * emits symbol_short!("adm_prop") / ("adm_acc") / ("adm_can").  A decoded
+   * topic missing from the allow-list makes parseRpcEvent return null, so
+   * every admin-rotation event is silently dropped from Transaction History
+   * and CSV exports.
    */
-  it('decodes an adm_upd event — the critical admin-rotation regression', async () => {
-    const result = await parseRpcEvent(makeRaw('adm_upd'))
+  it('decodes an adm_prop event — a rotation proposed but not yet accepted', async () => {
+    const result = await parseRpcEvent(makeRaw('adm_prop'))
     expect(result).not.toBeNull()
-    expect(result!.type).toBe('adm_upd')
+    expect(result!.type).toBe('adm_prop')
+    expect(result!.data.currentAdmin).toBe(ADDR1)
+    expect(result!.data.newAdmin).toBe(ADDR2)
+    // The expiry ledger tells a watcher when the proposal lapses.
+    expect(result!.data.expiryLedger).toBe('2000')
+  })
+
+  it('decodes an adm_acc event — the rotation that actually changes the admin', async () => {
+    const result = await parseRpcEvent(makeRaw('adm_acc'))
+    expect(result).not.toBeNull()
+    expect(result!.type).toBe('adm_acc')
     expect(result!.data.currentAdmin).toBe(ADDR1)
     expect(result!.data.newAdmin).toBe(ADDR2)
   })
 
+  it('decodes an adm_can event — a pending proposal cancelled', async () => {
+    const result = await parseRpcEvent(makeRaw('adm_can'))
+    expect(result).not.toBeNull()
+    expect(result!.type).toBe('adm_can')
+    expect(result!.data.currentAdmin).toBe(ADDR1)
+    expect(result!.data.cancelledAdmin).toBe(ADDR2)
+  })
+
   it('preserves both admin addresses in the data payload', async () => {
-    const result = await parseRpcEvent(makeRaw('adm_upd'))
+    const result = await parseRpcEvent(makeRaw('adm_acc'))
     // Both must be present and distinct — this is the information that
     // users and auditors need to audit who controls the factory.
     expect(result!.data.currentAdmin).not.toBe(result!.data.newAdmin)
@@ -286,22 +328,40 @@ describe('parseRpcEvent – adm_upd (admin rotation)', () => {
   it('returns null for the legacy admin_update topic string (no regression back)', async () => {
     // Verify that the raw string "admin_update" is never silently accepted
     const legacyTopic = 'AAAADwAAAAxhZG1pbl91cGRhdGU=' // scvSymbol("admin_update")
-    const raw = makeRaw('adm_upd', { topic: [FACTORY_TOPIC, legacyTopic] })
+    const raw = makeRaw('adm_acc', { topic: [FACTORY_TOPIC, legacyTopic] })
     expect(await parseRpcEvent(raw)).toBeNull()
+  })
+
+  it('returns null for the retired single-step adm_upd topic string', async () => {
+    const retiredTopic = 'AAAADwAAAAdhZG1fdXBkAA==' // scvSymbol("adm_upd")
+    const raw = makeRaw('adm_acc', { topic: [FACTORY_TOPIC, retiredTopic] })
+    expect(await parseRpcEvent(raw)).toBeNull()
+  })
+})
+
+// ── parseRpcEvent – fee redirect ─────────────────────────────────────────────
+
+describe('parseRpcEvent – fee_redir (fee share redirected to treasury)', () => {
+  it('decodes the skipped recipient and the redirected amount', async () => {
+    const result = await parseRpcEvent(makeRaw('fee_redir'))
+    expect(result).not.toBeNull()
+    expect(result!.type).toBe('fee_redir')
+    expect(result!.data.recipient).toBe(ADDR2)
+    expect(result!.data.amount).toBe('1000000')
   })
 })
 
 // ── CSV serialization includes admin rotation ─────────────────────────────────
 
-describe('adm_upd CSV serialization', () => {
+describe('admin-rotation CSV serialization', () => {
   /**
-   * Verify that once an adm_upd event is parsed, serializeTransactionsToCSV
+   * Verify that once an admin-rotation event is parsed, serializeTransactionsToCSV
    * would capture it.  We test the data shape because the CSV util operates
    * on TransactionHistoryItem (Horizon op model), but we can verify the parsed
    * event has the right shape to be mapped to a CSV row.
    */
-  it('parsed adm_upd event has currentAdmin and newAdmin in data', async () => {
-    const result = await parseRpcEvent(makeRaw('adm_upd'))
+  it('parsed adm_acc event has currentAdmin and newAdmin in data', async () => {
+    const result = await parseRpcEvent(makeRaw('adm_acc'))
     expect(result).not.toBeNull()
     // These fields must be present for a UI row to show both addresses
     expect(Object.keys(result!.data)).toContain('currentAdmin')
