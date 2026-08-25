@@ -10,6 +10,7 @@ Instead, report it privately using one of the following channels:
 2. **Email** — send details to `security@stellarforge.app` with the subject line `[SECURITY] <brief description>`.
 
 Please include:
+
 - A clear description of the vulnerability and its impact.
 - Steps to reproduce (proof-of-concept code or exploit path).
 - Affected contract addresses or frontend versions.
@@ -19,24 +20,24 @@ We will acknowledge your report within **72 hours** and provide an estimated fix
 
 ## Scope
 
-| Component | In scope |
-|---|---|
-| Token factory Soroban contract (mainnet + testnet) | ✅ |
-| React frontend (wallet integration, transaction flow) | ✅ |
-| IPFS / Pinata integration | ✅ |
-| Admin key custody and access controls | ✅ |
-| Dependency vulnerabilities with active exploit paths | ✅ |
+| Component                                                        | In scope                             |
+| ---------------------------------------------------------------- | ------------------------------------ |
+| Token factory Soroban contract (mainnet + testnet)               | ✅                                   |
+| React frontend (wallet integration, transaction flow)            | ✅                                   |
+| IPFS / Pinata integration                                        | ✅                                   |
+| Admin key custody and access controls                            | ✅                                   |
+| Dependency vulnerabilities with active exploit paths             | ✅                                   |
 | Third-party services (Stellar network itself, Pinata, Freighter) | ❌ — report to the respective vendor |
-| Theoretical issues with no practical exploit path | ❌ |
+| Theoretical issues with no practical exploit path                | ❌                                   |
 
 ## Severity definitions
 
-| Severity | Description |
-|---|---|
+| Severity     | Description                                                                                    |
+| ------------ | ---------------------------------------------------------------------------------------------- |
 | **Critical** | Remote code execution, admin key theft, total loss of funds, contract upgrade to attacker WASM |
-| **High** | Partial fund loss, admin privilege escalation, persistent denial of service |
-| **Medium** | Temporary DoS, fee manipulation without fund loss, user-data leakage |
-| **Low** | Minor information disclosure, UX security issues |
+| **High**     | Partial fund loss, admin privilege escalation, persistent denial of service                    |
+| **Medium**   | Temporary DoS, fee manipulation without fund loss, user-data leakage                           |
+| **Low**      | Minor information disclosure, UX security issues                                               |
 
 ## Incident response
 
@@ -58,6 +59,10 @@ The factory contract's `admin` address can upgrade the contract, change fees, re
 ### Upgrade lacks an on-chain event (issue #9)
 
 The `upgrade` function currently emits no Soroban event. Detection of a malicious WASM replacement currently requires active polling of the on-chain WASM hash. The monitoring script is documented in the [Incident Response Runbook](./docs/incident-response.md#22-wasm-hash-polling-required-until-issue-9-is-resolved).
+
+### IPFS unpin requires CID ownership (issue #1155)
+
+`POST /api/ipfs/unpin` requires more than a valid JWT: any wallet can obtain one for free via the challenge/response flow, so JWT possession alone does not prove a right to delete someone else's pinned content. The endpoint additionally checks the requesting wallet address against an ownership record captured at upload time (`api/_lib/pinOwnership.ts`, populated by `upload-json.ts` / `upload-file.ts`). A CID with no ownership record on file is **denied by default** — it is never treated as unpinnable-by-anyone. See `api/ipfs/unpin.ts` and its regression tests in `api/ipfs/unpin.test.ts`.
 
 ### Content Security Policy
 
