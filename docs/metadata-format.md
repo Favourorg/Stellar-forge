@@ -81,11 +81,14 @@ The IPFS service layer (`IPFSService.unpinLastUpload`) records the CIDs from the
 
 A scheduled cron job (`/api/cron/reconcile-pins`, every 15 minutes per `vercel.json`) acts as a safety net:
 
-1. Lists all pins from the Pinata account via `POST /data/pinList`.
-2. Reads the set of on-chain-referenced metadata URIs from the indexer store.
-3. For each pin whose CID is **not** referenced by any on-chain event and whose `date_pinned` is older than the **24‑hour grace window**, the job unpins it via `DELETE /pinning/unpin/{cid}`.
+1. Checks that the indexer is trustworthy enough to delete anything — durable store connected, backfill finished, ingest lag within 15 minutes (`checkReconciliationReadiness()`). If not, the run stops here and unpins nothing.
+2. Lists all pins from the Pinata account via `POST /data/pinList`.
+3. Reads the set of on-chain-referenced metadata URIs from the indexer store.
+4. For each pin whose CID is **not** referenced by any on-chain event and whose `date_pinned` is older than the **24‑hour grace window**, the job unpins it via `DELETE /pinning/unpin/{cid}`.
 
-The grace window ensures in-flight uploads (where the user closed the tab before the transaction could be attempted) are not prematurely cleaned up. Reconciliation is conservative: if the indexer store is unavailable or empty, all pins are preserved.
+The grace window ensures in-flight uploads (where the user closed the tab before the transaction could be attempted) are not prematurely cleaned up.
+
+Reconciliation is conservative by construction, because an unpin is irreversible. It preserves everything when the pin list or the reference-set query fails, when the readiness gate refuses, and when a single run would unpin more than 10% of the account — the circuit breaker against a wrong reference set (issue #1156). `?dryRun=1` classifies and reports without calling Pinata; `?override=1` is the manual, deliberate way past the circuit breaker. See [docs/incident-response.md §11](./incident-response.md#11-ipfs-pin-mass-unpin).
 
 ### Pinning credentials
 

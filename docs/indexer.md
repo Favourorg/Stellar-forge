@@ -22,6 +22,8 @@ and could not see tokens older than the event-retention window at all.
 | `api/_lib/indexer/sorobanChain.ts`     | Soroban RPC reads (view calls + `getEvents`)             |
 | `api/_lib/indexer/postgresStore.ts`    | Postgres implementation of `TokenStore`                  |
 | `api/_lib/indexer/memoryStore.ts`      | In-memory store for tests and local dev                  |
+| `api/_lib/indexer/store.ts`            | Store selection, durable-connect retry, health signal    |
+| `api/_lib/reconciliationReadiness.ts`  | Safety gate destructive consumers must pass              |
 | `api/cron/index-tokens.ts`             | Scheduled ingest entrypoint                              |
 | `api/tokens/`, `api/health/`           | Read API                                                 |
 | `frontend/src/services/tokenSource.ts` | `TokenSource` seam and the RPC fallback composer         |
@@ -177,19 +179,63 @@ scheduled path has no handler on disk, or if the cadence drifts coarser than
 6. **Enable the frontend** with `VITE_INDEXER_ENABLED=true` and watch the
    downgrade rate.
 
+## Consuming the indexer destructively
+
+Reads that only _display_ data can treat a partial indexer as a cache miss —
+the frontend falls back to RPC and nothing is lost. A consumer that **deletes**
+something because a row is absent cannot: to it, "not yet indexed" and "does
+not exist" are the same answer. IPFS pin reconciliation is the one such
+consumer, and issue #1156 is what happens when that distinction is skipped.
+
+Three ordinary, non-adversarial states make the token set incomplete while
+every query still succeeds:
+
+| State                      | Why the set is incomplete                                                                                                                   |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| Store degraded to memory   | A durable backend is configured but this instance could not connect, so it serves an empty in-memory store.                                 |
+| Backfill unfinished        | Phase A moves at most `BACKFILL_BATCH_SIZE × MAX_BACKFILL_BATCHES_PER_RUN` = 200 tokens per 5-minute run; a few thousand tokens take hours. |
+| Steady-state ingest behind | Recent `created`/`meta` events have not been applied yet.                                                                                   |
+
+`checkReconciliationReadiness()` (`api/_lib/reconciliationReadiness.ts`) is the
+single gate for all three. It returns `ready: false` with a `blocker` of
+`store_degraded`, `store_unreachable`, `never_ingested`, `backfill_incomplete`
+or `indexer_lagging`, and never throws — an unanswerable question is itself a
+refusal. Destructive callers must treat `ready: false` exactly like a thrown
+error.
+
+**The store no longer caches a degrade.** `getStore()` used to cache the
+in-memory fallback in a module-level variable on the first failed connect, so
+one cold-start blip made every later read on that warm instance return nothing,
+silently, for the instance's lifetime. It now retries the durable connection
+after `DURABLE_RETRY_BACKOFF_MS` (30s) and reports the degrade through
+`getStoreHealth()` — `durableConfigured && !usingDurableStore` is the signal
+that reads are meaningless.
+
 ## Monitoring
 
 `lagSeconds = now − last_ledger_close_time`, from `/api/health/indexer`.
 
-| Condition                                     | Severity                        |
-| --------------------------------------------- | ------------------------------- |
-| `lagSeconds > 15m`                            | warning                         |
-| `lagSeconds > 1h`, or `lastError` set         | page                            |
-| `backfillComplete = false` for > 24h          | warning                         |
-| `indexedCount != token_count` after reconcile | page — indicates real data loss |
+| Condition                                              | Severity                                             |
+| ------------------------------------------------------ | ---------------------------------------------------- |
+| `lagSeconds > 15m`                                     | warning                                              |
+| `lagSeconds > 1h`, or `lastError` set                  | page                                                 |
+| `backfillComplete = false` for > 24h                   | warning                                              |
+| `indexedCount != token_count` after reconcile          | page — indicates real data loss                      |
+| `durableStoreConnected = false` while `durable = true` | page — instance is serving an empty store            |
+| `reconciliationReady = false` for > 24h                | warning — orphaned pins are accumulating unreclaimed |
+
+`/api/health/indexer` carries the two reconciliation fields alongside the
+freshness ones:
+
+- `durableStoreConnected` — whether this instance is actually on the durable
+  backend, as opposed to `durable`, which only says one is configured.
+- `reconciliationReady` / `reconciliationBlocker` — whether pin reconciliation
+  is allowed to delete anything right now, and if not, why.
 
 ## Local development
 
 No database needed: without `POSTGRES_URL` the in-memory store is used, so the
 API and cron endpoint run standalone. Tests use it directly (`npm test` at the
-repo root).
+repo root). With no `POSTGRES_URL` configured the in-memory store is the
+_intended_ backend rather than a degrade, so `getStoreHealth()` reports
+`durableConfigured: false` and reconciliation gates on backfill and lag alone.

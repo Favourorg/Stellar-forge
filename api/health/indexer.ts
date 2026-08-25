@@ -5,11 +5,19 @@
  * `lagSeconds` is the gap between now and the newest ledger the indexer has
  * ingested. The frontend reads it to decide whether to trust indexed data or
  * degrade to direct RPC, and alerting reads it to page on a stalled indexer.
+ *
+ * `reconciliationReady` reports whether the indexer is complete and current
+ * enough for pin reconciliation to be allowed to delete anything (issue
+ * #1156). It is false — with `reconciliationBlocker` naming the cause —
+ * whenever the store has degraded to memory, backfill is unfinished, or ingest
+ * has fallen behind, and reconciliation skips its unpin phase in exactly those
+ * cases.
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node'
-import { getStore, isDurableStoreConfigured } from '../_lib/indexer/store'
+import { getStore, getStoreHealth, isDurableStoreConfigured } from '../_lib/indexer/store'
 import { lagSeconds, LAG_CRITICAL_SECONDS, LAG_WARNING_SECONDS } from '../_lib/indexer/ingest'
+import { checkReconciliationReadiness } from '../_lib/reconciliationReadiness'
 
 /**
  * Classify a raw indexer error message into a stable, generic category
@@ -69,6 +77,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const sanitizedError = sanitizeIndexerError(state.lastError)
+    const readiness = await checkReconciliationReadiness()
+    const storeHealth = getStoreHealth()
 
     // Unhealthy if it has never run, has fallen too far behind, or the last
     // run recorded an error. `durable === false` means results are per-process
@@ -100,6 +110,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       backfillComplete: state.backfillComplete,
       indexedCount,
       durable: isDurableStoreConfigured(),
+      // `durable` says a durable backend is configured; `durableStoreConnected`
+      // says this instance is actually using it rather than a silently
+      // degraded in-memory fallback.
+      durableStoreConnected: storeHealth.usingDurableStore,
+      reconciliationReady: readiness.ready,
+      reconciliationBlocker: readiness.blocker,
     })
   } catch (err) {
     res.status(503).json({

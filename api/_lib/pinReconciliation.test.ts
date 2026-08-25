@@ -241,3 +241,155 @@ describe('runReconciliation', () => {
     expect(result.checked).toBe(1)
   })
 })
+
+// ── Safety gates (issue #1156) ───────────────────────────────────────────────
+
+describe('runReconciliation safety gates', () => {
+  beforeEach(() => {
+    process.env.PINATA_API_KEY = 'test-key'
+    process.env.PINATA_API_SECRET = 'test-secret'
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+    delete process.env.PINATA_API_KEY
+    delete process.env.PINATA_API_SECRET
+  })
+
+  /** Stub Pinata's pinList with the given rows; records every fetch call. */
+  function stubPinata(rows: PinataPin[]) {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ count: rows.length, rows }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    return fetchMock
+  }
+
+  function deleteCalls(fetchMock: ReturnType<typeof vi.fn>) {
+    return fetchMock.mock.calls.filter(
+      ([, options]) => (options as RequestInit)?.method === 'DELETE',
+    )
+  }
+
+  it('unpins nothing when the readiness gate refuses', async () => {
+    const fetchMock = stubPinata([makePin('QmOrphanOld', NOW - 3 * DAY)])
+
+    const result = await runReconciliation(async () => [], NOW, {
+      checkReadiness: async () => ({
+        ready: false,
+        detail: 'indexer backfill has not finished; token set is partial',
+      }),
+    })
+
+    expect(deleteCalls(fetchMock)).toHaveLength(0)
+    expect(result.skipped).toBe(true)
+    expect(result.skipReason).toBe('not_ready')
+    expect(result.cleaned).toBe(0)
+    expect(result.errorMessage).toContain('backfill has not finished')
+    // The gate runs before anything else — not even the pin list is fetched.
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('treats a throwing readiness gate as a refusal', async () => {
+    const fetchMock = stubPinata([makePin('QmOrphanOld', NOW - 3 * DAY)])
+
+    const result = await runReconciliation(async () => [], NOW, {
+      checkReadiness: async () => {
+        throw new Error('store unreachable')
+      },
+    })
+
+    expect(deleteCalls(fetchMock)).toHaveLength(0)
+    expect(result.skipped).toBe(true)
+    expect(result.skipReason).toBe('not_ready')
+    expect(result.errorMessage).toContain('store unreachable')
+  })
+
+  it('proceeds normally when the gate passes', async () => {
+    const fetchMock = stubPinata([
+      makePin('QmReferenced', NOW - 3 * DAY),
+      makePin('QmOrphanOld', NOW - 3 * DAY),
+    ])
+
+    const result = await runReconciliation(async () => ['ipfs://QmReferenced'], NOW, {
+      checkReadiness: async () => ({ ready: true }),
+    })
+
+    expect(deleteCalls(fetchMock)).toHaveLength(1)
+    expect(result.skipped).toBe(false)
+    expect(result.cleaned).toBe(1)
+  })
+
+  it('dry run reports what it would unpin without calling Pinata', async () => {
+    const fetchMock = stubPinata([
+      makePin('QmOrphanA', NOW - 3 * DAY),
+      makePin('QmOrphanB', NOW - 3 * DAY),
+    ])
+
+    const result = await runReconciliation(async () => [], NOW, {
+      checkReadiness: async () => ({ ready: true }),
+      dryRun: true,
+    })
+
+    expect(deleteCalls(fetchMock)).toHaveLength(0)
+    expect(result.dryRun).toBe(true)
+    expect(result.skipped).toBe(true)
+    expect(result.skipReason).toBe('dry_run')
+    expect(result.cleaned).toBe(0)
+    expect(result.wouldUnpin.sort()).toEqual(['QmOrphanA', 'QmOrphanB'])
+  })
+
+  it('circuit breaker refuses a run that would unpin most of the account', async () => {
+    // 20 pins, all stale and none referenced: the shape of a bad reference set.
+    const rows = Array.from({ length: 20 }, (_, i) => makePin(`QmMass${i}`, NOW - 3 * DAY))
+    const fetchMock = stubPinata(rows)
+
+    const result = await runReconciliation(async () => [], NOW, {
+      checkReadiness: async () => ({ ready: true }),
+    })
+
+    expect(deleteCalls(fetchMock)).toHaveLength(0)
+    expect(result.circuitBreakerTripped).toBe(true)
+    expect(result.skipReason).toBe('circuit_breaker')
+    expect(result.cleaned).toBe(0)
+    expect(result.wouldUnpin).toHaveLength(20)
+    expect(result.errorMessage).toContain('Circuit breaker')
+  })
+
+  it('circuit breaker yields to an explicit manual override', async () => {
+    const rows = Array.from({ length: 20 }, (_, i) => makePin(`QmMass${i}`, NOW - 3 * DAY))
+    const fetchMock = stubPinata(rows)
+
+    const result = await runReconciliation(async () => [], NOW, {
+      checkReadiness: async () => ({ ready: true }),
+      overrideCircuitBreaker: true,
+    })
+
+    expect(deleteCalls(fetchMock)).toHaveLength(20)
+    expect(result.circuitBreakerTripped).toBe(false)
+    expect(result.cleaned).toBe(20)
+  })
+
+  it('circuit breaker does not block a small number of genuine orphans', async () => {
+    // 3 orphans out of 6 pins is above the ratio but below the absolute floor.
+    const rows = [
+      ...Array.from({ length: 3 }, (_, i) => makePin(`QmKeep${i}`, NOW - 3 * DAY)),
+      ...Array.from({ length: 3 }, (_, i) => makePin(`QmOrphan${i}`, NOW - 3 * DAY)),
+    ]
+    const fetchMock = stubPinata(rows)
+
+    const result = await runReconciliation(
+      async () => ['ipfs://QmKeep0', 'ipfs://QmKeep1', 'ipfs://QmKeep2'],
+      NOW,
+      { checkReadiness: async () => ({ ready: true }) },
+    )
+
+    expect(deleteCalls(fetchMock)).toHaveLength(3)
+    expect(result.circuitBreakerTripped).toBe(false)
+    expect(result.cleaned).toBe(3)
+  })
+})

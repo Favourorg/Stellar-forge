@@ -33,6 +33,21 @@ export interface PinListResponse {
   rows: PinataPin[]
 }
 
+/**
+ * Fraction of the account's pins a single run may unpin before the circuit
+ * breaker trips (issue #1156). A healthy account sheds a handful of abandoned
+ * uploads per run; anything approaching a tenth of the account means the
+ * reference set is wrong, not that the users are.
+ */
+export const MAX_UNPIN_RATIO = 0.1
+
+/**
+ * The breaker only applies above this many candidate unpins, so a tiny or
+ * brand-new account (3 pins, 1 genuine orphan) is not permanently blocked by
+ * arithmetic.
+ */
+export const UNPIN_RATIO_FLOOR = 5
+
 /** Result of one reconciliation run. */
 export interface ReconciliationResult {
   /** Total pins checked against the on-chain reference set. */
@@ -47,6 +62,46 @@ export interface ReconciliationResult {
   errorMessage: string | null
   /** Grace window in ms used for this run. */
   graceMs: number
+  /** True when the unpin phase was deliberately not run. */
+  skipped: boolean
+  /** Machine-readable reason the unpin phase was skipped, or `null`. */
+  skipReason: SkipReason | null
+  /** True when this run was a shadow run: classification only, no Pinata writes. */
+  dryRun: boolean
+  /** CIDs that would have been unpinned but were not (skip, breaker, dry run). */
+  wouldUnpin: string[]
+  /** True when the mass-unpin circuit breaker refused the run. */
+  circuitBreakerTripped: boolean
+}
+
+/** Why a run classified pins but did not unpin anything. */
+export type SkipReason = 'not_ready' | 'dry_run' | 'circuit_breaker'
+
+/**
+ * Result of the pre-flight check a caller must pass before reconciliation is
+ * allowed to delete anything. See `api/_lib/reconciliationReadiness.ts` for the
+ * production implementation.
+ */
+export interface ReconciliationGate {
+  ready: boolean
+  /** Reason for refusal, surfaced in logs and the cron response. */
+  detail?: string | null
+}
+
+/** Knobs for one reconciliation run. */
+export interface ReconciliationOptions {
+  /**
+   * Pre-flight check. When it resolves to `ready: false` — or throws — the run
+   * classifies nothing and unpins nothing. Omitted only in unit tests of the
+   * classification itself.
+   */
+  checkReadiness?: (() => Promise<ReconciliationGate>) | undefined
+  /** Shadow mode: log what would be unpinned, call Pinata for nothing. */
+  dryRun?: boolean | undefined
+  /** Override for the mass-unpin ratio; defaults to `MAX_UNPIN_RATIO`. */
+  maxUnpinRatio?: number | undefined
+  /** Manual override that lets a run exceed the ratio. Operator-only. */
+  overrideCircuitBreaker?: boolean | undefined
 }
 
 /**
@@ -195,21 +250,73 @@ export function extractCidsFromMetadataUris(uris: string[]): Set<string> {
 }
 
 /**
- * Run a full reconciliation cycle: list pins, fetch on-chain metadata URIs,
- * classify, and unpin orphans.
+ * Run a full reconciliation cycle: check the safety gate, list pins, fetch the
+ * on-chain reference set, classify, and unpin orphans.
  *
  * This is the high-level function called by the cron handler.
+ *
+ * Deleting a pin is irreversible — the original upload session and file are
+ * long gone — so every step that could make the reference set wrong stops the
+ * unpin phase entirely rather than proceeding with a partial set:
+ *
+ * - the caller's readiness gate says the indexer is degraded, mid-backfill or
+ *   lagging (issue #1156);
+ * - the reference-set query throws;
+ * - the run would unpin more than `maxUnpinRatio` of the account.
  *
  * @param getMetadataUris  Callback that returns all on-chain metadata URIs
  *                         (injectable for tests; in production backed by the
  *                         indexer store)
  * @param now              Overrideable timestamp for testing
+ * @param options          Readiness gate, dry-run and circuit-breaker knobs
  */
 export async function runReconciliation(
   getMetadataUris: () => Promise<string[]>,
   now: number = Date.now(),
+  options: ReconciliationOptions = {},
 ): Promise<ReconciliationResult> {
   const graceMs = GRACE_WINDOW_MS
+  const dryRun = options.dryRun === true
+  const maxUnpinRatio = options.maxUnpinRatio ?? MAX_UNPIN_RATIO
+
+  const base = {
+    checked: 0,
+    preserved: 0,
+    cleaned: 0,
+    errors: 0,
+    errorMessage: null as string | null,
+    graceMs,
+    skipped: false,
+    skipReason: null as SkipReason | null,
+    dryRun,
+    wouldUnpin: [] as string[],
+    circuitBreakerTripped: false,
+  }
+
+  // 0. Safety gate — refuse to classify anything as orphaned while the
+  //    reference set cannot be trusted to be complete.
+  if (options.checkReadiness) {
+    let gate: ReconciliationGate
+    try {
+      gate = await options.checkReadiness()
+    } catch (err) {
+      gate = {
+        ready: false,
+        detail: `readiness check failed: ${err instanceof Error ? err.message : String(err)}`,
+      }
+    }
+
+    if (!gate.ready) {
+      const detail = gate.detail ?? 'indexer is not in a trustworthy state'
+      console.warn(`[pin-reconciliation] skipping unpin phase — ${detail}`)
+      return {
+        ...base,
+        skipped: true,
+        skipReason: 'not_ready',
+        errorMessage: `Reconciliation skipped: ${detail}`,
+      }
+    }
+  }
 
   // 1. List all pins
   let pins: PinataPin[]
@@ -217,12 +324,8 @@ export async function runReconciliation(
     pins = await listAllPins()
   } catch (err) {
     return {
-      checked: 0,
-      preserved: 0,
-      cleaned: 0,
-      errors: 0,
+      ...base,
       errorMessage: `Failed to list pins: ${err instanceof Error ? err.message : String(err)}`,
-      graceMs,
     }
   }
 
@@ -232,12 +335,12 @@ export async function runReconciliation(
     metadataUris = await getMetadataUris()
   } catch (err) {
     return {
+      ...base,
       checked: pins.length,
       preserved: pins.length,
-      cleaned: 0,
-      errors: 0,
+      skipped: true,
+      skipReason: 'not_ready',
       errorMessage: `Failed to query on-chain metadata: ${err instanceof Error ? err.message : String(err)}`,
-      graceMs,
     }
   }
 
@@ -246,19 +349,59 @@ export async function runReconciliation(
   // 3. Classify
   const { toUnpin, preserved } = classifyPins(pins, cidInUse, now, graceMs)
 
-  // 4. Unpin orphans
+  // 4. Circuit breaker — a run that wants to delete a large fraction of the
+  //    account is far more likely to be reading a bad reference set than to
+  //    have found that much genuine garbage.
+  const ratio = pins.length > 0 ? toUnpin.length / pins.length : 0
+  if (
+    toUnpin.length > UNPIN_RATIO_FLOOR &&
+    ratio > maxUnpinRatio &&
+    options.overrideCircuitBreaker !== true
+  ) {
+    const pct = (ratio * 100).toFixed(1)
+    const limitPct = (maxUnpinRatio * 100).toFixed(1)
+    console.error(
+      `[pin-reconciliation] circuit breaker tripped: ${toUnpin.length}/${pins.length} pins ` +
+        `(${pct}%) would be unpinned, limit ${limitPct}%. Refusing; re-run with the manual ` +
+        `override once the reference set has been verified.`,
+    )
+    return {
+      ...base,
+      checked: pins.length,
+      preserved,
+      skipped: true,
+      skipReason: 'circuit_breaker',
+      circuitBreakerTripped: true,
+      wouldUnpin: toUnpin,
+      errorMessage: `Circuit breaker: ${toUnpin.length}/${pins.length} pins (${pct}%) exceed the ${limitPct}% per-run unpin limit`,
+    }
+  }
+
+  // 5. Shadow mode — report the decision without touching Pinata.
+  if (dryRun) {
+    console.warn(
+      `[pin-reconciliation] dry run: would unpin ${toUnpin.length}/${pins.length} pins` +
+        (toUnpin.length > 0 ? ` — ${toUnpin.join(', ')}` : ''),
+    )
+    return {
+      ...base,
+      checked: pins.length,
+      preserved,
+      skipped: true,
+      skipReason: 'dry_run',
+      wouldUnpin: toUnpin,
+    }
+  }
+
+  // 6. Unpin orphans
   const { cleaned, errors, errorMessage } = await unpinCids(toUnpin)
 
-  // 5. Log metrics about how many pins were preserved (in-flight / on-chain)
-  //    by the frontend unpin code vs cleaned by reconciliation.
-  //    This is surfaced in the cron response JSON.
-
   return {
+    ...base,
     checked: pins.length,
     preserved,
     cleaned,
     errors,
     errorMessage,
-    graceMs,
   }
 }
