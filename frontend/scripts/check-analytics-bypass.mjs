@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Analytics Bypass Check — issue #948
+ * Analytics Bypass Check — issue #1118 / ADR-005 REQ-ADR005-08
  *
  * Scans the source tree for files that import directly from
  * `services/analytics` and use the raw trackEvent / trackPageView /
@@ -55,12 +55,13 @@ const ALLOWED_PATHS = [
 const TEST_FILE_PATTERN = /\.test\.(ts|tsx)$/
 
 // ----------------------------------------------------------------------------
+// ADR-005: REQ-ADR005-08 - These patterns enforce zero direct analytics bypasses.
+// Every production tracking call must remain behind the centralized, consent-aware API.
 // Patterns that indicate a bypass of the consent-aware API
 // ----------------------------------------------------------------------------
 
 /** Import that pulls trackEvent or trackPageView directly from analytics.ts */
-const DIRECT_IMPORT_RE =
-  /from\s+['"][^'"]*services\/analytics['"]/
+const DIRECT_IMPORT_RE = /from\s+['"][^'"]*services\/analytics['"]/
 
 /** Direct call to window.plausible (bypasses isEnabled check entirely) */
 const WINDOW_PLAUSIBLE_RE = /window\.plausible\s*\??\s*\(/
@@ -80,7 +81,8 @@ function walkTs(dir) {
     const full = join(dir, entry)
     const stat = statSync(full)
     if (stat.isDirectory()) {
-      if (entry === 'node_modules' || entry === '__tests__' && full.includes('node_modules')) continue
+      if (entry === 'node_modules' || (entry === '__tests__' && full.includes('node_modules')))
+        continue
       results.push(...walkTs(full))
     } else if (['.ts', '.tsx'].includes(extname(full))) {
       results.push(full)
@@ -157,9 +159,9 @@ function main() {
 
   console.error(
     '  To fix: replace direct service/plausible usage with the useAnalytics hook\n' +
-    '  or route the call through trackEvent() / trackPageView() which enforce consent.\n' +
-    '  If the usage is intentional (e.g., a new allowed file), add it to ALLOWED_PATHS\n' +
-    '  in scripts/check-analytics-bypass.mjs with a comment explaining the exception.\n',
+      '  or route the call through trackEvent() / trackPageView() which enforce consent.\n' +
+      '  If the usage is intentional (e.g., a new allowed file), add it to ALLOWED_PATHS\n' +
+      '  in scripts/check-analytics-bypass.mjs with a comment explaining the exception.\n',
   )
 
   process.exit(1)

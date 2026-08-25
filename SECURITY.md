@@ -54,7 +54,7 @@ For details on how the team responds to a confirmed security incident — includ
 
 ### Admin key is a single point of trust
 
-The factory contract's `admin` address can upgrade the contract, change fees, redirect treasury funds, and transfer admin rights. Key custody is documented in the [Mainnet Deployment Checklist](./docs/mainnet-deployment-checklist.md). A compromised admin key is a **Critical** severity event; see the [Incident Response Runbook](./docs/incident-response.md) for the response procedure.
+The factory contract's `admin` address can upgrade the contract, change fees, redirect treasury funds, transfer admin rights, pause/unpause the factory, change the whitelist state, and update token metadata. Those privileged entrypoints require the exact admin authorization path enforced in `contracts/token-factory/src/lib.rs` (`admin.require_auth()` plus the admin identity check), and metadata writes remain subject to the `metadata_fee` gate, validation of the `ipfs://` URI, and the per-token freeze/version cap. Key custody is documented in the [Mainnet Deployment Checklist](./docs/mainnet-deployment-checklist.md). A compromised admin key is a **Critical** severity event; see the [Incident Response Runbook](./docs/incident-response.md) for the response procedure.
 
 ### Upgrade lacks an on-chain event (issue #9)
 

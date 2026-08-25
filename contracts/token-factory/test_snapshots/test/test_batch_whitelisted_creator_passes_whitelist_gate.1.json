@@ -366,21 +366,6 @@
                           }
                         ]
                       }
-                    },
-                    {
-                      "key": {
-                        "vec": [
-                          {
-                            "symbol": "wl"
-                          },
-                          {
-                            "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
-                          }
-                        ]
-                      },
-                      "val": {
-                        "bool": true
-                      }
                     }
                   ]
                 }

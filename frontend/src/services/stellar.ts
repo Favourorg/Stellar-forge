@@ -1,5 +1,12 @@
 import type { StellarService as IStellarService } from './stellar-impl'
 import type { Network } from '../config/stellar'
+import { ENV, isIndexerEnabled } from '../config/env'
+import {
+  createFallbackTokenSource,
+  createIndexerTokenSource,
+  type DowngradeReason,
+  type TokenSource,
+} from './tokenSource'
 
 export type { FactoryState } from '../types'
 
@@ -29,6 +36,7 @@ export class StellarService {
     symbol: string
     decimals: number
     initialSupply: string
+    maxSupply?: string | null | undefined
     salt: string
     feePayment: string
   }) {
@@ -91,9 +99,40 @@ export class StellarService {
     return impl.getContractEvents(contractId, limit, cursor)
   }
 
-  async getAllTokens(offset?: number, limit?: number) {
+  /**
+   * Token source used for read paths that the off-chain indexer can serve
+   * (issue #943). Built lazily and only when the indexer flag is on; otherwise
+   * reads go straight to RPC as before.
+   */
+  private async getTokenSource(): Promise<TokenSource> {
     const impl = await this.getImpl()
-    return impl.getAllTokens(offset, limit)
+
+    // RPC is always the fallback, and the only source when the flag is off.
+    const rpc: TokenSource = {
+      getAllTokens: (offset, limit, tokenCountSnapshot) =>
+        impl.getAllTokens(offset, limit, tokenCountSnapshot),
+      getTokenInfoByAddress: (address) => impl.getTokenInfoByAddress(address),
+    }
+
+    if (!isIndexerEnabled()) return rpc
+
+    return createFallbackTokenSource(
+      createIndexerTokenSource({ baseUrl: ENV.indexerBaseUrl }),
+      rpc,
+      { onDowngrade: (reason) => this.onIndexerDowngrade?.(reason) },
+    )
+  }
+
+  /**
+   * Notified whenever a read degrades from the indexer to RPC, so the UI can
+   * surface a "showing live chain data" indicator. A permanently broken
+   * indexer must not be able to hide behind a working app.
+   */
+  onIndexerDowngrade?: (reason: DowngradeReason) => void
+
+  async getAllTokens(offset = 0, limit = 10, tokenCountSnapshot?: number) {
+    const source = await this.getTokenSource()
+    return source.getAllTokens(offset, limit, tokenCountSnapshot)
   }
 
   async getTokensByCreator(creator: string, offset: number, limit: number) {
@@ -102,8 +141,8 @@ export class StellarService {
   }
 
   async getTokenInfoByAddress(tokenAddress: string) {
-    const impl = await this.getImpl()
-    return impl.getTokenInfoByAddress(tokenAddress)
+    const source = await this.getTokenSource()
+    return source.getTokenInfoByAddress(tokenAddress)
   }
 
   async resolveTokenInfoByAddress(tokenAddress: string) {

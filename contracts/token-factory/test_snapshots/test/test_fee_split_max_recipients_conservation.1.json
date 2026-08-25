@@ -732,6 +732,33 @@
               "key": {
                 "vec": [
                   {
+                    "symbol": "TokenAddress"
+                  },
+                  {
+                    "u32": 1
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "address": "CDWECPEHVOKI6FAHQCJGMB4TONARWNWIVD2L7YZN3KWZCNU4BGESITIC"
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 535000
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
                     "symbol": "TokenIndex"
                   },
                   {

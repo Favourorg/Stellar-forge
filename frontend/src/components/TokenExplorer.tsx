@@ -61,6 +61,18 @@ export const TokenExplorer: React.FC = () => {
 
   const tokensPerPage = 10
 
+  /**
+   * Session-scoped snapshot of `tokenCount`, read once on mount (or on an
+   * explicit Refresh) and held constant for all subsequent page fetches.
+   *
+   * This pins every page-index window to the same baseline so tokens created
+   * concurrently cannot shift the window between page 1 and page 2, producing
+   * duplicates or gaps. `undefined` while the snapshot is being fetched or
+   * if it failed — `getAllTokens` falls back to a live `getFactoryState()`
+   * call in that case, keeping the old behaviour as a safe default.
+   */
+  const tokenCountSnapshotRef = useRef<number | undefined>(undefined)
+
   // Per-mount page cache keyed by (network, contractId, pageSize, page). The
   // key embeds network + contract so a page from another chain is never served
   // after a network switch. Created-event invalidation for shared app state
@@ -170,6 +182,10 @@ export const TokenExplorer: React.FC = () => {
   // (getAllTokens → { tokens, total }), newest-first. "Latest request wins":
   // a superseded page fetch is discarded so rapid navigation cannot leave a
   // stale page rendered.
+  //
+  // On the first fetch of a session (or after an explicit Refresh that clears
+  // `tokenCountSnapshotRef`), we call `getFactoryState()` once to obtain the
+  // snapshot that pins all subsequent page windows to the same baseline.
   useEffect(() => {
     let cancelled = false
 
@@ -179,11 +195,26 @@ export const TokenExplorer: React.FC = () => {
 
     async function run() {
       try {
+        // Snapshot tokenCount once per session so all page windows are
+        // computed against the same baseline. Concurrent token creation cannot
+        // shift the window between pages while this snapshot is held.
+        if (tokenCountSnapshotRef.current === undefined) {
+          const state = await stellarService.getFactoryState()
+          if (cancelled) return
+          tokenCountSnapshotRef.current = state.tokenCount
+        }
+
+        const snapshot = tokenCountSnapshotRef.current
+
         const key = pageCacheKey(currentPage)
         const cached = pageCacheRef.current.get(key)
         const page =
           cached ??
-          (await stellarService.getAllTokens((currentPage - 1) * tokensPerPage, tokensPerPage))
+          (await stellarService.getAllTokens(
+            (currentPage - 1) * tokensPerPage,
+            tokensPerPage,
+            snapshot,
+          ))
         if (!cached) pageCacheRef.current.set(key, page)
         if (cancelled) return
 
@@ -346,6 +377,24 @@ export const TokenExplorer: React.FC = () => {
           <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
             {t('tokenExplorer.allTokens', 'All Tokens')} ({totalTokens})
           </h3>
+          {/* Explicit refresh: re-snapshots tokenCount and resets to page 1.
+              This is the only sanctioned way to pick up newly created tokens
+              mid-session — keeping the count stable across pages is the
+              snapshot's entire purpose. */}
+          <Button
+            type="button"
+            variant="secondary"
+            disabled={loadingTokens}
+            onClick={() => {
+              tokenCountSnapshotRef.current = undefined
+              pageCacheRef.current.clear()
+              eventMapsRef.current = null
+              setCurrentPage(1)
+              setReloadNonce((n) => n + 1)
+            }}
+          >
+            {t('tokenExplorer.refresh', 'Refresh')}
+          </Button>
         </div>
 
         {loadingTokens ? (
@@ -369,6 +418,8 @@ export const TokenExplorer: React.FC = () => {
                 className="mt-4"
                 onClick={() => {
                   // Bypass the cached (failed) page and any stale event maps on retry.
+                  // Also clear the snapshot so the retry re-reads tokenCount fresh.
+                  tokenCountSnapshotRef.current = undefined
                   pageCacheRef.current.delete(pageCacheKey(currentPage))
                   eventMapsRef.current = null
                   setReloadNonce((n) => n + 1)

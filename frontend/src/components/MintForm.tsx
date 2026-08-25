@@ -1,7 +1,7 @@
 import React, { useEffect, useCallback, useRef } from 'react'
 import { useForm, Controller } from 'react-hook-form'
 import { Input, Button, ConfirmModal, InsufficientBalanceWarning, Select } from './UI'
-import { useTransaction } from '../hooks/useTransaction'
+import { useTransaction, isTransactionInFlight } from '../hooks/useTransaction'
 import { useTos } from '../context/TosContext'
 import { useStellarContext } from '../context/StellarContext'
 import { useWalletContext } from '../context/WalletContext'
@@ -133,11 +133,7 @@ export const MintForm: React.FC<MintFormProps> = ({
   )
 
   const { execute: executeMint, status: txStatus } = useTransaction(mintBuilder)
-  const isSubmitting =
-    txStatus === 'simulating' ||
-    txStatus === 'signing' ||
-    txStatus === 'submitting' ||
-    txStatus === 'polling'
+  const isSubmitting = isTransactionInFlight(txStatus)
 
   const onValid = () => {
     if (!wallet.isConnected) {

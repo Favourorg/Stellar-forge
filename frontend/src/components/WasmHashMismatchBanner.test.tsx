@@ -19,11 +19,8 @@ vi.mock('../config/env', () => ({
     network: 'testnet',
     factoryContractId: 'CFACTORY',
     tokenWasmHash: 'a'.repeat(64),
-    ipfsApiKey: '',
-    ipfsApiSecret: '',
   },
   isFactoryConfigured: () => true,
-  isIpfsConfigured: () => false,
 }))
 
 const mockRefetch = vi.fn()

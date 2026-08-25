@@ -1,6 +1,7 @@
 // e2e/network-mismatch.spec.ts
 import { test, expect, Page } from '@playwright/test'
 import { mockSorobanRpc } from './helpers/rpc-mocks'
+import { mockIpfsHealth } from './helpers/api-mocks'
 import { FREIGHTER_MAINNET, FREIGHTER_TESTNET, mockFreighter } from './helpers/wallet-mock'
 
 const APP_URL = '/'
@@ -52,6 +53,10 @@ test.describe('Network Mismatch Guard', () => {
     // Mock the RPC to avoid real calls
     await mockSorobanRpc(page, FACTORY_CONTRACT, TOKEN_CONTRACT)
     await mockHorizonBalance(page)
+    // MetadataForm renders its upload-readiness panel instead of the form
+    // until the server says pinning is available; the static E2E build has no
+    // API behind it to say so.
+    await mockIpfsHealth(page)
   })
 
   test('should block MintForm when Freighter is on MAINNET', async ({ page }) => {

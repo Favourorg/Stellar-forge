@@ -3,7 +3,6 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { TokenDetail } from '../components/TokenDetail'
 import { StellarContext } from '../context/StellarContext'
-import { TOKEN_IMAGE_PLACEHOLDER } from '../utils/formatting'
 import { IPFSService, MAX_METADATA_DESCRIPTION_LENGTH } from '../services/ipfs'
 import type { StellarService } from '../services/stellar'
 import type { TokenInfo } from '../types'
@@ -66,13 +65,19 @@ const tokenInfo = (overrides: Partial<TokenInfo> = {}): TokenInfo => ({
 
 /** Stub the IPFS gateway response that TokenDetail fetches metadata from. */
 const mockPinnedMetadata = (metadata: Record<string, unknown>) => {
+  const raw = JSON.stringify(metadata)
+  resolveTokenInfoByAddress.mockResolvedValue({
+    status: 'resolved',
+    ...tokenInfo({ metadataUri: 'ipfs://QmTestCID' }),
+  })
+
   vi.stubGlobal(
     'fetch',
     vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
       // getMetadata reads text() so it can size-check before parsing.
-      text: async () => JSON.stringify(metadata),
+      text: async () => raw,
     } as unknown as Response),
   )
 }
@@ -87,7 +92,7 @@ describe('TokenDetail — untrusted metadata rendering', () => {
     vi.unstubAllGlobals()
   })
 
-  it('renders a placeholder when pinned metadata has a non-IPFS image, never the attacker URL', async () => {
+  it('discards pinned metadata with a non-IPFS image entirely, never rendering the attacker URL', async () => {
     mockPinnedMetadata({
       name: 'EvilToken',
       description: 'desc',
@@ -96,12 +101,14 @@ describe('TokenDetail — untrusted metadata rendering', () => {
 
     renderTokenDetail()
 
-    const img = await screen.findByRole('img')
+    // The document is rejected at parse time (getMetadata), so no metadata
+    // card — and therefore no <img> — renders at all.
+    await screen.findByText('TestToken')
     await waitFor(() => {
-      expect(img.getAttribute('src')).toBe(TOKEN_IMAGE_PLACEHOLDER)
+      expect(screen.queryByRole('img')).toBeNull()
     })
-    expect(img.getAttribute('src')).not.toBe(ATTACKER_URL)
-    expect(img.getAttribute('src')).toMatch(/^data:image\/svg\+xml/)
+    expect(screen.queryByText('EvilToken')).toBeNull()
+    expect(document.querySelector(`img[src="${ATTACKER_URL}"]`)).toBeNull()
   })
 
   it('renders the real image when metadata has a well-formed ipfs:// image', async () => {

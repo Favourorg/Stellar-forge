@@ -72,7 +72,9 @@ done
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 CONTRACT_DIR="$REPO_ROOT/contracts/token-factory"
-WASM_DIR="$REPO_ROOT/target/wasm32-unknown-unknown/release"
+# The cargo workspace root is `contracts/`, so build output lands in
+# `contracts/target`, not the repo-root `target`.
+WASM_DIR="$REPO_ROOT/contracts/target/wasm32v1-none/release"
 WASM_FILE="$WASM_DIR/token_factory.wasm"
 OPTIMIZED_WASM="$WASM_DIR/token_factory.optimized.wasm"
 FRONTEND_ENV="$REPO_ROOT/frontend/.env"
@@ -84,7 +86,9 @@ METADATA_FEE=30000000
 # ─── Step 1: Build ───────────────────────────────────────────────────────────
 echo ""
 echo "▶ Building contract WASM..."
-(cd "$CONTRACT_DIR" && cargo build --target wasm32-unknown-unknown --release)
+# soroban-sdk 27 rejects wasm32-unknown-unknown on Rust 1.82+; wasm32v1-none is
+# the target the contract is built and shipped from everywhere else.
+(cd "$CONTRACT_DIR" && cargo build --target wasm32v1-none --release)
 
 echo "▶ Optimizing WASM with wasm-opt..."
 wasm-opt -Oz "$WASM_FILE" -o "$OPTIMIZED_WASM"

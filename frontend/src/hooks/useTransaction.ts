@@ -3,6 +3,10 @@ import { stellarService } from '../services/stellar'
 import { captureTransactionError } from '../lib/monitoring/sentry'
 import { STELLAR_CONFIG } from '../config/stellar'
 import { nextBackoffDelay } from '../utils/pollWithBackoff'
+import {
+  TransactionSubmissionError,
+  type TransactionLifecycleStatus,
+} from '../services/transactionSubmission'
 
 /*
  * ┌──────────────────────────────────────────────────────────────────┐
@@ -20,8 +24,90 @@ import { nextBackoffDelay } from '../utils/pollWithBackoff'
  * └──────────────────────────────────────────────────────────────────┘
  */
 
+/**
+ * Every state a write can be in, including the terminal verdicts that used to
+ * collapse into a single `error`.
+ *
+ * `dropped` / `expired` mean the transaction provably never applied, so the UI
+ * may offer "try again"; `unconfirmed` means we lost sight of a live envelope,
+ * where re-signing risks executing the call twice. See
+ * `services/transactionSubmission.ts` for how each verdict is reached.
+ */
 export type TransactionStatus =
-  'idle' | 'simulating' | 'signing' | 'submitting' | 'polling' | 'success' | 'error'
+  | 'idle'
+  | 'simulating'
+  | 'signing'
+  | 'submitting'
+  | 'submitted'
+  | 'retrying'
+  | 'polling'
+  | 'success'
+  | 'error'
+  | 'dropped'
+  | 'expired'
+  | 'unconfirmed'
+
+/** Statuses where a transaction is still in flight and no verdict exists yet. */
+const IN_FLIGHT_STATUSES = new Set<TransactionStatus>([
+  'simulating',
+  'signing',
+  'submitting',
+  'submitted',
+  'retrying',
+  'polling',
+])
+
+/**
+ * True while a transaction is being simulated, signed, submitted or awaited.
+ * Components use this for their busy/disabled state so a new lifecycle status
+ * can be added without every form re-enabling its submit button mid-flight.
+ */
+export function isTransactionInFlight(status: TransactionStatus): boolean {
+  return IN_FLIGHT_STATUSES.has(status)
+}
+
+/**
+ * Normalise a status reported by a builder (which speaks the service layer's
+ * lifecycle vocabulary) into the hook's status. `confirmed`/`failed` are the
+ * service names for the hook's `success`/`error`.
+ */
+function normalizeStatus(
+  status: TransactionStatus | TransactionLifecycleStatus,
+): TransactionStatus {
+  if (status === 'confirmed') return 'success'
+  if (status === 'failed') return 'error'
+  return status
+}
+
+/** Terminal statuses a failed write can end in. */
+export type TransactionFailureKind = 'error' | 'dropped' | 'expired' | 'unconfirmed'
+
+/** What happened to a write that did not confirm, and whether retrying is safe. */
+export interface TransactionFailure {
+  kind: TransactionFailureKind
+  message: string
+  /**
+   * True only when resubmission provably cannot execute the call twice
+   * (dropped / expired / included-and-failed). Never true for `unconfirmed`.
+   */
+  safeToRetry: boolean
+  /** Hash of the signed envelope, when the network assigned one. */
+  txHash?: string
+}
+
+function toFailure(err: Error): TransactionFailure {
+  if (err instanceof TransactionSubmissionError) {
+    return {
+      kind: err.status === 'failed' ? 'error' : err.status,
+      message: err.message,
+      safeToRetry: err.safeToRetry,
+      ...(err.txHash ? { txHash: err.txHash } : {}),
+    }
+  }
+  // Errors from simulation/signing never reached the network, so nothing can
+  // have executed — retrying is safe.
+  return { kind: 'error', message: err.message, safeToRetry: true }
+}
 
 // ── Reconciliation policy ───────────────────────────────────────────────────
 //
@@ -61,34 +147,51 @@ export interface UseTransactionResult<T> {
   status: TransactionStatus
   result: T | null
   error: Error | null
+  /** Typed verdict for a failed run: what happened and whether retrying is safe. */
+  failure: TransactionFailure | null
+  /** True while the transaction is still in flight (no verdict yet). */
+  isInFlight: boolean
+  /**
+   * Whether a "try again" affordance may be offered. False until a run fails,
+   * and false for `unconfirmed` failures where the envelope may still land —
+   * re-signing there could execute create_token/mint_tokens twice.
+   */
+  canRetry: boolean
 }
 
 /**
  * Centralises transaction lifecycle: simulate → sign → submit → poll.
  *
  * @param builder - Async function that performs the full transaction and returns a result.
- *                  Use the `onStatusChange` callback to report fine-grained status transitions.
+ *                  Use the `onStatusChange` callback to report fine-grained status transitions;
+ *                  it accepts the service layer's lifecycle statuses directly.
  */
 export function useTransaction<T>(
-  builder: (onStatusChange: (status: TransactionStatus) => void) => Promise<T>,
+  builder: (
+    onStatusChange: (status: TransactionStatus | TransactionLifecycleStatus) => void,
+  ) => Promise<T>,
 ): UseTransactionResult<T> {
   const [status, setStatus] = useState<TransactionStatus>('idle')
   const [result, setResult] = useState<T | null>(null)
   const [error, setError] = useState<Error | null>(null)
+  const [failure, setFailure] = useState<TransactionFailure | null>(null)
 
   const execute = useCallback(async (): Promise<T> => {
     setStatus('simulating')
     setResult(null)
     setError(null)
+    setFailure(null)
     try {
-      const value = await builder(setStatus)
+      const value = await builder((next) => setStatus(normalizeStatus(next)))
       setResult(value)
       setStatus('success')
       return value
     } catch (err) {
       const e = err instanceof Error ? err : new Error(String(err))
+      const nextFailure = toFailure(e)
       setError(e)
-      setStatus('error')
+      setFailure(nextFailure)
+      setStatus(nextFailure.kind)
       throw e
     }
   }, [builder])
@@ -97,20 +200,51 @@ export function useTransaction<T>(
     setStatus('idle')
     setResult(null)
     setError(null)
+    setFailure(null)
   }, [])
 
-  return { execute, reset, status, result, error }
+  return {
+    execute,
+    reset,
+    status,
+    result,
+    error,
+    failure,
+    isInFlight: isTransactionInFlight(status),
+    canRetry: failure?.safeToRetry ?? false,
+  }
 }
 
 // ─── Polling (post-submission status check) ────────────────────────────────
 
-export type TransactionPollStatus = 'pending' | 'success' | 'failed'
+/**
+ * `unconfirmed` is deliberately distinct from `failed`: the transaction was
+ * accepted by the network and simply has not been seen to land within the
+ * polling window. Reporting that as a failure is what previously invited users
+ * to re-sign a transaction that could still be included — a double-execution
+ * hazard for create_token / mint_tokens.
+ */
+export type TransactionPollStatus = 'pending' | 'success' | 'failed' | 'unconfirmed'
 
 export interface UseTransactionPollingResult {
   status: TransactionPollStatus
   error?: string
   /** Sentry event ID for the polling failure, when available. */
   sentryEventId?: string
+  /**
+   * True only when the transaction is known not to have applied. `unconfirmed`
+   * is never safe — the envelope may still land.
+   */
+  safeToRetry: boolean
+}
+
+/**
+ * A hash that Horizon does not know about yet is the expected answer before
+ * inclusion, not an error — it must not end the poll.
+ */
+function isNotFoundError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err)
+  return /not found/i.test(message)
 }
 
 const INITIAL_DELAY_MS = 500
@@ -185,6 +319,20 @@ export function useTransactionPolling(txHash: string): UseTransactionPollingResu
         }
       } catch (err) {
         if (settled) return
+
+        // "Not found" means the transaction has not been included *yet* —
+        // the same distinction the RPC poller draws between NOT_FOUND and a
+        // transport failure. Keep polling until the overall timeout decides.
+        if (isNotFoundError(err)) {
+          const delay = nextBackoffDelay(attempt, {
+            initialDelayMs: INITIAL_DELAY_MS,
+            maxDelayMs: MAX_DELAY_MS,
+          })
+          attempt += 1
+          pollTimeoutId = setTimeout(poll, delay)
+          return
+        }
+
         settled = true
         clearTimeout(pollTimeoutId)
         setStatus('failed')
@@ -211,9 +359,13 @@ export function useTransactionPolling(txHash: string): UseTransactionPollingResu
       if (settled) return
       settled = true
       clearTimeout(pollTimeoutId)
-      setStatus('failed')
-      const errorMessage = 'Timeout'
-      setError(errorMessage)
+      // Not a failure: the transaction was accepted and may still land. The
+      // UI must say so rather than inviting a re-sign.
+      setStatus('unconfirmed')
+      setError(
+        'Not confirmed yet — the transaction was submitted but has not been included within ' +
+          'the polling window. Check the explorer before submitting it again.',
+      )
 
       captureTransactionError(new Error(`Transaction polling timed out: ${txHash}`), {
         txHash,
@@ -230,6 +382,11 @@ export function useTransactionPolling(txHash: string): UseTransactionPollingResu
     }
   }, [txHash])
 
-  if (error === undefined) return sentryEventId ? { status, sentryEventId } : { status }
-  return sentryEventId ? { status, error, sentryEventId } : { status, error }
+  // A transaction that was included and failed applied no state changes, so
+  // retrying is safe; `unconfirmed` (and the pre-verdict `pending`) is not.
+  const safeToRetry = status === 'failed'
+
+  const base = { status, safeToRetry }
+  if (error === undefined) return sentryEventId ? { ...base, sentryEventId } : base
+  return sentryEventId ? { ...base, error, sentryEventId } : { ...base, error }
 }

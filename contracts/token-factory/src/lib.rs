@@ -36,6 +36,16 @@ pub enum DataKey {
     /// boundaries without loading every page.
     CreatorTokenCount(Address),
     TokenIndex(Address),
+    /// Reverse of `TokenIndex`: the contract address registered at 1-based
+    /// creation index `u32`.
+    ///
+    /// Without this, the factory's enumerable key space (`1..=token_count`)
+    /// could only yield `TokenInfo`, which does not carry the token's own
+    /// address — so nothing could walk the full token set from contract state
+    /// alone. Off-chain indexers were forced to reconstruct addresses from
+    /// `created` events, which only reach back as far as the RPC's event
+    /// retention window (issue #943).
+    TokenAddress(u32),
     Metadata(Address),
     MetadataVersion(Address),
     MetadataFrozen(Address),
@@ -77,7 +87,17 @@ pub struct TokenInfo {
 
 /// Current schema version written by `initialize` and bumped by `migrate`.
 /// Increment this constant whenever `FactoryState` gains new fields.
-pub const CURRENT_SCHEMA_VERSION: u32 = 3;
+pub const CURRENT_SCHEMA_VERSION: u32 = 4;
+
+/// Number of ledgers a pending admin proposal remains valid before it expires.
+///
+/// At ~6 seconds per ledger, 17,280 ledgers ≈ 28.8 hours — long enough for
+/// the proposed admin to notice and sign, short enough that a stale proposal
+/// from a key that has since changed hands cannot be accepted years later.
+/// The current admin may always cancel a proposal early via
+/// `cancel_admin_proposal`; an expired proposal is treated the same as a
+/// cancelled one.
+pub const ADMIN_PROPOSAL_TTL_LEDGERS: u64 = 17_280;
 
 #[contracttype]
 #[derive(Clone)]
@@ -140,6 +160,14 @@ pub struct FactoryState {
     /// When true, only addresses on the whitelist may call `create_token` or
     /// `create_tokens_batch`.
     pub whitelist_enabled: bool,
+    /// The proposed next admin address, pending acceptance. `None` when no
+    /// proposal is live. Written by `propose_admin`, cleared by `accept_admin`
+    /// or `cancel_admin_proposal`.
+    pub pending_admin: Option<Address>,
+    /// Ledger number at which the pending proposal expires. `None` when no
+    /// proposal is live. A proposal is live iff `pending_admin.is_some()` AND
+    /// the current ledger sequence has not yet reached this value.
+    pub pending_admin_expiry: Option<u64>,
 }
 
 #[contracterror]
@@ -176,6 +204,19 @@ pub enum Error {
     ZeroFeeSplitEntry = 22,
     /// Metadata has been frozen and can no longer be updated
     MetadataFrozen = 23,
+    /// A fee transfer to `treasury` itself failed (either the direct
+    /// non-split payment, or the redirect of a bad split recipient's share
+    /// / rounding remainder). There is no further fallback recipient, so
+    /// this is a hard error that aborts the call.
+    TreasuryTransferFailed = 24,
+    /// `create_tokens_batch` batch size exceeds `MAX_BATCH_SIZE`
+    BatchSizeExceeded = 24,
+    /// `accept_admin` called when no proposal is pending, or the proposed
+    /// address does not match the caller
+    NoPendingProposal = 24,
+    /// The pending admin proposal has passed its expiry ledger and can no
+    /// longer be accepted; the current admin must open a new proposal
+    ProposalExpired = 25,
 }
 
 #[contract]
@@ -224,6 +265,18 @@ const MIGRATE_TOKEN_INFO_CHUNK: u32 = 20;
 /// `MAX_FEE_SPLIT_RECIPIENTS` recipients are rejected with
 /// `Error::TooManyFeeSplitRecipients` before any storage write occurs.
 pub const MAX_FEE_SPLIT_RECIPIENTS: u32 = 10;
+
+/// Maximum number of tokens allowed in a single `create_tokens_batch` call.
+///
+/// Measured against Soroban's per-transaction CPU/memory/ledger-entry
+/// budgets (see `docs/contract-abi.md`'s "Batch size limits and resource
+/// costs" table): batch size 20 stays comfortably within mainnet limits,
+/// while resource exhaustion is observed at batch size 30. This was
+/// previously enforced only client-side (`frontend/src/utils/validation.ts`
+/// → `MAX_BATCH_SIZE`), which a caller invoking the contract directly could
+/// bypass entirely; it is now enforced here so every caller gets the same
+/// clean, typed rejection.
+pub const MAX_BATCH_SIZE: u32 = 20;
 
 #[contractimpl]
 impl TokenFactory {
@@ -280,6 +333,8 @@ impl TokenFactory {
             token_count: 0,
             whitelist_enabled: false,
             schema_version: CURRENT_SCHEMA_VERSION,
+            pending_admin: None,
+            pending_admin_expiry: None,
         };
 
         env.storage().instance().set(&DataKey::State, &state);
@@ -314,8 +369,18 @@ impl TokenFactory {
     /// distribution deterministic regardless of map iteration order.
     ///
     /// Per-recipient transfer failures are isolated: a recipient whose
-    /// address cannot accept the fee token does NOT abort the whole call —
-    /// their share is redirected to treasury so user transactions always succeed.
+    /// address cannot accept the fee token (frozen account, revoked
+    /// trustline, clawback-locked balance, misbehaving contract, ...) does
+    /// NOT abort the whole call. Each recipient transfer uses
+    /// `try_transfer` rather than the panicking `transfer`; a failure is
+    /// caught and that recipient's share is redirected to `treasury`
+    /// instead, and a `(factory, fee_redir)` event is emitted so admins can
+    /// detect a broken split recipient without reading contract logs.
+    ///
+    /// `treasury` itself has no further fallback: if the redirect transfer
+    /// (or the direct non-split payment) to `treasury` fails, `distribute_fee`
+    /// returns `Error::TreasuryTransferFailed` and the whole call reverts,
+    /// since there is nowhere else to safely park the funds.
     fn distribute_fee(
         env: &Env,
         state: &FactoryState,
@@ -389,21 +454,39 @@ impl TokenFactory {
                 remainder = remainder.saturating_sub(1);
             }
 
-            // Pass 3: execute transfers; redirect any leftover to treasury.
-            let treasury_extra: i128 = remainder; // any unassigned remainder
+            // Pass 3: execute transfers. A recipient whose transfer fails
+            // (frozen account, revoked trustline, clawback-locked balance,
+            // misbehaving contract, ...) does NOT abort the call — their
+            // share is redirected to treasury instead, per the isolation
+            // guarantee documented on `distribute_fee` above.
+            let mut treasury_extra: i128 = remainder; // any unassigned rounding remainder
             for i in 0..n {
                 if let (Ok(Some(addr)), Ok(Some(share))) = (addrs.try_get(i), floors.try_get(i)) {
                     if share > 0 {
-                        fee_client.transfer(payer, &addr, &share);
+                        if fee_client.try_transfer(payer, &addr, &share).is_err() {
+                            treasury_extra = treasury_extra
+                                .checked_add(share)
+                                .ok_or(Error::ArithmeticOverflow)?;
+                            env.events().publish(
+                                (symbol_short!("factory"), symbol_short!("fee_redir")),
+                                (addr, share),
+                            );
+                        }
                     }
                 }
             }
 
-            if treasury_extra > 0 {
-                fee_client.transfer(payer, &state.treasury, &treasury_extra);
+            // The redirect target itself has no further fallback — if the
+            // treasury can't accept the fee token, that's a hard error.
+            if treasury_extra > 0
+                && fee_client
+                    .try_transfer(payer, &state.treasury, &treasury_extra)
+                    .is_err()
+            {
+                return Err(Error::TreasuryTransferFailed);
             }
-        } else {
-            fee_client.transfer(payer, &state.treasury, &amount);
+        } else if fee_client.try_transfer(payer, &state.treasury, &amount).is_err() {
+            return Err(Error::TreasuryTransferFailed);
         }
         Ok(())
     }
@@ -550,6 +633,34 @@ impl TokenFactory {
         (symbol_short!("wl"), address.clone())
     }
 
+    /// Single source of truth for "is this address whitelisted?" (issue #913).
+    ///
+    /// Whitelist entries are written to `persistent` storage, but binaries
+    /// predating the persistent-storage migration wrote them to `instance`.
+    /// `read_addr_keyed` checks persistent first and falls back to the legacy
+    /// `instance` copy, so this answers correctly for entries written by
+    /// either binary. Both the `is_whitelisted` view and the `create_token` /
+    /// `create_tokens_batch` enforcement gates go through this helper — they
+    /// previously used different lookups, so an entry present in only one of
+    /// the two locations would be reported as whitelisted by the view while
+    /// still being rejected at creation time (or vice versa).
+    fn whitelist_contains(env: &Env, address: &Address) -> bool {
+        Self::read_addr_keyed(env, &Self::whitelist_key(address)).unwrap_or(false)
+    }
+
+    /// Reject `creator` when whitelist enforcement is on and they are not
+    /// listed. No-op when enforcement is disabled.
+    fn require_whitelisted(
+        env: &Env,
+        state: &FactoryState,
+        creator: &Address,
+    ) -> Result<(), Error> {
+        if state.whitelist_enabled && !Self::whitelist_contains(env, creator) {
+            return Err(Error::NotWhitelisted);
+        }
+        Ok(())
+    }
+
     pub fn add_to_whitelist(env: Env, admin: Address, address: Address) -> Result<(), Error> {
         admin.require_auth();
         let state = Self::load_state(&env)?;
@@ -557,9 +668,6 @@ impl TokenFactory {
             return Err(Error::Unauthorized);
         }
         Self::set_persistent(&env, &Self::whitelist_key(&address), &true);
-        env.storage()
-            .instance()
-            .set(&Self::whitelist_key(&address), &true);
         env.events().publish(
             (symbol_short!("factory"), symbol_short!("wl_add")),
             (address,),
@@ -578,9 +686,6 @@ impl TokenFactory {
         // Also clear a pre-migration copy, if any, so a stale `instance`
         // entry can't resurrect the whitelisting after removal.
         env.storage().instance().remove(&key);
-        env.storage()
-            .instance()
-            .remove(&Self::whitelist_key(&address));
         env.events().publish(
             (symbol_short!("factory"), symbol_short!("wl_rm")),
             (address,),
@@ -589,7 +694,7 @@ impl TokenFactory {
     }
 
     pub fn is_whitelisted(env: Env, address: Address) -> bool {
-        Self::read_addr_keyed(&env, &Self::whitelist_key(&address)).unwrap_or(false)
+        Self::whitelist_contains(&env, &address)
     }
 
     pub fn set_whitelist_enabled(env: Env, admin: Address, enabled: bool) -> Result<(), Error> {
@@ -622,7 +727,8 @@ impl TokenFactory {
         name: String,
         symbol: String,
         decimals: u32,
-        initial_supply: u128,
+        initial_supply: i128,
+        max_supply: Option<i128>,
         fee_payment: i128,
     ) -> Result<Address, Error> {
         Self::require_not_paused(&env)?;
@@ -633,18 +739,37 @@ impl TokenFactory {
         if state.locked {
             return Err(Error::Reentrancy);
         }
+
+        // Validate up-front — before any state mutation, lock, or fee charge —
+        // using the same shared routine and the same ordering as
+        // `create_tokens_batch`, so both paths reject identical inputs with
+        // identical error codes.
+        Self::validate_token_params(&name, &symbol, decimals, initial_supply, max_supply)?;
+
+        if fee_payment < state.base_fee {
+            return Err(Error::InsufficientFee);
+        }
+
+        // Whitelist gate: when enabled, only whitelisted addresses may create tokens.
+        Self::require_whitelisted(&env, &state, &creator)?;
+
+        // Fail fast if token count would overflow before charging any fee.
+        if state.token_count.checked_add(1).is_none() {
+            return Err(Error::ArithmeticOverflow);
+        }
+
         state.locked = true;
         Self::save_state(&env, &state);
 
         let result = Self::create_token_inner(
             &env,
-            creator,
+            &creator,
             salt,
             name,
             symbol,
             decimals,
             initial_supply,
-            fee_payment,
+            max_supply,
             &mut state,
         );
 
@@ -657,76 +782,111 @@ impl TokenFactory {
     #[allow(clippy::too_many_arguments)]
     fn create_token_inner(
         env: &Env,
-        creator: Address,
+        creator: &Address,
         salt: BytesN<32>,
         name: String,
         symbol: String,
         decimals: u32,
-        initial_supply: u128,
-        fee_payment: i128,
+        initial_supply: i128,
+        max_supply: Option<i128>,
         state: &mut FactoryState,
     ) -> Result<Address, Error> {
-        if name.is_empty() || name.len() > 32 {
-            state.locked = false;
-            return Err(Error::InvalidTokenParams);
-        }
-        if symbol.is_empty() || symbol.len() > 12 {
-            state.locked = false;
-            return Err(Error::InvalidTokenParams);
-        }
-        if decimals > 18 {
-            state.locked = false;
-            return Err(Error::InvalidParameters);
-        }
-        if fee_payment < state.base_fee {
-            state.locked = false;
-            return Err(Error::InsufficientFee);
-        }
-        // Whitelist gate: when enabled, only whitelisted addresses may create tokens.
-        if state.whitelist_enabled {
-            let wl_key = Self::whitelist_key(&creator);
-            let is_wl: bool = env.storage().instance().get(&wl_key).unwrap_or(false);
-            if !is_wl {
-                state.locked = false;
-                return Err(Error::NotWhitelisted);
-            }
-        }
-        // initial_supply is u128 but token::mint accepts i128.
-        // Values > i128::MAX silently wrap via `as i128`; reject them early.
-        if initial_supply > i128::MAX as u128 {
-            state.locked = false;
-            return Err(Error::InvalidParameters);
-        }
-        // Fail fast if token count would overflow
-        if state.token_count.checked_add(1).is_none() {
-            state.locked = false;
-            return Err(Error::ArithmeticOverflow);
-        }
-        // Guard: u128 values above i128::MAX would wrap silently to a negative
-        // number when cast to i128, allowing a negative mint.  Reject them
-        // with InvalidParameters before the cast so the invariant
-        // "minted supply ≥ 0" is always upheld.
-        if initial_supply > i128::MAX as u128 {
-            state.locked = false;
-            return Err(Error::InvalidParameters);
-        }
-
         // Charge exactly `base_fee` — `fee_payment` is only the caller's
         // authorized upper bound (see issue #1008), so any surplus above
         // the required fee is never transferred.
-        Self::distribute_fee(env, state, &creator, state.base_fee)?;
+        Self::distribute_fee(env, state, creator, state.base_fee)?;
 
+        Self::record_token(
+            env,
+            creator,
+            salt,
+            name,
+            symbol,
+            decimals,
+            initial_supply,
+            max_supply,
+            state,
+        )
+    }
+
+    /// Validate the user-supplied parameters for a single token. Shared by
+    /// both `create_token` and `create_tokens_batch` so the two paths accept
+    /// and reject exactly the same inputs with exactly the same error codes.
+    ///
+    /// Error codes — one per fault class, identical across both paths:
+    /// - name empty or > 32 bytes, or symbol empty or > 12 bytes →
+    ///   `InvalidTokenParams`
+    /// - decimals > 18 → `InvalidDecimals`
+    /// - initial_supply < 0, or a `max_supply` that is ≤ 0 or below
+    ///   `initial_supply` → `InvalidParameters`
+    fn validate_token_params(
+        name: &String,
+        symbol: &String,
+        decimals: u32,
+        initial_supply: i128,
+        max_supply: Option<i128>,
+    ) -> Result<(), Error> {
+        if name.is_empty() || name.len() > 32 {
+            return Err(Error::InvalidTokenParams);
+        }
+        if symbol.is_empty() || symbol.len() > 12 {
+            return Err(Error::InvalidTokenParams);
+        }
+        if decimals > 18 {
+            return Err(Error::InvalidDecimals);
+        }
+        if initial_supply < 0 {
+            return Err(Error::InvalidParameters);
+        }
+        if let Some(cap) = max_supply {
+            if cap <= 0 || initial_supply > cap {
+                return Err(Error::InvalidParameters);
+            }
+        }
+        Ok(())
+    }
+
+    /// Deploy one token contract and write all of its factory bookkeeping.
+    /// Shared by both creation paths so the on-chain record is byte-for-byte
+    /// identical regardless of which entrypoint created the token.
+    ///
+    /// Assumes parameters have already passed `validate_token_params` and that
+    /// the caller holds the reentrancy lock. Bumps `token_count`, mints
+    /// `initial_supply` to the creator, seeds the tracked-supply counter for
+    /// capped tokens (issue #1006), writes `TokenInfo`/`TokenIndex`/owner,
+    /// appends to the creator's page, and emits the `created` event.
+    #[allow(clippy::too_many_arguments)]
+    fn record_token(
+        env: &Env,
+        creator: &Address,
+        salt: BytesN<32>,
+        name: String,
+        symbol: String,
+        decimals: u32,
+        initial_supply: i128,
+        max_supply: Option<i128>,
+        state: &mut FactoryState,
+    ) -> Result<Address, Error> {
         let token_address = env
             .deployer()
             .with_address(creator.clone(), salt)
             .deploy(state.token_wasm_hash.clone());
 
-        TokenInitClient::new(env, &token_address).initialize(&creator, &decimals, &name, &symbol);
+        TokenInitClient::new(env, &token_address).initialize(creator, &decimals, &name, &symbol);
 
         if initial_supply > 0 {
-            // Safe: value is guaranteed ≤ i128::MAX by the guard above.
-            token::StellarAssetClient::new(env, &token_address)
-                .mint(&creator, &(initial_supply as i128));
+            token::StellarAssetClient::new(env, &token_address).mint(creator, &initial_supply);
+        }
+
+        // Seed the tracked-supply counter with `initial_supply` so
+        // `mint_tokens`'s cap check accounts for tokens already minted at
+        // creation time. Without this, a capped token created with
+        // `initial_supply == max_supply` could still be minted for another
+        // full `max_supply`, since the counter (which `mint_tokens` reads via
+        // `.unwrap_or(0)`) would otherwise start at zero (issue #1006).
+        if max_supply.is_some() {
+            let supply_key = (&token_address, symbol_short!("supply"));
+            Self::set_persistent(env, &supply_key, &initial_supply);
         }
 
         state.token_count = state
@@ -747,101 +907,14 @@ impl TokenFactory {
                 creator: creator.clone(),
                 created_at: env.ledger().timestamp(),
                 burn_enabled: true,
-                max_supply: None,
-            },
-        );
-
-        Self::append_creator_token(env, &creator, index)?;
-
-        Self::set_persistent(env, &DataKey::TokenIndex(token_address.clone()), &index);
-        Self::set_persistent(env, &(&token_address, symbol_short!("owner")), &creator);
-
-        env.events().publish(
-            (symbol_short!("factory"), symbol_short!("created")),
-            (token_address.clone(), creator, token_name, token_symbol),
-        );
-        Ok(token_address)
-    }
-
-    fn validate_batch_params(p: &BatchTokenParams) -> Result<(), Error> {
-        if p.name.is_empty() || p.name.len() > 32 {
-            return Err(Error::InvalidParameters);
-        }
-        if p.symbol.is_empty() || p.symbol.len() > 12 {
-            return Err(Error::InvalidParameters);
-        }
-        if p.decimals > 18 {
-            return Err(Error::InvalidParameters);
-        }
-        if p.initial_supply < 0 {
-            return Err(Error::InvalidParameters);
-        }
-        if let Some(cap) = p.max_supply {
-            if cap <= 0 || p.initial_supply > cap {
-                return Err(Error::InvalidParameters);
-            }
-        }
-        Ok(())
-    }
-
-    fn deploy_one(
-        env: &Env,
-        creator: &Address,
-        p: BatchTokenParams,
-        state: &mut FactoryState,
-    ) -> Result<Address, Error> {
-        let token_address = env
-            .deployer()
-            .with_address(creator.clone(), p.salt)
-            .deploy(state.token_wasm_hash.clone());
-
-        TokenInitClient::new(env, &token_address).initialize(
-            creator,
-            &p.decimals,
-            &p.name,
-            &p.symbol,
-        );
-
-        if p.initial_supply > 0 {
-            token::StellarAssetClient::new(env, &token_address).mint(creator, &p.initial_supply);
-        }
-
-        // Seed the tracked-supply counter with `initial_supply` so `mint_tokens`'s
-        // cap check accounts for tokens already minted at creation time.
-        // Without this, a capped token created with `initial_supply == max_supply`
-        // could still be minted for another full `max_supply`, since the counter
-        // (which `mint_tokens` reads via `.unwrap_or(0)`) would otherwise start
-        // at zero regardless of how much was minted here (issue #1006).
-        if p.max_supply.is_some() {
-            let supply_key = (&token_address, symbol_short!("supply"));
-            Self::set_persistent(env, &supply_key, &p.initial_supply);
-        }
-
-        state.token_count = state
-            .token_count
-            .checked_add(1)
-            .ok_or(Error::ArithmeticOverflow)?;
-        let index = state.token_count;
-
-        let token_name = p.name.clone();
-        let token_symbol = p.symbol.clone();
-        Self::set_persistent(
-            env,
-            &DataKey::TokenInfo(index),
-            &TokenInfo {
-                name: p.name,
-                symbol: p.symbol,
-                decimals: p.decimals,
-                creator: creator.clone(),
-                created_at: env.ledger().timestamp(),
-                burn_enabled: true,
-                max_supply: p.max_supply,
+                max_supply,
             },
         );
 
         Self::append_creator_token(env, creator, index)?;
 
         Self::set_persistent(env, &DataKey::TokenIndex(token_address.clone()), &index);
+        Self::set_persistent(env, &DataKey::TokenAddress(index), &token_address);
         Self::set_persistent(env, &(&token_address, symbol_short!("owner")), creator);
 
         env.events().publish(
@@ -878,9 +951,18 @@ impl TokenFactory {
         if count == 0 {
             return Err(Error::InvalidParameters);
         }
+        if tokens.len() > MAX_BATCH_SIZE {
+            return Err(Error::BatchSizeExceeded);
+        }
 
         for p in tokens.iter() {
-            Self::validate_batch_params(&p)?;
+            Self::validate_token_params(
+                &p.name,
+                &p.symbol,
+                p.decimals,
+                p.initial_supply,
+                p.max_supply,
+            )?;
         }
 
         // Front-load token count overflow check for the entire batch before any deployment happens.
@@ -897,13 +979,7 @@ impl TokenFactory {
             return Err(Error::InsufficientFee);
         }
         // Whitelist gate: when enabled, only whitelisted addresses may create tokens.
-        if state.whitelist_enabled {
-            let wl_key = Self::whitelist_key(&creator);
-            let is_wl: bool = env.storage().instance().get(&wl_key).unwrap_or(false);
-            if !is_wl {
-                return Err(Error::NotWhitelisted);
-            }
-        }
+        Self::require_whitelisted(&env, &state, &creator)?;
 
         state.locked = true;
         Self::save_state(&env, &state);
@@ -914,7 +990,17 @@ impl TokenFactory {
         // or Err occurs during deployment or fee transfer, the entire invocation transaction
         // (including all deployed sub-tokens, storage updates, and mints) is automatically reverted.
         for p in tokens.into_iter() {
-            let addr = Self::deploy_one(&env, &creator, p, &mut state)?;
+            let addr = Self::record_token(
+                &env,
+                &creator,
+                p.salt,
+                p.name,
+                p.symbol,
+                p.decimals,
+                p.initial_supply,
+                p.max_supply,
+                &mut state,
+            )?;
             addresses.push_back(addr);
         }
 
@@ -1161,20 +1247,36 @@ impl TokenFactory {
             return Err(Error::InvalidBurnAmount);
         }
 
+        // Trust boundary: the factory must only ever invoke token contracts it
+        // deployed. `token_address` MUST resolve to a registered factory token
+        // *before* we touch it — otherwise `burn` would act as an open proxy,
+        // letting anyone point the factory at an arbitrary contract, have it
+        // invoke that contract (running attacker code with the factory as the
+        // caller) and emit an official-looking factory `burn` event referencing
+        // a token the factory never created — polluting the indexed history the
+        // Transaction History view renders. Holders of external (non-factory)
+        // tokens can always burn directly on those contracts; there is no
+        // legitimate factory-burn path for them, so an unregistered address is
+        // an error, not a pass-through.
+        //
+        // The lookup is performed before any external call (including
+        // `balance`), so an unregistered address is rejected without the
+        // factory ever invoking it. Making the lookup mandatory also makes the
+        // `burn_enabled` gate unconditional: no code path reaches the burn call
+        // without having verified the flag.
+        let index: u32 =
+            Self::migrate_addr_keyed(&env, &DataKey::TokenIndex(token_address.clone()))
+                .ok_or(Error::TokenNotFound)?;
+        let info: TokenInfo = Self::migrate_addr_keyed(&env, &DataKey::TokenInfo(index))
+            .ok_or(Error::TokenNotFound)?;
+        if !info.burn_enabled {
+            return Err(Error::Unauthorized);
+        }
+
         let token = token::TokenClient::new(&env, &token_address);
         let balance = token.balance(&from);
         if amount > balance {
             return Err(Error::BurnAmountExceedsBalance);
-        }
-
-        if let Some(index) =
-            Self::migrate_addr_keyed::<_, u32>(&env, &DataKey::TokenIndex(token_address.clone()))
-        {
-            let info: TokenInfo = Self::migrate_addr_keyed(&env, &DataKey::TokenInfo(index))
-                .ok_or(Error::TokenNotFound)?;
-            if !info.burn_enabled {
-                return Err(Error::Unauthorized);
-            }
         }
 
         // Acquire the reentrancy lock before the external burn call.
@@ -1414,7 +1516,7 @@ impl TokenFactory {
 
         if on_chain_version < 2 {
             // Version 2: fixes the max-supply accounting bug (issue #1006) where
-            // `deploy_one` never seeded the tracked-supply counter with
+            // the creation path never seeded the tracked-supply counter with
             // `initial_supply`, letting a capped token be minted past its
             // advertised cap. This step only bumps the version marker — it does
             // NOT loop over every stored `TokenInfo`, because `token_count` is
@@ -1479,22 +1581,26 @@ impl TokenFactory {
             }
             env.storage().instance().set(&cursor_key, &target);
 
+            // The version marker only advances once the cursor has walked the
+            // whole `1..=token_count` key space. Bumping it earlier would
+            // strand any `TokenInfo` entries beyond the cursor in `instance`
+            // storage, because a subsequent `migrate` call would skip this
+            // block entirely — defeating the chunking that makes the walk
+            // resumable in the first place. Callers migrating a factory with
+            // more than `MIGRATE_TOKEN_INFO_CHUNK` tokens must therefore call
+            // `migrate` repeatedly until `get_state().schema_version == 3`.
             if target >= state.token_count {
                 let mut s = Self::load_state(&env)?;
+                // Version 3 also adds the `whitelist_enabled` field,
+                // defaulting to `false` so existing deployments keep their
+                // open behaviour until an admin explicitly enables
+                // enforcement via `set_whitelist_enabled`.
+                s.whitelist_enabled = false;
                 s.schema_version = 3;
                 Self::save_state(&env, &s);
                 on_chain_version = 3;
                 env.storage().instance().set(&sv_key, &on_chain_version);
             }
-            // Version 3: add the `whitelist_enabled` field, defaulting to
-            // `false` so existing deployments keep their open behaviour until an
-            // admin explicitly enables enforcement via `set_whitelist_enabled`.
-            let mut s = Self::load_state(&env)?;
-            s.whitelist_enabled = false;
-            s.schema_version = 3;
-            Self::save_state(&env, &s);
-            on_chain_version = 3;
-            env.storage().instance().set(&sv_key, &on_chain_version);
         }
 
         // Each future migration step follows the same pattern:
@@ -1509,12 +1615,28 @@ impl TokenFactory {
         // a contract that is K versions behind will walk through every pending
         // step in a single `migrate` call, arriving at CURRENT_SCHEMA_VERSION.
 
+        if on_chain_version < 4 {
+            // Version 4: add `pending_admin` and `pending_admin_expiry` fields
+            // to `FactoryState` for two-step admin rotation (issue #1095 /
+            // two-step-admin-rotation PR). Both fields default to `None` so
+            // existing deployments remain in "no pending proposal" state after
+            // migration — there is no behavioral change until `propose_admin`
+            // is first called.
+            let mut s = Self::load_state(&env)?;
+            s.pending_admin = None;
+            s.pending_admin_expiry = None;
+            s.schema_version = 4;
+            Self::save_state(&env, &s);
+            on_chain_version = 4;
+            env.storage().instance().set(&sv_key, &on_chain_version);
+        }
+
         let _ = on_chain_version; // suppress unused-variable warning when no further steps exist
         Ok(())
     }
 
     /// One-time back-fill of the tracked-supply counter for a capped token
-    /// created before `deploy_one` began seeding it with `initial_supply`
+    /// created before the creation path began seeding it with `initial_supply`
     /// (issue #1006). See docs/contract-abi.md for the full procedure.
     ///
     /// `verified_supply` must be independently reconstructed off-chain — the
@@ -1566,21 +1688,24 @@ impl TokenFactory {
         Ok(())
     }
 
-    pub fn transfer_admin(env: Env, admin: Address, new_admin: Address) -> Result<(), Error> {
-        admin.require_auth();
-        let mut state = Self::load_state(&env)?;
-        if state.admin != admin {
-            return Err(Error::Unauthorized);
-        }
-        if admin == new_admin {
-            return Err(Error::InvalidParameters);
-        }
-        state.admin = new_admin;
-        Self::save_state(&env, &state);
-        Ok(())
-    }
-
-    pub fn update_admin(env: Env, current_admin: Address, new_admin: Address) -> Result<(), Error> {
+    /// Propose a new admin for the factory (step 1 of two-step rotation).
+    ///
+    /// The current admin names `new_admin` as the proposed successor. The
+    /// proposal is recorded in `FactoryState` and expires after
+    /// `ADMIN_PROPOSAL_TTL_LEDGERS` ledgers (~28 hours). Until then the
+    /// proposed admin can accept (via `accept_admin`) or the current admin
+    /// can cancel (via `cancel_admin_proposal`). Issuing a second proposal
+    /// **overwrites** the first, resetting the expiry window and allowing the
+    /// current admin to correct a typo without waiting for the old proposal to
+    /// expire.
+    ///
+    /// Emits `adm_prop` so a watcher can detect a pending rotation before it
+    /// takes effect.
+    ///
+    /// Does **not** complete the rotation — only `accept_admin` does that.
+    /// There is no single-step rotation path: `transfer_admin` and
+    /// `update_admin` both delegate here.
+    pub fn propose_admin(env: Env, current_admin: Address, new_admin: Address) -> Result<(), Error> {
         current_admin.require_auth();
         let mut state = Self::load_state(&env)?;
         if state.admin != current_admin {
@@ -1589,13 +1714,106 @@ impl TokenFactory {
         if current_admin == new_admin {
             return Err(Error::InvalidParameters);
         }
+        let expiry = env
+            .ledger()
+            .sequence()
+            .checked_add(ADMIN_PROPOSAL_TTL_LEDGERS as u32)
+            .ok_or(Error::ArithmeticOverflow)? as u64;
+        state.pending_admin = Some(new_admin.clone());
+        state.pending_admin_expiry = Some(expiry);
+        Self::save_state(&env, &state);
+        env.events().publish(
+            (symbol_short!("factory"), symbol_short!("adm_prop")),
+            (current_admin, new_admin, expiry),
+        );
+        Ok(())
+    }
+
+    /// Complete a pending admin-rotation proposal (step 2 of two-step rotation).
+    ///
+    /// The **proposed** admin — the address that was named in the most recent
+    /// `propose_admin` call — must call this and supply their own auth. This
+    /// cryptographically proves the proposed key can sign, eliminating the risk
+    /// of locking the factory to an uncontrolled address.
+    ///
+    /// Fails with:
+    /// - `Error::NoPendingProposal` — no proposal is pending, or the caller
+    ///   is not the proposed admin.
+    /// - `Error::ProposalExpired` — the proposal's expiry ledger has passed.
+    ///
+    /// Emits `adm_acc` on success.
+    pub fn accept_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        new_admin.require_auth();
+        let mut state = Self::load_state(&env)?;
+        let proposed = match state.pending_admin.as_ref() {
+            Some(p) => p.clone(),
+            None => return Err(Error::NoPendingProposal),
+        };
+        if proposed != new_admin {
+            return Err(Error::NoPendingProposal);
+        }
+        let expiry = state.pending_admin_expiry.take().unwrap_or(0);
+        // Clear the proposal now — whether expired or accepted we don't want it live.
+        state.pending_admin = None;
+        if (env.ledger().sequence() as u64) >= expiry {
+            // Proposal expired — clear it and report.
+            Self::save_state(&env, &state);
+            return Err(Error::ProposalExpired);
+        }
+        let old_admin = state.admin.clone();
         state.admin = new_admin.clone();
         Self::save_state(&env, &state);
         env.events().publish(
-            (symbol_short!("factory"), symbol_short!("adm_upd")),
-            (current_admin, new_admin),
+            (symbol_short!("factory"), symbol_short!("adm_acc")),
+            (old_admin, new_admin),
         );
         Ok(())
+    }
+
+    /// Cancel a pending admin-rotation proposal.
+    ///
+    /// Only the **current** admin may cancel. Calling this when no proposal
+    /// is pending is a no-op (idempotent). Emits `adm_can` when a live
+    /// proposal is cancelled.
+    pub fn cancel_admin_proposal(env: Env, current_admin: Address) -> Result<(), Error> {
+        current_admin.require_auth();
+        let mut state = Self::load_state(&env)?;
+        if state.admin != current_admin {
+            return Err(Error::Unauthorized);
+        }
+        if state.pending_admin.is_none() {
+            // Nothing to cancel — idempotent.
+            return Ok(());
+        }
+        let cancelled = match state.pending_admin.take() {
+            Some(addr) => addr,
+            None => return Ok(()), // already cleared — idempotent
+        };
+        state.pending_admin_expiry = None;
+        Self::save_state(&env, &state);
+        env.events().publish(
+            (symbol_short!("factory"), symbol_short!("adm_can")),
+            (current_admin, cancelled),
+        );
+        Ok(())
+    }
+
+    /// Initiate an admin rotation via the legacy `transfer_admin` name.
+    ///
+    /// Delegates to `propose_admin` so **no single-step rotation path
+    /// remains**. Callers using this name get step-1 (proposal) only;
+    /// the proposed admin must still call `accept_admin` to complete the
+    /// handover. Retained for ABI compatibility with tooling built before the
+    /// two-step model was introduced.
+    pub fn transfer_admin(env: Env, admin: Address, new_admin: Address) -> Result<(), Error> {
+        Self::propose_admin(env, admin, new_admin)
+    }
+
+    /// Initiate an admin rotation via the legacy `update_admin` name.
+    ///
+    /// Delegates to `propose_admin` — see `transfer_admin` note above.
+    pub fn update_admin(env: Env, current_admin: Address, new_admin: Address) -> Result<(), Error> {
+        Self::propose_admin(env, current_admin, new_admin)
     }
 
     pub fn get_state(env: Env) -> Result<FactoryState, Error> {
@@ -1627,6 +1845,52 @@ impl TokenFactory {
     /// silently truncates once history exceeds one page.
     pub fn get_token_index(env: Env, token_address: Address) -> Result<u32, Error> {
         Self::read_addr_keyed(&env, &DataKey::TokenIndex(token_address)).ok_or(Error::TokenNotFound)
+    }
+
+    /// Resolve a token's contract address from its 1-based creation index —
+    /// the inverse of `get_token_index`.
+    ///
+    /// This is what makes the factory's token set enumerable from contract
+    /// state alone: a client can walk `1..=get_state().token_count` and
+    /// resolve every token, with no dependence on the RPC's event-retention
+    /// window. `get_token_info(index)` deliberately does not carry the
+    /// address, so before this existed an off-chain indexer could only learn
+    /// addresses from `created` events and therefore could never recover
+    /// tokens older than that window (issue #943).
+    ///
+    /// Returns `TokenNotFound` for an index that was never registered, and
+    /// for tokens created by a factory binary predating this mapping — see
+    /// `backfill_token_address` for repairing those.
+    pub fn get_token_address(env: Env, index: u32) -> Result<Address, Error> {
+        Self::read_addr_keyed(&env, &DataKey::TokenAddress(index)).ok_or(Error::TokenNotFound)
+    }
+
+    /// Populate the `index -> address` mapping for a token created before it
+    /// existed (issue #943).
+    ///
+    /// Permissionless and self-verifying rather than admin-gated: the index is
+    /// not taken on trust but read back from the token's own authoritative
+    /// `TokenIndex(address)` entry, so the only mapping that can ever be
+    /// written is the one the factory already recorded at creation time. A
+    /// caller supplying an unrelated or attacker-controlled address simply
+    /// gets `TokenNotFound`, and re-running on an already-mapped index is a
+    /// no-op. That makes it safe to expose to the indexer, which is the
+    /// component that actually needs it and holds no admin key.
+    pub fn backfill_token_address(env: Env, token_address: Address) -> Result<u32, Error> {
+        let index: u32 =
+            Self::migrate_addr_keyed(&env, &DataKey::TokenIndex(token_address.clone()))
+                .ok_or(Error::TokenNotFound)?;
+
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::TokenAddress(index))
+        {
+            return Ok(index);
+        }
+
+        Self::set_persistent(&env, &DataKey::TokenAddress(index), &token_address);
+        Ok(index)
     }
 
     /// Return a token's full `TokenInfo` addressed by its contract address.
@@ -1725,6 +1989,63 @@ impl TokenFactory {
             }
         }
         page_out
+    }
+}
+
+/// Test/fuzz-only helper for registering a token in factory storage without
+/// going through `create_token`'s WASM-deploy path — no real token WASM is
+/// available to `cargo test` or fuzz targets (see `mod bench`'s note below).
+/// Compiled only when the `testutils` feature is enabled, so it never ships
+/// in the production WASM build (the release build does not enable it).
+///
+/// This is a plain associated function, not a `#[contractimpl]` entrypoint,
+/// so it never appears in the contract's on-chain ABI. It exists so external
+/// crates that depend on this one as an ordinary library (e.g. the fuzz
+/// targets in `fuzz/`, which cannot reach this crate's private `DataKey`/
+/// `TokenInfo` types any other way) can register a real token — typically a
+/// Stellar Asset Contract — and then exercise genuine public entrypoints
+/// like `burn` against it, mirroring what `record_token` writes for a
+/// deployed token.
+#[cfg(feature = "testutils")]
+impl TokenFactory {
+    pub fn fuzz_seed_token(
+        env: &Env,
+        token_addr: &Address,
+        creator: &Address,
+        name: String,
+        symbol: String,
+        decimals: u32,
+        burn_enabled: bool,
+        max_supply: Option<i128>,
+    ) -> u32 {
+        let mut state = Self::load_state(env).expect("factory must be initialized before seeding");
+        state.token_count = state
+            .token_count
+            .checked_add(1)
+            .expect("token_count overflow while seeding");
+        let index = state.token_count;
+
+        Self::set_persistent(
+            env,
+            &DataKey::TokenInfo(index),
+            &TokenInfo {
+                name,
+                symbol,
+                decimals,
+                creator: creator.clone(),
+                created_at: env.ledger().timestamp(),
+                burn_enabled,
+                max_supply,
+            },
+        );
+        Self::append_creator_token(env, creator, index)
+            .expect("append_creator_token failed while seeding");
+        Self::set_persistent(env, &DataKey::TokenIndex(token_addr.clone()), &index);
+        Self::set_persistent(env, &DataKey::TokenAddress(index), token_addr);
+        Self::set_persistent(env, &(token_addr, symbol_short!("owner")), creator);
+
+        Self::save_state(env, &state);
+        index
     }
 }
 

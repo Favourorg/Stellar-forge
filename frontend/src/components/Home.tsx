@@ -16,6 +16,7 @@ export const Home: React.FC = () => {
     symbol: string
     decimals: number
     initialSupply: string
+    maxSupply?: string
   }) => {
     const result = await stellarService.deployToken({
       ...params,

@@ -1,29 +1,13 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { randomBytes } from 'crypto'
 import { issueToken, verifyToken } from '../_lib/jwt'
+import { deleteChallenge, getChallenge, putChallenge } from '../_lib/challengeStore'
+import { isRateLimited } from '../_lib/rateLimit'
 
-// Challenges expire after 5 minutes
-const CHALLENGE_TTL_MS = 5 * 60 * 1000
-
-interface StoredChallenge {
-  value: string
-  createdAt: number
-}
-
-// In production, swap for Vercel KV. For now, per-instance memory.
-// This is acceptable for challenges since they're short-lived and being
-// re-requested is not costly — the user can just generate a new one.
-const challenges = new Map<string, StoredChallenge>()
-
-// Periodic cleanup: remove expired challenges every minute
-setInterval(() => {
-  const now = Date.now()
-  for (const [address, challenge] of challenges.entries()) {
-    if (now - challenge.createdAt > CHALLENGE_TTL_MS) {
-      challenges.delete(address)
-    }
-  }
-}, 60 * 1000)
+// Challenge storage — TTL, one-time use and the durable/dev-fallback split all
+// live in `../_lib/challengeStore` (issue #1091). It used to be a Map in this
+// module, which meant the GET that issued a challenge and the POST that
+// verified it had to be served by the same instance to work at all.
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // POST /api/auth/challenge { address: string, signature: string, publicKey: string }
@@ -52,12 +36,26 @@ async function handleGetChallenge(req: VercelRequest, res: VercelResponse) {
     return
   }
 
+  // Rate limit per address to prevent abuse (challenge issuance has no
+  // proof-of-possession, so it gets a tighter window than upload endpoints)
+  if (await isRateLimited(address)) {
+    res.status(429).json({ error: 'Too many challenge requests. Please try again later.' })
+    return
+  }
+
   // Generate a new challenge for this address
   const challengeValue = randomBytes(32).toString('hex')
-  challenges.set(address, {
-    value: challengeValue,
-    createdAt: Date.now(),
-  })
+
+  // The challenge is only handed to the client once it is durably stored. A
+  // failed write would otherwise produce a challenge that no later request can
+  // verify — the exact symptom issue #1091 exists to remove.
+  try {
+    await putChallenge(address, challengeValue)
+  } catch (err) {
+    console.error('Failed to store auth challenge:', err)
+    res.status(500).json({ error: 'Could not issue a challenge. Try again.' })
+    return
+  }
 
   res.status(200).json({ challenge: challengeValue })
 }
@@ -75,25 +73,43 @@ async function handleVerifyChallenge(req: VercelRequest, res: VercelResponse) {
     return
   }
 
-  const storedChallenge = challenges.get(address)
+  // Rate limit per address to prevent brute-force probing of the
+  // signature-verification path
+  if (await isRateLimited(address)) {
+    res.status(429).json({ error: 'Too many verification attempts. Please try again later.' })
+    return
+  }
+
+  // A store failure must not be reported as a missing challenge: that would
+  // tell a correct client to request a new one, forever, while the real fault
+  // is server-side.
+  let storedChallenge: string | null
+  try {
+    storedChallenge = await getChallenge(address)
+  } catch (err) {
+    console.error('Failed to read auth challenge:', err)
+    res.status(500).json({ error: 'Could not verify the challenge. Try again.' })
+    return
+  }
+
   if (!storedChallenge) {
     res.status(400).json({ error: 'Challenge not found or expired. Request a new challenge.' })
     return
   }
 
-  // Verify the signature using Stellar's public key cryptography
-  // Freighter's signMessage returns the signature as XDR; we use the Stellar SDK to verify
+  // Verify the signature using Stellar's public key cryptography (SEP-53).
+  // Freighter's signMessage returns a base64-encoded 64-byte Ed25519 signature.
   try {
-    const verified = await verifyStellarSignature(address, storedChallenge.value, signature)
+    const verified = await verifyStellarSignature(address, storedChallenge, signature)
 
     if (!verified) {
       res.status(401).json({ error: 'Signature verification failed.' })
-      challenges.delete(address)
+      await deleteChallenge(address)
       return
     }
 
     // Clean up used challenge
-    challenges.delete(address)
+    await deleteChallenge(address)
 
     // Issue a JWT valid for 5 minutes
     const token = issueToken(address, 5 * 60 * 1000)
@@ -106,39 +122,39 @@ async function handleVerifyChallenge(req: VercelRequest, res: VercelResponse) {
 }
 
 /**
- * Verifies a Stellar message signature.
- * `signature` is the XDR-encoded signed message from Freighter's signMessage.
- * We use ed25519 public key cryptography (Stellar uses ed25519).
+ * Verifies a Stellar message signature produced by Freighter's signMessage.
+ *
+ * Wire format (SEP-53, @stellar/freighter-api v6+):
+ *   signedMessage = base64( Ed25519Sign( SHA256("Stellar Signed Message:\n" + challenge) ) )
+ *
+ * Verification algorithm:
+ *   1. Reconstruct the SEP-53 payload: SHA256("Stellar Signed Message:\n" + message)
+ *   2. Decode the base64 signature to 64 raw bytes.
+ *   3. Use Keypair.verify() from stellar-sdk (ed25519) to check the signature.
+ *
+ * Only stellar-sdk is required — no tweetnacl, no StrKey decoding.
  */
 async function verifyStellarSignature(
   address: string,
   message: string,
-  signatureXdr: string,
+  signatureBase64: string,
 ): Promise<boolean> {
   try {
-    // Import Stellar SDK for verification
-    const { StrKey, Keypair, TransactionBuilder } = await import('@stellar/js-sdk')
+    const { createHash } = await import('crypto')
+    const { Keypair } = await import('stellar-sdk')
 
-    // Extract public key from the address (Stellar address is an encoded public key)
-    const publicKey = StrKey.decodeEd25519PublicKey(address)
+    // SEP-53: prefix + message, then SHA-256
+    const payload = Buffer.from('Stellar Signed Message:\n' + message, 'utf-8')
+    const hash = createHash('sha256').update(payload).digest()
 
-    // Create a keypair from the public key (for verification only)
+    // Decode the raw 64-byte Ed25519 signature from base64
+    const signatureBytes = Buffer.from(signatureBase64, 'base64')
+
+    // Keypair.verify(data, signature) — returns true if valid, false otherwise
     const keypair = Keypair.fromPublicKey(address)
-
-    // The signatureXdr from Freighter contains the signature; extract it
-    // For simplicity, we assume the signature is base64-encoded directly
-    // (Freighter returns the signature directly, not wrapped in XDR)
-    const signatureBuffer = Buffer.from(signatureXdr, 'base64')
-
-    // Verify using libsodium/tweetnacl (ed25519)
-    const { sign } = await import('tweetnacl')
-    const messageBuffer = Buffer.from(message, 'utf-8')
-
-    // ed25519 verification: open returns the message if valid, null if invalid
-    const result = sign.detached.verify(messageBuffer, signatureBuffer, publicKey)
-    return result
+    return keypair.verify(hash, signatureBytes)
   } catch (err) {
-    // If verification fails for any reason, reject
+    // Malformed address, malformed base64, or SDK error → reject
     console.error('Signature verification error:', err)
     return false
   }

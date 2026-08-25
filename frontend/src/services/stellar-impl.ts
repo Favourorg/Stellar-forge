@@ -32,7 +32,19 @@ import type { Network } from '../config/stellar'
 import { withRetry, HttpError } from '../utils/retry'
 import { fetchAllContractEvents } from '../utils/fetchAllContractEvents'
 import { parseContractError } from '../utils/contractErrors'
-import { nextBackoffDelay } from '../utils/pollWithBackoff'
+import {
+  submitAndConfirm,
+  TransactionSubmissionError,
+  type SubmitAndConfirmResult,
+  type SubmitOptions,
+  type TransactionLifecycleStatus,
+} from './transactionSubmission'
+
+export {
+  TransactionSubmissionError,
+  type TransactionFailureStatus,
+  type TransactionLifecycleStatus,
+} from './transactionSubmission'
 
 export type { FactoryState } from '../types'
 
@@ -49,10 +61,43 @@ function hexToBytes(hex: string): Uint8Array {
   return bytes
 }
 
+/**
+ * Encode a Rust `Option<i128>` contract argument.
+ *
+ * Soroban does not represent `Option<T>` as a tagged union on the wire: `None`
+ * is the plain `Void` ScVal and `Some(v)` is the inner value *itself*, with no
+ * wrapper (see soroban-env-common's `TryFromVal<E, Option<T>> for Val`, which
+ * returns `Val::VOID` for `None` and `t.try_into_val(env)` for `Some`).
+ * Wrapping the value in a `["Some", v]` vector — the encoding used for
+ * `#[contracttype]` enum variants — makes the host's `Option` decode fail,
+ * because a non-void value is handed straight to `i128`'s converter.
+ *
+ * `null`, `undefined` and `''` all encode as `None`.
+ */
+function optionI128(value: string | null | undefined): xdr.ScVal {
+  if (value === null || value === undefined || value === '') {
+    return xdr.ScVal.scvVoid()
+  }
+  return nativeToScVal(BigInt(value), { type: 'i128' })
+}
+
 /** Convert a raw error into the project's AppError shape. */
 function toAppError(err: unknown): AppError {
   const parsed = parseContractError(err)
   return { code: 'CONTRACT_ERROR', message: parsed.message }
+}
+
+/**
+ * Map a raw error to the one thrown to callers.
+ *
+ * A {@link TransactionSubmissionError} is passed through unchanged: its message
+ * is already user-facing and, crucially, its `status`/`safeToRetry` fields tell
+ * the UI whether re-signing could double-execute the call. Flattening it into a
+ * plain `Error` (as every write path used to) discarded exactly that.
+ */
+function toUserFacingError(err: unknown): Error {
+  if (err instanceof TransactionSubmissionError) return err
+  return new Error(toAppError(err).message)
 }
 
 /**
@@ -119,18 +164,22 @@ function getRpcServer(network: Network): rpc.Server {
 // ── Transaction lifecycle ─────────────────────────────────────────────────────
 
 /**
- * Simulate, sign via Freighter, submit, and poll until confirmed.
- * Returns the transaction hash on success.
+ * Simulate, sign via Freighter, submit, and wait for a definitive verdict.
+ * Returns the transaction hash on confirmed inclusion.
  *
- * Both simulation and submission are wrapped with retry logic so that
- * transient failures (including 429 rate-limit responses) are handled
- * with exponential backoff before the user sees an error.
+ * Simulation is wrapped with retry logic so that transient failures (including
+ * 429 rate-limit responses) are handled with exponential backoff. Submission
+ * and inclusion tracking are delegated to `transactionSubmission`, which gives
+ * every `sendTransaction` status its own path and rejects with a typed
+ * {@link TransactionSubmissionError} (`dropped` / `expired` / `failed` /
+ * `unconfirmed`) instead of a generic attempt-count timeout.
  */
-async function simulateAndSubmit(
+async function simulateAndSubmitDetailed(
   server: rpc.Server,
   tx: ReturnType<TransactionBuilder['build']>,
   network: Network,
-): Promise<string> {
+  onStatus?: (status: TransactionLifecycleStatus) => void,
+): Promise<SubmitAndConfirmResult> {
   const simResult = await withRetry(() => server.simulateTransaction(tx))
 
   if (rpc.Api.isSimulationError(simResult)) {
@@ -142,41 +191,24 @@ async function simulateAndSubmit(
 
   const assembled = rpc.assembleTransaction(tx, simResult).build()
   const signedXdr = await walletService.signTransaction(assembled.toXDR(), network)
+  const signedTx = TransactionBuilder.fromXDR(signedXdr, getNetworkPassphrase(network))
 
-  const submitResult = await withRetry(() =>
-    server.sendTransaction(TransactionBuilder.fromXDR(signedXdr, getNetworkPassphrase(network))),
-  )
-
-  if (submitResult.status === 'ERROR') {
-    throw parseContractError(
-      new Error(submitResult.errorResult?.toXDR('base64') ?? 'Submission failed'),
-    )
-  }
-
-  await pollTransaction(server, submitResult.hash)
-  return submitResult.hash
+  const options: SubmitOptions = onStatus ? { onStatus } : {}
+  return submitAndConfirm(server, signedTx, options)
 }
 
-async function pollTransaction(
+/** {@link simulateAndSubmitDetailed} for callers that only need the hash. */
+async function simulateAndSubmit(
   server: rpc.Server,
-  hash: string,
-  maxAttempts = 20,
-  initialDelayMs = 500,
-  maxDelayMs = 4_000,
-): Promise<rpc.Api.GetTransactionResponse> {
-  for (let i = 0; i < maxAttempts; i++) {
-    const result = (await withRetry(() =>
-      server.getTransaction(hash),
-    )) as rpc.Api.GetTransactionResponse
-    if (result.status === rpc.Api.GetTransactionStatus.SUCCESS) return result
-    if (result.status === rpc.Api.GetTransactionStatus.FAILED) {
-      throw parseContractError(new Error(`Transaction failed: ${hash}`))
-    }
-    const delay = nextBackoffDelay(i, { initialDelayMs, maxDelayMs })
-    await new Promise((r) => setTimeout(r, delay))
-  }
-  throw new Error(`Transaction ${hash} timed out after ${maxAttempts} attempts`)
-} // ── Fee Bump Transactions ─────────────────────────────────────────────────────
+  tx: ReturnType<TransactionBuilder['build']>,
+  network: Network,
+  onStatus?: (status: TransactionLifecycleStatus) => void,
+): Promise<string> {
+  const { hash } = await simulateAndSubmitDetailed(server, tx, network, onStatus)
+  return hash
+}
+
+// ── Fee Bump Transactions ─────────────────────────────────────────────────────
 
 /**
  * Wrap a signed inner transaction in a fee bump envelope.
@@ -200,11 +232,17 @@ export async function buildFeeBumpTransaction(
 }
 
 /**
- * Submit a signed fee bump transaction and wait for confirmation.
+ * Submit a signed fee bump transaction and wait for a definitive verdict.
+ *
+ * Shares the submission path with `simulateAndSubmit`, so a fee bump gets the
+ * same explicit handling of every `sendTransaction` status — including
+ * TRY_AGAIN_LATER resubmission of the identical signed envelope — and the same
+ * timebounds-derived expiry verdict (read from the inner transaction).
  */
 export async function submitFeeBumpTransaction(
   signedFeeBumpXdr: string,
   network: Network,
+  onStatus?: (status: TransactionLifecycleStatus) => void,
 ): Promise<string> {
   const server = getRpcServer(network)
   const feeBumpTx = TransactionBuilder.fromXDR(
@@ -212,14 +250,9 @@ export async function submitFeeBumpTransaction(
     getNetworkPassphrase(network),
   ) as FeeBumpTransaction
 
-  const submitResult = await withRetry(() => server.sendTransaction(feeBumpTx))
-  if (submitResult.status === 'ERROR') {
-    throw parseContractError(
-      new Error(submitResult.errorResult?.toXDR('base64') ?? 'Fee bump submission failed'),
-    )
-  }
-  await pollTransaction(server, submitResult.hash)
-  return submitResult.hash
+  const options: SubmitOptions = onStatus ? { onStatus } : {}
+  const { hash } = await submitAndConfirm(server, feeBumpTx, options)
+  return hash
 }
 
 // ── Shared builder helper ─────────────────────────────────────────────────────
@@ -391,7 +424,12 @@ function scValToString(val: xdr.ScVal | undefined): string {
  * scripts/check-event-topic-drift.sh (CI).  If you add a new event to the
  * contract, add it here first — the CI script will catch any omission.
  *
- * Audit of all twelve contract topics (lib.rs → frontend):
+ * `meta_frz`, `split_set` and `split_clr` are privileged mutations that the
+ * contract has always emitted but the frontend used to drop on the floor,
+ * leaving holes in the audit trail this table is supposed to reconstruct
+ * (issue #917).
+ *
+ * Audit of all fifteen contract topics (lib.rs → frontend):
  *   init      → 'init'      (factory init)
  *   created   → 'created'   (token deployed)
  *   meta      → 'meta'      (metadata URI set)
@@ -409,9 +447,12 @@ export const CONTRACT_TOPIC_MAP: Record<string, ContractEventType> = {
   init: 'init',
   created: 'created',
   meta: 'meta',
+  meta_frz: 'meta_frz',
   mint: 'mint',
   burn: 'burn',
   fees: 'fees',
+  split_set: 'split_set',
+  split_clr: 'split_clr',
   pause: 'pause',
   unpause: 'unpause',
   adm_upd: 'adm_upd',
@@ -547,6 +588,13 @@ export class StellarService {
     symbol: string
     decimals: number
     initialSupply: string
+    /**
+     * Optional supply cap. When provided, the token is created with a
+     * `max_supply` and `mint_tokens` will reject mints that would exceed it.
+     * Omit (or pass null/undefined) to create an uncapped token — the contract
+     * receives `Option::None`.
+     */
+    maxSupply?: string | null | undefined
     salt: string
     feePayment: string
   }): Promise<DeploymentResult> {
@@ -570,25 +618,26 @@ export class StellarService {
             nativeToScVal(params.name, { type: 'string' }),
             nativeToScVal(params.symbol, { type: 'string' }),
             nativeToScVal(params.decimals, { type: 'u32' }),
-            nativeToScVal(BigInt(params.initialSupply), { type: 'u128' }),
+            nativeToScVal(BigInt(params.initialSupply), { type: 'i128' }),
+            optionI128(params.maxSupply),
             nativeToScVal(BigInt(params.feePayment), { type: 'i128' }),
           ),
         )
         .setTimeout(30)
         .build()
 
-      const hash = await simulateAndSubmit(server, tx, this.network)
+      // The confirmed response is already in hand — re-fetching it by hash was
+      // a redundant round-trip that could itself fail after a successful write.
+      const { hash, response } = await simulateAndSubmitDetailed(server, tx, this.network)
 
       // Extract the returned token address from the transaction result
-      const txResult = await withRetry(() => server.getTransaction(hash))
-      let tokenAddress = ''
-      if (txResult.status === rpc.Api.GetTransactionStatus.SUCCESS && txResult.returnValue) {
-        tokenAddress = scValToNative(txResult.returnValue) as string
-      }
+      const tokenAddress = response.returnValue
+        ? (scValToNative(response.returnValue) as string)
+        : ''
 
       return { tokenAddress, transactionHash: hash, success: true }
     } catch (err) {
-      const appErr = toAppError(err)
+      const userError = toUserFacingError(err)
       const factoryContractId = STELLAR_CONFIG.factoryContractId ?? 'unknown'
       captureContractError(err instanceof Error ? err : new Error(String(err)), {
         network: this.network,
@@ -596,7 +645,7 @@ export class StellarService {
         functionName,
         params: { name: params.name, symbol: params.symbol, decimals: params.decimals },
       })
-      throw new Error(appErr.message)
+      throw userError
     }
   }
 
@@ -639,7 +688,7 @@ export class StellarService {
 
       return await simulateAndSubmit(server, tx, this.network)
     } catch (err) {
-      const appErr = toAppError(err)
+      const userError = toUserFacingError(err)
       const factoryContractId = STELLAR_CONFIG.factoryContractId ?? 'unknown'
       captureContractError(err instanceof Error ? err : new Error(String(err)), {
         network: this.network,
@@ -647,7 +696,7 @@ export class StellarService {
         functionName,
         params: { tokenAddress: params.tokenAddress, amount: params.amount },
       })
-      throw new Error(appErr.message)
+      throw userError
     }
   }
 
@@ -683,7 +732,7 @@ export class StellarService {
 
       return await simulateAndSubmit(server, tx, this.network)
     } catch (err) {
-      const appErr = toAppError(err)
+      const userError = toUserFacingError(err)
       const factoryContractId = STELLAR_CONFIG.factoryContractId ?? 'unknown'
       captureContractError(err instanceof Error ? err : new Error(String(err)), {
         network: this.network,
@@ -691,7 +740,7 @@ export class StellarService {
         functionName,
         params: { tokenAddress: params.tokenAddress, amount: params.amount },
       })
-      throw new Error(appErr.message)
+      throw userError
     }
   }
 
@@ -732,7 +781,7 @@ export class StellarService {
 
       return await simulateAndSubmit(server, tx, this.network)
     } catch (err) {
-      const appErr = toAppError(err)
+      const userError = toUserFacingError(err)
       const factoryContractId = STELLAR_CONFIG.factoryContractId ?? 'unknown'
       captureContractError(err instanceof Error ? err : new Error(String(err)), {
         network: this.network,
@@ -740,7 +789,7 @@ export class StellarService {
         functionName,
         params: { tokenAddress: params.tokenAddress, metadataUri: params.metadataUri },
       })
-      throw new Error(appErr.message)
+      throw userError
     }
   }
 
@@ -780,7 +829,7 @@ export class StellarService {
         totalSupply: native.total_supply?.toString(),
       }
     } catch (err) {
-      const appErr = toAppError(err)
+      const userError = toUserFacingError(err)
       const factoryContractId = STELLAR_CONFIG.factoryContractId ?? 'unknown'
       captureContractError(err instanceof Error ? err : new Error(String(err)), {
         network: this.network,
@@ -788,7 +837,7 @@ export class StellarService {
         functionName,
         params: { index },
       })
-      throw new Error(appErr.message)
+      throw userError
     }
   }
 
@@ -815,14 +864,14 @@ export class StellarService {
         return res.json() as Promise<Record<string, unknown>>
       })
     } catch (err) {
-      const appErr = toAppError(err)
+      const userError = toUserFacingError(err)
       captureContractError(err instanceof Error ? err : new Error(String(err)), {
         network: this.network,
         functionName,
         txHash: hash,
         params: { hash },
       })
-      throw new Error(appErr.message)
+      throw userError
     }
   }
 
@@ -864,13 +913,13 @@ export class StellarService {
           : undefined,
       }
     } catch (err) {
-      const appErr = toAppError(err)
+      const userError = toUserFacingError(err)
       captureContractError(err instanceof Error ? err : new Error(String(err)), {
         network: this.network,
         contractId,
         functionName,
       })
-      throw new Error(appErr.message)
+      throw userError
     }
   }
 
@@ -907,17 +956,18 @@ export class StellarService {
       const server = getRpcServer(this.network)
       const contract = new Contract(contractId)
 
-      // Contract expects Option<i128> — wrap each value in Some(i128)
-      const someI128 = (v: bigint) =>
-        xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('Some'), nativeToScVal(v, { type: 'i128' })])
-
+      // `update_fees` takes two `Option<i128>` arguments. These were
+      // previously encoded as `["Some", value]` vectors, which is the layout
+      // for `#[contracttype]` enum variants, not for `Option` — the host
+      // handed the vector straight to i128's converter and the call failed to
+      // decode. See `optionI128` for the correct representation.
       const tx = (await buildTxBuilder(server, sourceAddress, this.network))
         .addOperation(
           contract.call(
             'update_fees',
             new Address(sourceAddress).toScVal(),
-            someI128(BigInt(params.baseFee)),
-            someI128(BigInt(params.metadataFee)),
+            optionI128(params.baseFee),
+            optionI128(params.metadataFee),
           ),
         )
         .setTimeout(30)
@@ -925,7 +975,7 @@ export class StellarService {
 
       return await simulateAndSubmit(server, tx, this.network)
     } catch (err) {
-      const appErr = toAppError(err)
+      const userError = toUserFacingError(err)
       const factoryContractId = STELLAR_CONFIG.factoryContractId ?? 'unknown'
       captureContractError(err instanceof Error ? err : new Error(String(err)), {
         network: this.network,
@@ -933,7 +983,7 @@ export class StellarService {
         functionName,
         params: { baseFee: params.baseFee, metadataFee: params.metadataFee },
       })
-      throw new Error(appErr.message)
+      throw userError
     }
   }
 
@@ -969,7 +1019,7 @@ export class StellarService {
 
       return await simulateAndSubmit(server, tx, this.network)
     } catch (err) {
-      const appErr = toAppError(err)
+      const userError = toUserFacingError(err)
       const factoryContractId = STELLAR_CONFIG.factoryContractId ?? 'unknown'
       captureContractError(err instanceof Error ? err : new Error(String(err)), {
         network: this.network,
@@ -977,7 +1027,7 @@ export class StellarService {
         functionName,
         params: { enabled },
       })
-      throw new Error(appErr.message)
+      throw userError
     }
   }
 
@@ -1032,12 +1082,31 @@ export class StellarService {
   async getAllTokens(
     offset = 0,
     limit = DEFAULT_TOKEN_PAGE_LIMIT,
+    /**
+     * Optional session-scoped token-count snapshot.
+     *
+     * When provided, `getFactoryState()` is **not** called and the snapshot
+     * value is used directly as `total`. This pins all page-index windows for
+     * a browsing session to the same baseline so that tokens created between
+     * page fetches cannot shift windows and produce duplicates or gaps.
+     *
+     * Callers are responsible for obtaining the snapshot once (e.g. on
+     * Explorer mount or on an explicit "refresh") via `getFactoryState()`, and
+     * for discarding it when the user deliberately refreshes the list.
+     *
+     * When omitted (or `undefined`), behaviour is unchanged: the live count is
+     * fetched from the chain on every call.
+     */
+    tokenCountSnapshot?: number,
   ): Promise<{ tokens: TokenInfo[]; total: number }> {
     const contractId = STELLAR_CONFIG.factoryContractId
     if (!contractId) throw new Error('Factory contract ID is not configured')
 
-    const { tokenCount } = await this.getFactoryState()
-    const total = Math.max(0, tokenCount)
+    const rawCount =
+      tokenCountSnapshot !== undefined
+        ? tokenCountSnapshot
+        : (await this.getFactoryState()).tokenCount
+    const total = Math.max(0, rawCount)
     if (total === 0 || limit <= 0) return { tokens: [], total }
 
     // Newest-first window over the 1-based index range [1, total].
@@ -1123,7 +1192,7 @@ export class StellarService {
         .filter((r): r is PromiseFulfilledResult<TokenInfo> => r.status === 'fulfilled')
         .map((r) => r.value)
     } catch (err) {
-      const appErr = toAppError(err)
+      const userError = toUserFacingError(err)
       const factoryContractId = STELLAR_CONFIG.factoryContractId ?? 'unknown'
       captureContractError(err instanceof Error ? err : new Error(String(err)), {
         network: this.network,
@@ -1131,7 +1200,7 @@ export class StellarService {
         functionName: 'getTokensByCreator',
         params: { creator, offset, limit },
       })
-      throw new Error(appErr.message)
+      throw userError
     }
   }
 

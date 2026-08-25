@@ -29,8 +29,7 @@ const FACTORY_TOPIC = 'AAAADwAAAAdmYWN0b3J5AA=='
 const XDR = {
   init: {
     topic1: 'AAAADwAAAARpbml0',
-    value:
-      'AAAAEAAAAAEAAAABAAAAEgAAAAAAAAAA/7SpxpEMV33pXktl+ZP53F+vX2pv4CdwdZDOdAw7Z/k=',
+    value: 'AAAAEAAAAAEAAAABAAAAEgAAAAAAAAAA/7SpxpEMV33pXktl+ZP53F+vX2pv4CdwdZDOdAw7Z/k=',
   },
   created: {
     topic1: 'AAAADwAAAAdjcmVhdGVkAA==',
@@ -54,18 +53,15 @@ const XDR = {
   },
   fees: {
     topic1: 'AAAADwAAAARmZWVz',
-    value:
-      'AAAAEAAAAAEAAAACAAAACgAAAAAAAAAAAAAAAAX14QAAAAAKAAAAAAAAAAAAAAAAAvrwgA==',
+    value: 'AAAAEAAAAAEAAAACAAAACgAAAAAAAAAAAAAAAAX14QAAAAAKAAAAAAAAAAAAAAAAAvrwgA==',
   },
   pause: {
     topic1: 'AAAADwAAAAVwYXVzZQAAAA==',
-    value:
-      'AAAAEAAAAAEAAAABAAAAEgAAAAAAAAAA/7SpxpEMV33pXktl+ZP53F+vX2pv4CdwdZDOdAw7Z/k=',
+    value: 'AAAAEAAAAAEAAAABAAAAEgAAAAAAAAAA/7SpxpEMV33pXktl+ZP53F+vX2pv4CdwdZDOdAw7Z/k=',
   },
   unpause: {
     topic1: 'AAAADwAAAAd1bnBhdXNlAA==',
-    value:
-      'AAAAEAAAAAEAAAABAAAAEgAAAAAAAAAA/7SpxpEMV33pXktl+ZP53F+vX2pv4CdwdZDOdAw7Z/k=',
+    value: 'AAAAEAAAAAEAAAABAAAAEgAAAAAAAAAA/7SpxpEMV33pXktl+ZP53F+vX2pv4CdwdZDOdAw7Z/k=',
   },
   adm_upd: {
     topic1: 'AAAADwAAAAdhZG1fdXBkAA==',
@@ -76,7 +72,10 @@ const XDR = {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function makeRaw(key: keyof typeof XDR, overrides: Partial<RpcEventResponse> = {}): RpcEventResponse {
+function makeRaw(
+  key: keyof typeof XDR,
+  overrides: Partial<RpcEventResponse> = {},
+): RpcEventResponse {
   return {
     id: `evt-${key}`,
     type: 'contract',
@@ -95,13 +94,19 @@ function makeRaw(key: keyof typeof XDR, overrides: Partial<RpcEventResponse> = {
 // ── CONTRACT_TOPIC_MAP completeness ──────────────────────────────────────────
 
 describe('CONTRACT_TOPIC_MAP', () => {
+  // Must match every `symbol_short!` action topic emitted by
+  // contracts/token-factory/src/lib.rs. `scripts/check-event-topic-drift.sh`
+  // enforces the same invariant in CI against the contract source itself.
   const EXPECTED_TOPICS = [
     'init',
     'created',
     'meta',
+    'meta_frz',
     'mint',
     'burn',
     'fees',
+    'split_set',
+    'split_clr',
     'pause',
     'unpause',
     'adm_upd',
@@ -110,7 +115,7 @@ describe('CONTRACT_TOPIC_MAP', () => {
     'wl_tog',
   ] as const
 
-  it('contains exactly the twelve contract topics', () => {
+  it('contains exactly the fifteen contract topics', () => {
     expect(Object.keys(CONTRACT_TOPIC_MAP).sort()).toEqual([...EXPECTED_TOPICS].sort())
   })
 
@@ -185,9 +190,7 @@ describe('parseRpcEvent – meta', () => {
     expect(result).not.toBeNull()
     expect(result!.type).toBe('meta')
     expect(result!.data.tokenAddress).toBe(ADDR2)
-    expect(result!.data.metadataUri).toBe(
-      'ipfs://QmXoypizjW3WknFiJnKLwHCnL72vedxjQkDDP1mXWo6uco',
-    )
+    expect(result!.data.metadataUri).toBe('ipfs://QmXoypizjW3WknFiJnKLwHCnL72vedxjQkDDP1mXWo6uco')
   })
 })
 

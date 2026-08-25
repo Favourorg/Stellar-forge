@@ -70,6 +70,48 @@ jobs:
         run: cargo fmt -- --check
         working-directory: contracts
 
+  # Both scripts existed but were wired into nothing — no workflow, no npm
+  # script, no git hook — so the drift they exist to catch (issues #946 and
+  # #1014) was only ever caught by someone remembering to run them by hand.
+  # They are pure bash/awk over the sources, so they need no toolchain.
+  drift-checks:
+    name: Contract/Frontend Drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: ABI documentation drift (docs/contract-abi.md vs lib.rs)
+        run: ./scripts/check-abi-doc-drift.sh
+
+      - name: Event topic drift (lib.rs vs CONTRACT_TOPIC_MAP)
+        run: ./scripts/check-event-topic-drift.sh
+
+      - name: Frontend/contract validation bounds drift (validation.ts vs lib.rs)
+        run: ./scripts/check-validation-drift.sh
+      
+      - name: Stellar impl contract call signature validation (issue #5 fix)
+        run: node scripts/check-stellar-impl-abi.mjs
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+
+      - name: Spec stubs check (.kiro/specs/*)
+        run: node scripts/check-kiro-specs.mjs
+
+      # Vercel schedules cron jobs *only* from a `crons` array in the deployed
+      # project's vercel.json. Issue #1090: the entrypoint, the design doc and
+      # the spec all claimed the indexer cron existed, no config file ever
+      # contained one, and the app kept working (RPC fallback) so nothing
+      # surfaced it. Fail the build instead.
+      - name: Vercel cron configuration (issue #1090)
+        run: node scripts/check-vercel-cron.mjs
+
+      # scripts/*.test.mjs existed but no workflow ran them — the same rot M3
+      # found in the API tests. Plain node:test, so no toolchain is needed.
+      - name: Build-script tests
+        run: npm run test:scripts
+
   frontend:
     name: Frontend
     runs-on: ubuntu-latest
@@ -107,6 +149,26 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  api:
+    name: API (serverless functions)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm run test:api
 
   contract-benchmarks:
     name: Contract Resource Benchmarks
@@ -200,8 +262,6 @@ jobs:
           # placeholder — no factory contract is deployed onto the local network in this job
           VITE_FACTORY_CONTRACT_ID: CCN6L3B2R6G2H5J4J4J4J4J4J4J4J4J4J4J4J4J4J4J4J4J4J4
           VITE_TOKEN_WASM_HASH: "0000000000000000000000000000000000000000000000000000000000000000"
-          VITE_IPFS_API_KEY: mock-key
-          VITE_IPFS_API_SECRET: mock-secret
 
       - name: Run E2E tests
         run: npm run test:e2e
@@ -211,8 +271,6 @@ jobs:
           # placeholder — no factory contract is deployed onto the local network in this job
           VITE_FACTORY_CONTRACT_ID: CCN6L3B2R6G2H5J4J4J4J4J4J4J4J4J4J4J4J4J4J4J4J4J4J4
           VITE_TOKEN_WASM_HASH: "0000000000000000000000000000000000000000000000000000000000000000"
-          VITE_IPFS_API_KEY: mock-key
-          VITE_IPFS_API_SECRET: mock-secret
 
       - name: Stop Local Stellar Network
         if: always()

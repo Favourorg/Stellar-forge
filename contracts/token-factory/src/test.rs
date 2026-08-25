@@ -4,11 +4,103 @@ extern crate std;
 
 use super::*;
 use soroban_sdk::{
-    testutils::Address as _,
+    contract, contractimpl,
+    testutils::{Address as _, Events as _},
     token::{StellarAssetClient, TokenClient},
-    Address, BytesN, Env, Map, String,
+    Address, BytesN, Env, Map, MuxedAddress, String,
 };
 use std::panic::{catch_unwind, AssertUnwindSafe};
+
+// ── Malicious re-entrant fee token (issue #1095) ─────────────────────────────
+//
+// The factory calls SEP-41 `transfer` on this contract (via `distribute_fee`
+// during `create_token` / `mint_tokens` / `set_metadata`), and it synchronously
+// calls back into the factory to attempt a re-entrant `create_token`, recording
+// whether that nested call was refused.
+//
+// It is deliberately NOT a real on-chain contract: it is a native in-process
+// test contract registered with `env.register`, which is the only way to make
+// a genuine *nested* cross-contract call against the factory without compiling
+// a separate malicious WASM (see `fuzz/README.md` for the documented
+// limitation).
+//
+// What the re-entry actually hits. Soroban's host refuses any call into a
+// contract that is already on the call stack, and it does so *before* the
+// callee runs — so the nested invocation never reaches the factory's `locked`
+// check. The malicious contract observes a host `InvokeError`, not
+// `Error::Reentrancy`. This was verified directly: substituting a read-only
+// `get_state()` for the nested `create_token` fails identically, and a
+// read-only view has no guard to trip.
+//
+// So this contract proves the end-to-end property — a malicious fee token
+// cannot re-enter the factory mid-call — but it cannot prove *when* the
+// `locked` flag is acquired relative to the external call, because the guard
+// never executes. Ordering remains covered only by the state-injection tests
+// below.
+#[contract]
+pub struct ReentrantToken;
+
+#[contractimpl]
+impl ReentrantToken {
+    /// Remember the factory to call back into, plus an address to act as the
+    /// "attacker" on the re-entrant `create_token` call.
+    pub fn __constructor(env: Env, factory: Address, attacker: Address) {
+        env.storage()
+            .instance()
+            .set(&symbol_short!("factory"), &factory);
+        env.storage()
+            .instance()
+            .set(&symbol_short!("attacker"), &attacker);
+        env.storage()
+            .instance()
+            .set(&symbol_short!("blocked"), &false);
+    }
+
+    /// SEP-41 `transfer`. Invoked by the factory's `distribute_fee` while the
+    /// factory holds the reentrancy lock. Re-enters `create_token` and records
+    /// whether the nested call was refused.
+    pub fn transfer(env: Env, _from: Address, _to: MuxedAddress, _amount: i128) {
+        let factory: Address = env
+            .storage()
+            .instance()
+            .get(&symbol_short!("factory"))
+            .unwrap();
+        let attacker: Address = env
+            .storage()
+            .instance()
+            .get(&symbol_short!("attacker"))
+            .unwrap();
+        let client = TokenFactoryClient::new(&env, &factory);
+        let salt = BytesN::from_array(&env, &[0xEE; 32]);
+        let result = client.try_create_token(
+            &attacker,
+            &salt,
+            &String::from_str(&env, "Reentry"),
+            &String::from_str(&env, "RENTRY"),
+            &7,
+            &0_i128,
+            &None,
+            &1_000,
+        );
+        // Any error means the re-entry was refused, and refusal is the property
+        // under test. Deliberately not matched against `Error::Reentrancy`:
+        // the host aborts the nested call before the factory's guard runs, so
+        // what arrives here is `Err(Err(InvokeError))`. Asserting the narrower
+        // shape would make this test fail on a *correctly* protected factory.
+        let blocked = result.is_err();
+        env.storage()
+            .instance()
+            .set(&symbol_short!("blocked"), &blocked);
+    }
+
+    /// View: whether the most recent re-entrant call was refused.
+    pub fn reentrant_blocked(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&symbol_short!("blocked"))
+            .unwrap_or(false)
+    }
+}
 
 // ── Test setup helper ─────────────────────────────────────────────────────────
 
@@ -108,6 +200,7 @@ fn seed_token(
         TokenFactory::set_persistent(&s.env, &DataKey::TokenInfo(index), &info);
         s.env.storage().instance().set(&DataKey::State, &state);
         TokenFactory::set_persistent(&s.env, &DataKey::TokenIndex(token_addr.clone()), &index);
+        TokenFactory::set_persistent(&s.env, &DataKey::TokenAddress(index), &token_addr);
         TokenFactory::append_creator_token(&s.env, creator, index).unwrap();
         TokenFactory::set_persistent(&s.env, &(&token_addr, symbol_short!("owner")), creator);
     });
@@ -127,6 +220,26 @@ fn test_initialize() {
     assert_eq!(state.metadata_fee, 500);
     assert!(!state.paused);
     assert_eq!(state.token_count, 0);
+}
+
+/// Number of events the factory contract itself emitted during the **most
+/// recent** contract invocation (soroban's test env reports events per
+/// invocation, not cumulatively). Events emitted by the token contracts
+/// (transfer/burn under *their* own address) are excluded by
+/// `filter_by_contract`.
+///
+/// Call this immediately after the `burn`/`try_burn` under test, before any
+/// other contract call (a later `balance()` read would reset the reported
+/// events to that read's invocation). Used to prove the trust-boundary
+/// invariant: a rejected burn emits no factory event, and a successful factory
+/// burn emits exactly one.
+fn factory_event_count(s: &Setup) -> usize {
+    s.env
+        .events()
+        .all()
+        .filter_by_contract(&s.client.address)
+        .events()
+        .len()
 }
 
 #[test]
@@ -156,31 +269,18 @@ fn test_initialize_already_initialized() {
     assert!(result.is_err());
 }
 
-// ── supply boundary tests (issue #909) ───────────────────────────────────────
+// ── supply boundary tests (issue #909, updated for i128 ABI in #1022) ─────────
+//
+// `create_token`'s `initial_supply` is now `i128` (unified with the batch
+// path — issue #1022), so a value cannot be expressed above `i128::MAX`. The
+// "would wrap negative" hazard the earlier `u128` guards protected against is
+// now impossible to construct at the ABI boundary, and a genuinely negative
+// supply is rejected by the shared `validate_token_params` before any mint.
 
-/// u128 value just above i128::MAX wraps to a negative i128 without a guard.
-/// The fix must reject this with InvalidParameters before any mint occurs.
+/// A negative `initial_supply` is rejected with `InvalidParameters` before any
+/// mint occurs — matching the batch path exactly.
 #[test]
-fn test_create_token_supply_above_i128_max_rejected() {
-    let s = Setup::new();
-    let creator = Address::generate(&s.env);
-    s.fund(&creator, 1_000);
-    let overflow_supply: u128 = (i128::MAX as u128).saturating_add(1); // i128::MAX + 1
-    let result = s.client.try_create_token(
-        &creator,
-        &s.salt(0),
-        &String::from_str(&s.env, "MyToken"),
-        &String::from_str(&s.env, "MTK"),
-        &7,
-        &overflow_supply,
-        &1_000,
-    );
-    assert_eq!(result, Err(Ok(Error::InvalidParameters)));
-}
-
-/// u128::MAX is the largest possible overflow value — must also be rejected.
-#[test]
-fn test_create_token_supply_u128_max_rejected() {
+fn test_create_token_negative_supply_rejected() {
     let s = Setup::new();
     let creator = Address::generate(&s.env);
     s.fund(&creator, 1_000);
@@ -190,13 +290,33 @@ fn test_create_token_supply_u128_max_rejected() {
         &String::from_str(&s.env, "MyToken"),
         &String::from_str(&s.env, "MTK"),
         &7,
-        &u128::MAX,
+        &-1_i128,
+        &None,
         &1_000,
     );
     assert_eq!(result, Err(Ok(Error::InvalidParameters)));
 }
 
-/// i128::MAX is the largest value that fits exactly — must pass validation.
+/// `i128::MIN` is the most-negative supply — must also be rejected.
+#[test]
+fn test_create_token_min_supply_rejected() {
+    let s = Setup::new();
+    let creator = Address::generate(&s.env);
+    s.fund(&creator, 1_000);
+    let result = s.client.try_create_token(
+        &creator,
+        &s.salt(0),
+        &String::from_str(&s.env, "MyToken"),
+        &String::from_str(&s.env, "MTK"),
+        &7,
+        &i128::MIN,
+        &None,
+        &1_000,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidParameters)));
+}
+
+/// i128::MAX is the largest value that fits — must pass validation.
 /// The test will reach the deploy step and fail there because the hash is a
 /// dummy, but the error must NOT be InvalidParameters (supply is valid).
 #[test]
@@ -204,14 +324,14 @@ fn test_create_token_supply_i128_max_passes_validation() {
     let s = Setup::new();
     let creator = Address::generate(&s.env);
     s.fund(&creator, 1_000);
-    let max_valid: u128 = i128::MAX as u128;
     let result = s.client.try_create_token(
         &creator,
         &s.salt(0),
         &String::from_str(&s.env, "MyToken"),
         &String::from_str(&s.env, "MTK"),
         &7,
-        &max_valid,
+        &i128::MAX,
+        &None,
         &1_000,
     );
     // Supply is valid, so we must not get InvalidParameters.
@@ -233,7 +353,8 @@ fn test_create_token_supply_zero_passes_validation() {
         &String::from_str(&s.env, "MyToken"),
         &String::from_str(&s.env, "MTK"),
         &7,
-        &0_u128,
+        &0_i128,
+        &None,
         &1_000,
     );
     // Must not be rejected for supply reasons.
@@ -242,56 +363,43 @@ fn test_create_token_supply_zero_passes_validation() {
 
 // ── create_token (error paths only — deploy requires real wasm) ───────────────
 
-/// Regression test for initial_supply overflow when casting u128 → i128.
-/// Discovered via fuzz_targets::fuzz_create_token.
-///
-/// The `create_token` function accepts `initial_supply: u128` but internally
-/// casts it to `i128` with `as`. Values > i128::MAX silently wrap to negative
-/// numbers, which would then be passed to `token::mint`. This test locks in
-/// the fix: the contract MUST reject initial_supply > i128::MAX before the
-/// cast.
+/// A `max_supply` below `initial_supply` is rejected with `InvalidParameters`,
+/// identically to the batch path (single-path `max_supply` parity — #1022).
 #[test]
-fn test_create_token_initial_supply_exceeds_i128_max() {
+fn test_create_token_max_supply_below_initial_rejected() {
     let s = Setup::new();
     let creator = Address::generate(&s.env);
     s.fund(&creator, 1_000);
-    // i128::MAX = 170141183460469231731687303715884105727
-    // u128 value one greater than i128::MAX
-    let overflow_supply = (i128::MAX as u128).checked_add(1).unwrap();
     let result = s.client.try_create_token(
         &creator,
         &s.salt(0),
         &String::from_str(&s.env, "Token"),
         &String::from_str(&s.env, "TKN"),
         &7,
-        &overflow_supply,
+        &1_000_i128,
+        &Some(500_i128),
         &1_000,
     );
     assert_eq!(result, Err(Ok(Error::InvalidParameters)));
 }
 
-/// Value exactly at i128::MAX must be accepted.
+/// A non-positive `max_supply` cap is rejected with `InvalidParameters`.
 #[test]
-fn test_create_token_initial_supply_at_i128_max() {
+fn test_create_token_nonpositive_max_supply_rejected() {
     let s = Setup::new();
     let creator = Address::generate(&s.env);
     s.fund(&creator, 1_000);
-    // i128::MAX is the largest safe u128 → i128 value.
-    // The contract cannot deploy real WASM in tests, so inner deployment
-    // will fail with a host error — but the overflow guard must pass first.
-    let max_supply = i128::MAX as u128;
     let result = s.client.try_create_token(
         &creator,
         &s.salt(0),
         &String::from_str(&s.env, "Token"),
         &String::from_str(&s.env, "TKN"),
         &7,
-        &max_supply,
+        &0_i128,
+        &Some(0_i128),
         &1_000,
     );
-    // The overflow guard should NOT trigger — the error should be something
-    // other than InvalidParameters (deploy failure).
-    assert!(result != Err(Ok(Error::InvalidParameters)));
+    assert_eq!(result, Err(Ok(Error::InvalidParameters)));
 }
 
 #[test]
@@ -476,7 +584,8 @@ fn test_create_token_insufficient_fee() {
         &String::from_str(&s.env, "MyToken"),
         &String::from_str(&s.env, "MTK"),
         &7,
-        &0_u128,
+        &0_i128,
+        &None,
         &999,
     );
 
@@ -494,7 +603,8 @@ fn test_create_token_blocked_when_paused() {
         &String::from_str(&s.env, "T"),
         &String::from_str(&s.env, "T"),
         &7,
-        &0_u128,
+        &0_i128,
+        &None,
         &1_000,
     );
     assert_eq!(result, Err(Ok(Error::ContractPaused)));
@@ -511,10 +621,11 @@ fn test_create_token_invalid_decimals() {
         &String::from_str(&s.env, "MyToken"),
         &String::from_str(&s.env, "MTK"),
         &19,
-        &0_u128,
+        &0_i128,
+        &None,
         &1_000,
     );
-    assert_eq!(result, Err(Ok(Error::InvalidParameters)));
+    assert_eq!(result, Err(Ok(Error::InvalidDecimals)));
 }
 
 #[test]
@@ -528,10 +639,11 @@ fn test_create_token_invalid_decimals_large() {
         &String::from_str(&s.env, "MyToken"),
         &String::from_str(&s.env, "MTK"),
         &255,
-        &0_u128,
+        &0_i128,
+        &None,
         &1_000,
     );
-    assert_eq!(result, Err(Ok(Error::InvalidParameters)));
+    assert_eq!(result, Err(Ok(Error::InvalidDecimals)));
 }
 
 #[test]
@@ -545,7 +657,8 @@ fn test_create_token_invalid_name_empty() {
         &String::from_str(&s.env, ""),
         &String::from_str(&s.env, "MTK"),
         &7,
-        &0_u128,
+        &0_i128,
+        &None,
         &1_000,
     );
     assert_eq!(result, Err(Ok(Error::InvalidTokenParams)));
@@ -562,7 +675,8 @@ fn test_create_token_invalid_symbol_empty() {
         &String::from_str(&s.env, "MyToken"),
         &String::from_str(&s.env, ""),
         &7,
-        &0_u128,
+        &0_i128,
+        &None,
         &1_000,
     );
     assert_eq!(result, Err(Ok(Error::InvalidTokenParams)));
@@ -583,7 +697,8 @@ fn test_create_token_reentrancy_guard() {
         &String::from_str(&s.env, "T"),
         &String::from_str(&s.env, "T"),
         &7,
-        &0_u128,
+        &0_i128,
+        &None,
         &1_000,
     );
     assert_eq!(result, Err(Ok(Error::Reentrancy)));
@@ -605,7 +720,8 @@ fn test_create_token_overflow_protection() {
         &String::from_str(&s.env, "T"),
         &String::from_str(&s.env, "T"),
         &7,
-        &0_u128,
+        &0_i128,
+        &None,
         &1_000,
     );
     assert_eq!(result, Err(Ok(Error::ArithmeticOverflow)));
@@ -622,7 +738,8 @@ fn test_reentrancy_lock_released_after_error() {
         &String::from_str(&s.env, "T"),
         &String::from_str(&s.env, "T"),
         &7,
-        &0_u128,
+        &0_i128,
+        &None,
         &1,
     );
     s.env.as_contract(&s.client.address, || {
@@ -1153,6 +1270,158 @@ fn test_set_burn_enabled_unauthorized() {
     );
 }
 
+// ── burn trust boundary (issue #1021) ─────────────────────────────────────────
+//
+// `burn` must only ever act on tokens the factory deployed. An address that was
+// never registered with the factory must be rejected with `TokenNotFound`
+// *before* the factory makes any cross-contract call to it — otherwise `burn`
+// is an open proxy that lets anyone make the factory invoke an arbitrary
+// contract and emit an official-looking `burn` event for it.
+
+/// A never-registered address cannot be burned through the factory, even when
+/// the caller genuinely holds a balance of that (external) token. The factory
+/// rejects it with `TokenNotFound` and emits no `burn` event referencing it.
+#[test]
+fn test_burn_unregistered_token_fails() {
+    let s = Setup::new();
+    let holder = Address::generate(&s.env);
+    // A real token contract that the factory did NOT deploy.
+    let external = s.new_token(&holder);
+    StellarAssetClient::new(&s.env, &external).mint(&holder, &1_000);
+
+    assert_eq!(
+        s.client.try_burn(&external, &holder, &100),
+        Err(Ok(Error::TokenNotFound))
+    );
+    // No factory event was emitted (checked before any other invocation).
+    assert_eq!(factory_event_count(&s), 0, "no factory event on reject");
+    // The external balance is untouched.
+    assert_eq!(TokenClient::new(&s.env, &external).balance(&holder), 1_000);
+}
+
+/// A registered `TokenIndex` whose `TokenInfo` entry is missing must surface as
+/// `TokenNotFound` from `burn` rather than proceeding to the external call.
+#[test]
+fn test_burn_registered_index_missing_info_fails() {
+    let s = Setup::new();
+    let holder = Address::generate(&s.env);
+    let token_addr = s.new_token(&holder);
+    StellarAssetClient::new(&s.env, &token_addr).mint(&holder, &1_000);
+    s.env.as_contract(&s.client.address, || {
+        s.env
+            .storage()
+            .instance()
+            .set(&DataKey::TokenIndex(token_addr.clone()), &99u32);
+    });
+    assert_eq!(
+        s.client.try_burn(&token_addr, &holder, &100),
+        Err(Ok(Error::TokenNotFound))
+    );
+    assert_eq!(factory_event_count(&s), 0, "no factory event on reject");
+}
+
+/// A factory `burn` event is only ever emitted for a factory token: burning a
+/// registered token emits exactly one new factory event, while an interleaved
+/// attempt on an unregistered address adds none.
+#[test]
+fn test_burn_event_only_emitted_for_factory_token() {
+    let s = Setup::new();
+    let creator = Address::generate(&s.env);
+    let factory_token = seed_token(&s, &creator, true, None);
+    let burner = Address::generate(&s.env);
+    StellarAssetClient::new(&s.env, &factory_token).mint(&burner, &1_000);
+
+    // A never-registered external token the caller also holds.
+    let external = s.new_token(&burner);
+    StellarAssetClient::new(&s.env, &external).mint(&burner, &1_000);
+
+    // Attempt on the unregistered token → rejected, no factory event emitted.
+    assert_eq!(
+        s.client.try_burn(&external, &burner, &100),
+        Err(Ok(Error::TokenNotFound))
+    );
+    assert_eq!(
+        factory_event_count(&s),
+        0,
+        "unregistered token must not produce a factory event"
+    );
+
+    // Successful burn on the factory token → exactly one factory event, and it
+    // is emitted for the factory token (the only factory call in this frame).
+    s.client.burn(&factory_token, &burner, &400);
+    assert_eq!(
+        factory_event_count(&s),
+        1,
+        "factory burn must emit exactly one factory event"
+    );
+    assert_eq!(
+        TokenClient::new(&s.env, &factory_token).balance(&burner),
+        600
+    );
+}
+
+/// `burn_enabled = false` blocks burning for a factory token with no bypass:
+/// balance is untouched and no burn event is emitted.
+#[test]
+fn test_burn_disabled_no_bypass() {
+    let s = Setup::new();
+    let creator = Address::generate(&s.env);
+    let token_addr = seed_token(&s, &creator, false, None);
+    let burner = Address::generate(&s.env);
+    StellarAssetClient::new(&s.env, &token_addr).mint(&burner, &500);
+
+    assert_eq!(
+        s.client.try_burn(&token_addr, &burner, &100),
+        Err(Ok(Error::Unauthorized))
+    );
+    assert_eq!(factory_event_count(&s), 0, "no factory event on reject");
+    assert_eq!(TokenClient::new(&s.env, &token_addr).balance(&burner), 500);
+}
+
+// ── trust boundary for the owner-gated entrypoints (issue #1021) ──────────────
+//
+// mint_tokens / set_metadata / set_burn_enabled already gate on the per-token
+// owner key and reject unknown tokens; these tests lock that invariant in so a
+// future refactor cannot silently reopen the boundary.
+
+#[test]
+fn test_mint_tokens_unregistered_token_fails() {
+    let s = Setup::new();
+    let admin = Address::generate(&s.env);
+    let external = s.new_token(&admin);
+    let to = Address::generate(&s.env);
+    s.fund(&admin, 10_000);
+    assert_eq!(
+        s.client
+            .try_mint_tokens(&external, &admin, &to, &100, &1_000),
+        Err(Ok(Error::TokenNotFound))
+    );
+}
+
+#[test]
+fn test_set_metadata_unregistered_token_fails() {
+    let s = Setup::new();
+    let admin = Address::generate(&s.env);
+    let external = s.new_token(&admin);
+    s.fund(&admin, 10_000);
+    let uri = String::from_str(&s.env, "ipfs://bafyunregistered");
+    assert_eq!(
+        s.client.try_set_metadata(&external, &admin, &uri, &1_000),
+        Err(Ok(Error::TokenNotFound))
+    );
+}
+
+#[test]
+fn test_set_burn_enabled_unregistered_token_fails() {
+    let s = Setup::new();
+    let admin = Address::generate(&s.env);
+    let external = s.new_token(&admin);
+    assert_eq!(
+        s.client.try_set_burn_enabled(&external, &admin, &false),
+        Err(Ok(Error::TokenNotFound))
+    );
+}
+
 // ── update_fees ───────────────────────────────────────────────────────────────
 
 #[test]
@@ -1366,13 +1635,191 @@ fn test_burn_allowed_when_factory_paused() {
     assert_eq!(TokenClient::new(&s.env, &token_addr).balance(&burner), 300);
 }
 
-// ── transfer_admin / update_admin ─────────────────────────────────────────────
+// ── propose_admin / accept_admin / cancel_admin_proposal ──────────────────────
+//
+// Two-step admin rotation: the current admin proposes a successor; the
+// successor proves it can sign by calling accept_admin; the rotation only
+// completes when both steps have executed. transfer_admin and update_admin
+// now both delegate to propose_admin, so no single-step path remains.
 
 #[test]
-fn test_transfer_admin() {
+fn test_propose_admin_records_pending_state() {
+    let s = Setup::new();
+    let new_admin = Address::generate(&s.env);
+    s.client.propose_admin(&s.admin, &new_admin);
+    let state = s.client.get_state();
+    assert_eq!(state.pending_admin, Some(new_admin));
+    assert!(state.pending_admin_expiry.is_some());
+}
+
+#[test]
+fn test_accept_admin_completes_rotation() {
+    let s = Setup::new();
+    let new_admin = Address::generate(&s.env);
+    s.client.propose_admin(&s.admin, &new_admin);
+    s.client.accept_admin(&new_admin);
+    let state = s.client.get_state();
+    assert_eq!(state.admin, new_admin);
+    assert_eq!(state.pending_admin, None);
+    assert_eq!(state.pending_admin_expiry, None);
+}
+
+#[test]
+fn test_accept_admin_old_admin_loses_access() {
+    let s = Setup::new();
+    let new_admin = Address::generate(&s.env);
+    s.client.propose_admin(&s.admin, &new_admin);
+    s.client.accept_admin(&new_admin);
+    // Old admin can no longer exercise admin-only operations.
+    assert_eq!(s.client.try_pause(&s.admin), Err(Ok(Error::Unauthorized)));
+    // New admin can.
+    s.client.pause(&new_admin);
+    assert!(s.client.get_state().paused);
+}
+
+#[test]
+fn test_propose_admin_unauthorized() {
+    let s = Setup::new();
+    let stranger = Address::generate(&s.env);
+    let new_admin = Address::generate(&s.env);
+    assert_eq!(
+        s.client.try_propose_admin(&stranger, &new_admin),
+        Err(Ok(Error::Unauthorized))
+    );
+}
+
+#[test]
+fn test_propose_admin_self_transfer_rejected() {
+    let s = Setup::new();
+    assert_eq!(
+        s.client.try_propose_admin(&s.admin, &s.admin),
+        Err(Ok(Error::InvalidParameters))
+    );
+}
+
+#[test]
+fn test_accept_admin_wrong_address_rejected() {
+    let s = Setup::new();
+    let proposed = Address::generate(&s.env);
+    let impostor = Address::generate(&s.env);
+    s.client.propose_admin(&s.admin, &proposed);
+    // A different address trying to accept must be rejected.
+    assert_eq!(
+        s.client.try_accept_admin(&impostor),
+        Err(Ok(Error::NoPendingProposal))
+    );
+    // Proposal must still be live.
+    assert_eq!(s.client.get_state().pending_admin, Some(proposed));
+}
+
+#[test]
+fn test_accept_admin_with_no_proposal_rejected() {
+    let s = Setup::new();
+    let addr = Address::generate(&s.env);
+    assert_eq!(
+        s.client.try_accept_admin(&addr),
+        Err(Ok(Error::NoPendingProposal))
+    );
+}
+
+#[test]
+fn test_second_proposal_overwrites_first() {
+    let s = Setup::new();
+    let first = Address::generate(&s.env);
+    let second = Address::generate(&s.env);
+    s.client.propose_admin(&s.admin, &first);
+    // Overwrite with a second proposal.
+    s.client.propose_admin(&s.admin, &second);
+    let state = s.client.get_state();
+    // Only the second proposal should be active.
+    assert_eq!(state.pending_admin, Some(second.clone()));
+    // First proposed address can no longer accept.
+    assert_eq!(
+        s.client.try_accept_admin(&first),
+        Err(Ok(Error::NoPendingProposal))
+    );
+    // Second can accept.
+    s.client.accept_admin(&second);
+    assert_eq!(s.client.get_state().admin, second);
+}
+
+#[test]
+fn test_cancel_admin_proposal() {
+    let s = Setup::new();
+    let new_admin = Address::generate(&s.env);
+    s.client.propose_admin(&s.admin, &new_admin);
+    s.client.cancel_admin_proposal(&s.admin);
+    let state = s.client.get_state();
+    assert_eq!(state.pending_admin, None);
+    assert_eq!(state.pending_admin_expiry, None);
+}
+
+#[test]
+fn test_cancel_admin_proposal_idempotent() {
+    let s = Setup::new();
+    // Cancelling when there is no proposal must be a no-op, not an error.
+    s.client.cancel_admin_proposal(&s.admin);
+}
+
+#[test]
+fn test_cancel_admin_proposal_unauthorized() {
+    let s = Setup::new();
+    let new_admin = Address::generate(&s.env);
+    let stranger = Address::generate(&s.env);
+    s.client.propose_admin(&s.admin, &new_admin);
+    assert_eq!(
+        s.client.try_cancel_admin_proposal(&stranger),
+        Err(Ok(Error::Unauthorized))
+    );
+    // Proposal must still be intact after the failed cancel.
+    assert_eq!(s.client.get_state().pending_admin, Some(new_admin));
+}
+
+#[test]
+fn test_expired_proposal_cannot_be_accepted() {
+    let s = Setup::new();
+    let new_admin = Address::generate(&s.env);
+    s.client.propose_admin(&s.admin, &new_admin);
+
+    // Advance the ledger past the TTL.
+    s.env.ledger().with_mut(|li| {
+        li.sequence_number = li.sequence_number.saturating_add(ADMIN_PROPOSAL_TTL_LEDGERS as u32 + 1);
+    });
+
+    assert_eq!(
+        s.client.try_accept_admin(&new_admin),
+        Err(Ok(Error::ProposalExpired))
+    );
+    // After expiry the state must be cleared so the admin can propose again.
+    let state = s.client.get_state();
+    assert_eq!(state.pending_admin, None);
+    assert_eq!(state.admin, s.admin);
+}
+
+#[test]
+fn test_transfer_admin_delegates_to_propose_admin() {
+    // transfer_admin must be a thin alias for propose_admin — it initiates
+    // a proposal, not a completed rotation.
     let s = Setup::new();
     let new_admin = Address::generate(&s.env);
     s.client.transfer_admin(&s.admin, &new_admin);
+    // Admin must NOT have changed yet — only proposal stored.
+    assert_eq!(s.client.get_state().admin, s.admin);
+    assert_eq!(s.client.get_state().pending_admin, Some(new_admin.clone()));
+    // Completing requires accept_admin.
+    s.client.accept_admin(&new_admin);
+    assert_eq!(s.client.get_state().admin, new_admin);
+}
+
+#[test]
+fn test_update_admin_delegates_to_propose_admin() {
+    // update_admin must be a thin alias for propose_admin — same as above.
+    let s = Setup::new();
+    let new_admin = Address::generate(&s.env);
+    s.client.update_admin(&s.admin, &new_admin);
+    assert_eq!(s.client.get_state().admin, s.admin);
+    assert_eq!(s.client.get_state().pending_admin, Some(new_admin.clone()));
+    s.client.accept_admin(&new_admin);
     assert_eq!(s.client.get_state().admin, new_admin);
 }
 
@@ -1398,9 +1845,15 @@ fn test_transfer_admin_same_address_rejected() {
 
 #[test]
 fn test_update_admin_old_loses_access() {
+    // Verify the full two-step flow: the old admin loses access only after
+    // accept_admin completes.
     let s = Setup::new();
     let new_admin = Address::generate(&s.env);
     s.client.update_admin(&s.admin, &new_admin);
+    // Old admin still holds the key at proposal stage.
+    assert_eq!(s.client.get_state().admin, s.admin);
+    s.client.accept_admin(&new_admin);
+    // Now old admin must be locked out.
     assert_eq!(s.client.try_pause(&s.admin), Err(Ok(Error::Unauthorized)));
     s.client.pause(&new_admin);
     assert!(s.client.get_state().paused);
@@ -2365,8 +2818,135 @@ fn test_batch_invalid_name_rejects_entire_batch() {
     bad.name = String::from_str(&s.env, "");
     let params = batch_vec(&s, &[batch_param(&s, 1, "TokenA", "TKA"), bad]);
     let result = s.client.try_create_tokens_batch(&creator, &params, &2_000);
-    assert_eq!(result, Err(Ok(Error::InvalidParameters)));
+    // Empty name is an InvalidTokenParams fault — same code as the single path.
+    assert_eq!(result, Err(Ok(Error::InvalidTokenParams)));
     assert_eq!(s.client.get_state().token_count, 0);
+}
+
+// ── single-path / batch-path parity (issue #1022) ─────────────────────────────
+//
+// Both creation paths must accept and reject exactly the same parameter sets
+// with exactly the same error codes. The property test below drives both
+// entrypoints with identical, randomly generated parameters and asserts they
+// agree with each other and with a documented reference oracle.
+
+/// Build a soroban `String` of exactly `n` ASCII bytes.
+fn str_of_len(env: &Env, n: usize) -> String {
+    let rust: std::string::String = "a".repeat(n);
+    String::from_str(env, &rust)
+}
+
+/// Reference oracle: the canonical error code for a parameter set, per the
+/// documented validation rules shared by `create_token` and
+/// `create_tokens_batch`. `None` means the parameters are valid (validation
+/// passes; the call then proceeds to deployment).
+fn expected_param_error(
+    name_len: usize,
+    symbol_len: usize,
+    decimals: u32,
+    initial_supply: i128,
+    max_supply: Option<i128>,
+) -> Option<Error> {
+    if name_len == 0 || name_len > 32 {
+        return Some(Error::InvalidTokenParams);
+    }
+    if symbol_len == 0 || symbol_len > 12 {
+        return Some(Error::InvalidTokenParams);
+    }
+    if decimals > 18 {
+        return Some(Error::InvalidDecimals);
+    }
+    if initial_supply < 0 {
+        return Some(Error::InvalidParameters);
+    }
+    if let Some(cap) = max_supply {
+        if cap <= 0 || initial_supply > cap {
+            return Some(Error::InvalidParameters);
+        }
+    }
+    None
+}
+
+/// Extract the contract-level `Error` from a `try_*` result, or `None` if the
+/// call did not fail with a contract error (i.e. it validated successfully and
+/// then failed later — e.g. the dummy-WASM deploy trap surfaces as a host
+/// error, not a contract error).
+fn contract_err<T, C>(
+    r: Result<Result<T, C>, Result<Error, soroban_sdk::InvokeError>>,
+) -> Option<Error> {
+    match r {
+        Err(Ok(e)) => Some(e),
+        _ => None,
+    }
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig { cases: 48, ..proptest::prelude::ProptestConfig::default() })]
+
+    /// For every generated parameter set, `create_token` and
+    /// `create_tokens_batch` return the identical contract-error outcome, and
+    /// that outcome matches the documented oracle. Covers valid sets (both
+    /// pass validation → no contract error) and every invalid fault class.
+    #[test]
+    fn prop_single_and_batch_paths_agree(
+        name_len in 0usize..40,
+        symbol_len in 0usize..20,
+        decimals in 0u32..30,
+        initial_supply in -5i128..1_000_000,
+        max_supply in proptest::option::of(-5i128..1_000_000),
+    ) {
+        let s = Setup::new();
+        let creator = Address::generate(&s.env);
+        // Fund and fee generously so neither path trips InsufficientFee or an
+        // unfunded fee transfer for the *valid* cases — the only differences we
+        // want to observe are in parameter validation.
+        s.fund(&creator, 1_000_000_000);
+        let big_fee: i128 = 1_000_000;
+
+        let name = str_of_len(&s.env, name_len);
+        let symbol = str_of_len(&s.env, symbol_len);
+
+        let single = contract_err(s.client.try_create_token(
+            &creator,
+            &s.salt(1),
+            &name,
+            &symbol,
+            &decimals,
+            &initial_supply,
+            &max_supply,
+            &big_fee,
+        ));
+
+        let batch_params = batch_vec(
+            &s,
+            &[BatchTokenParams {
+                salt: s.salt(2),
+                name: name.clone(),
+                symbol: symbol.clone(),
+                decimals,
+                initial_supply,
+                max_supply,
+            }],
+        );
+        let batch = contract_err(
+            s.client.try_create_tokens_batch(&creator, &batch_params, &big_fee),
+        );
+
+        let expected = expected_param_error(
+            name_len, symbol_len, decimals, initial_supply, max_supply,
+        );
+
+        proptest::prop_assert_eq!(
+            single, batch,
+            "single and batch disagree for name_len={}, symbol_len={}, decimals={}, initial_supply={}, max_supply={:?}",
+            name_len, symbol_len, decimals, initial_supply, max_supply
+        );
+        proptest::prop_assert_eq!(
+            single, expected,
+            "path result does not match oracle for name_len={}, symbol_len={}, decimals={}, initial_supply={}, max_supply={:?}",
+            name_len, symbol_len, decimals, initial_supply, max_supply
+        );
+    }
 }
 
 #[test]
@@ -2404,7 +2984,19 @@ fn test_batch_reentrancy_guard() {
 // environment does not support running a malicious re-entrant WASM in-process,
 // we simulate the mid-execution state by injecting `locked = true` directly
 // into storage (the same mechanism used for `create_token` above). This proves
-// that the guard is present and wired up correctly for each entrypoint.
+// that the guard is present and wired up correctly for each entrypoint — but
+// NOT that the lock is acquired *before* the vulnerable external call in the
+// real control flow.
+//
+// Reentrancy ordering: that gap is still open. Issue #1095 added
+// `test_mint_tokens_rejects_real_reentrant_call` below to close it with a
+// genuine nested re-entry through the malicious `ReentrantToken` fee token, but
+// the Soroban host refuses re-entry into a contract already on the call stack
+// before the callee runs, so the nested call never reaches the guard — the
+// factory's own `locked` check is unobservable from outside. No test can
+// currently distinguish a factory that locks before `distribute_fee` from one
+// that locks after; the host makes both safe against cross-contract re-entry,
+// which is why the guard is defence-in-depth rather than the only barrier.
 //
 // The cross-function reentrancy test additionally verifies that a lock set by
 // *one* entrypoint (mint_tokens) also blocks a concurrent call to a *different*
@@ -2429,6 +3021,88 @@ fn test_mint_tokens_reentrancy_guard() {
         .client
         .try_mint_tokens(&token_addr, &admin, &recipient, &100, &1_000);
     assert_eq!(result, Err(Ok(Error::Reentrancy)));
+}
+
+/// End-to-end reentrancy: a real nested cross-contract call, not a pre-injected
+/// lock. The factory is deployed with a malicious SEP-41 fee token
+/// (`ReentrantToken`) whose `transfer` re-enters `create_token` from inside
+/// `distribute_fee`. The re-entrant call must not succeed.
+///
+/// Refusal here comes from the Soroban host, which rejects any call into a
+/// contract already on the call stack before the callee runs — see the note on
+/// `ReentrantToken` above. That makes this a genuine end-to-end check that a
+/// hostile fee token cannot re-enter mid-`mint_tokens`, but *not* a check of
+/// when the `locked` flag is set: moving `state.locked = true` after the
+/// `distribute_fee` call would leave this test passing. Lock ordering is not
+/// covered by any test — see the `Reentrancy ordering` note above.
+#[test]
+fn test_mint_tokens_rejects_real_reentrant_call() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let factory_addr = Address::generate(&env);
+
+    // Register the malicious fee token, wired to re-enter the (pre-generated)
+    // factory address. It must know the factory address up front, so we
+    // pre-generate the factory address rather than letting `register` pick one.
+    let fee_token = env.register(ReentrantToken, (factory_addr.clone(), admin.clone()));
+
+    env.register_at(
+        &factory_addr,
+        TokenFactory,
+        TokenFactoryArgs::__constructor(
+            &admin,
+            &treasury,
+            &fee_token,
+            &dummy_hash(&env),
+            &1_000,
+            &500,
+        ),
+    );
+    let client = TokenFactoryClient::new(&env, &factory_addr);
+    let client: TokenFactoryClient<'static> = unsafe { core::mem::transmute(client) };
+
+    // Seed a factory token owned by `admin` so `mint_tokens` has a real token
+    // to mint (mirrors `seed_token`, which assumes the shared `Setup` env).
+    let token_addr = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
+    env.as_contract(&factory_addr, || {
+        let mut state: FactoryState = env.storage().instance().get(&DataKey::State).unwrap();
+        state.token_count = state.token_count.checked_add(1).unwrap();
+        let index = state.token_count;
+        let info = TokenInfo {
+            name: String::from_str(&env, "T"),
+            symbol: String::from_str(&env, "T"),
+            decimals: 7,
+            creator: admin.clone(),
+            created_at: 0,
+            burn_enabled: true,
+            max_supply: None,
+        };
+        TokenFactory::set_persistent(&env, &DataKey::TokenInfo(index), &info);
+        env.storage().instance().set(&DataKey::State, &state);
+        TokenFactory::set_persistent(&env, &DataKey::TokenIndex(token_addr.clone()), &index);
+        TokenFactory::set_persistent(&env, &DataKey::TokenAddress(index), &token_addr);
+        TokenFactory::append_creator_token(&env, &admin, index).unwrap();
+        TokenFactory::set_persistent(&env, &(&token_addr, symbol_short!("owner")), &admin);
+    });
+
+    let recipient = Address::generate(&env);
+
+    // The outer call must succeed: the malicious `transfer` swallows the
+    // (rejected) re-entrant call and returns normally, so `mint_tokens`
+    // completes its mint and releases the lock.
+    client.mint_tokens(&token_addr, &admin, &recipient, &100, &1_000);
+
+    // The malicious contract must have had its nested call refused.
+    let malicious = ReentrantTokenClient::new(&env, &fee_token);
+    assert!(
+        malicious.reentrant_blocked(),
+        "re-entrant create_token from the fee token must not succeed"
+    );
 }
 
 #[test]
@@ -2618,7 +3292,8 @@ fn test_cross_function_reentrancy_lock_blocks_all_entrypoints() {
             &String::from_str(&s.env, "T"),
             &String::from_str(&s.env, "T"),
             &7,
-            &0_u128,
+            &0_i128,
+            &None,
             &1_000,
         ),
         Err(Ok(Error::Reentrancy)),
@@ -2765,6 +3440,60 @@ fn test_migrate_preserves_state_fields() {
     assert!(!state.paused);
 }
 
+// ── schema v4 migration: pending_admin fields default to None ─────────────────
+
+/// Simulating a schema-v3 deployment and running migrate must walk the v3→v4
+/// step, adding `pending_admin = None` and `pending_admin_expiry = None`.
+#[test]
+fn test_migrate_v3_to_v4_adds_pending_admin_fields() {
+    let s = Setup::new();
+
+    // Rewind to schema version 3 so the v4 step fires.
+    s.env.as_contract(&s.client.address, || {
+        let mut state: FactoryState = s.env.storage().instance().get(&DataKey::State).unwrap();
+        state.schema_version = 3;
+        s.env.storage().instance().set(&DataKey::State, &state);
+        s.env.storage().instance().set(&symbol_short!("sv"), &3u32);
+    });
+
+    s.client.migrate(&s.admin);
+
+    let state = s.client.get_state();
+    assert_eq!(state.schema_version, CURRENT_SCHEMA_VERSION);
+    // New fields must be absent (no live proposal) after migration.
+    assert_eq!(state.pending_admin, None);
+    assert_eq!(state.pending_admin_expiry, None);
+}
+
+/// Running migrate on a fully-current contract must be a no-op for
+/// pending_admin fields (idempotent).
+#[test]
+fn test_migrate_v4_idempotent_for_pending_admin() {
+    let s = Setup::new();
+    // After a fresh init, schema is already at v4.
+    s.client.migrate(&s.admin);
+    s.client.migrate(&s.admin);
+    let state = s.client.get_state();
+    assert_eq!(state.schema_version, CURRENT_SCHEMA_VERSION);
+    assert_eq!(state.pending_admin, None);
+}
+
+/// A contract starting at sv=0 must walk all four steps in a single migrate call.
+#[test]
+fn test_migrate_from_v0_walks_all_steps_to_v4() {
+    let s = Setup::new();
+
+    s.env.as_contract(&s.client.address, || {
+        let mut state: FactoryState = s.env.storage().instance().get(&DataKey::State).unwrap();
+        state.schema_version = 0;
+        s.env.storage().instance().set(&DataKey::State, &state);
+        s.env.storage().instance().set(&symbol_short!("sv"), &0u32);
+    });
+
+    s.client.migrate(&s.admin);
+    assert_eq!(s.client.get_state().schema_version, CURRENT_SCHEMA_VERSION);
+}
+
 // ── whitelist enforcement ─────────────────────────────────────────────────────
 
 /// Helper: enable whitelisting on the factory.
@@ -2817,7 +3546,8 @@ fn test_create_token_allowed_when_whitelist_disabled() {
         &String::from_str(&s.env, "T"),
         &String::from_str(&s.env, "T"),
         &7,
-        &0_u128,
+        &0_i128,
+        &None,
         &1, // intentionally insufficient so the call fails predictably
     );
     assert_eq!(result, Err(Ok(Error::InsufficientFee)));
@@ -2838,7 +3568,8 @@ fn test_create_token_blocked_when_not_whitelisted() {
         &String::from_str(&s.env, "T"),
         &String::from_str(&s.env, "T"),
         &7,
-        &0_u128,
+        &0_i128,
+        &None,
         &1_000,
     );
     assert_eq!(result, Err(Ok(Error::NotWhitelisted)));
@@ -2861,7 +3592,8 @@ fn test_create_token_whitelisted_creator_passes_whitelist_gate() {
         &String::from_str(&s.env, "T"),
         &String::from_str(&s.env, "T"),
         &7,
-        &0_u128,
+        &0_i128,
+        &None,
         &1, // insufficient
     );
     // If this were NotWhitelisted the whitelist gate would have fired first;
@@ -2885,7 +3617,8 @@ fn test_whitelist_add_remove_create_sequence() {
             &String::from_str(&s.env, "T"),
             &String::from_str(&s.env, "T"),
             &7,
-            &0_u128,
+            &0_i128,
+            &None,
             &1_000,
         ),
         Err(Ok(Error::NotWhitelisted))
@@ -2900,7 +3633,8 @@ fn test_whitelist_add_remove_create_sequence() {
             &String::from_str(&s.env, "T"),
             &String::from_str(&s.env, "T"),
             &7,
-            &0_u128,
+            &0_i128,
+            &None,
             &1, // insufficient on purpose
         ),
         Err(Ok(Error::InsufficientFee))
@@ -2915,7 +3649,8 @@ fn test_whitelist_add_remove_create_sequence() {
             &String::from_str(&s.env, "T"),
             &String::from_str(&s.env, "T"),
             &7,
-            &0_u128,
+            &0_i128,
+            &None,
             &1_000,
         ),
         Err(Ok(Error::NotWhitelisted))
@@ -2939,7 +3674,8 @@ fn test_whitelist_disable_reopens_factory() {
             &String::from_str(&s.env, "T"),
             &String::from_str(&s.env, "T"),
             &7,
-            &0_u128,
+            &0_i128,
+            &None,
             &1_000,
         ),
         Err(Ok(Error::NotWhitelisted))
@@ -2954,7 +3690,8 @@ fn test_whitelist_disable_reopens_factory() {
             &String::from_str(&s.env, "T"),
             &String::from_str(&s.env, "T"),
             &7,
-            &0_u128,
+            &0_i128,
+            &None,
             &1, // underfunded
         ),
         Err(Ok(Error::InsufficientFee))
@@ -3308,4 +4045,443 @@ fn test_backfill_capped_supply_cannot_be_applied_twice() {
         .client
         .try_backfill_capped_supply(&s.admin, &token_addr, &600);
     assert_eq!(result, Err(Ok(Error::AlreadyBackfilled)));
+}
+// ── Issue #913: whitelist gate storage consistency ───────────────────────────
+//
+// `add_to_whitelist` writes to `persistent` storage and `is_whitelisted` reads
+// persistent-first, but the `create_token` / `create_tokens_batch` gates used
+// to read `instance` storage directly. Any entry present in only one of the
+// two locations produced a split-brain result: the view said "whitelisted"
+// while creation was rejected with `NotWhitelisted`, or vice versa. Both now
+// go through `whitelist_contains`.
+
+/// An entry written only to `persistent` storage — the shape `add_to_whitelist`
+/// produces — must be honoured by the creation gate.
+#[test]
+fn test_whitelist_gate_honors_persistent_entry() {
+    let s = Setup::new();
+    enable_whitelist(&s);
+    let creator = Address::generate(&s.env);
+    s.fund(&creator, 1_000);
+
+    s.env.as_contract(&s.client.address, || {
+        TokenFactory::set_persistent(&s.env, &TokenFactory::whitelist_key(&creator), &true);
+    });
+
+    // Passes the whitelist gate and stops at the deploy step instead.
+    let result = s.client.try_create_token(
+        &creator,
+        &s.salt(0),
+        &String::from_str(&s.env, "T"),
+        &String::from_str(&s.env, "T"),
+        &7,
+        &0_i128,
+        &None,
+        &1_000,
+    );
+    assert!(result != Err(Ok(Error::NotWhitelisted)));
+}
+
+/// An entry written only to `instance` storage — the shape a pre-migration
+/// factory binary left behind — must still be honoured, so upgrading the
+/// contract cannot silently lock out already-whitelisted creators.
+#[test]
+fn test_whitelist_gate_honors_legacy_instance_entry() {
+    let s = Setup::new();
+    enable_whitelist(&s);
+    let creator = Address::generate(&s.env);
+    s.fund(&creator, 1_000);
+
+    s.env.as_contract(&s.client.address, || {
+        s.env
+            .storage()
+            .instance()
+            .set(&TokenFactory::whitelist_key(&creator), &true);
+    });
+
+    assert!(s.client.is_whitelisted(&creator));
+
+    let result = s.client.try_create_token(
+        &creator,
+        &s.salt(0),
+        &String::from_str(&s.env, "T"),
+        &String::from_str(&s.env, "T"),
+        &7,
+        &0_i128,
+        &None,
+        &1_000,
+    );
+    assert!(result != Err(Ok(Error::NotWhitelisted)));
+}
+
+/// The `is_whitelisted` view and the creation gate must never disagree.
+#[test]
+fn test_is_whitelisted_view_agrees_with_creation_gate() {
+    let s = Setup::new();
+    enable_whitelist(&s);
+    let creator = Address::generate(&s.env);
+    s.fund(&creator, 1_000);
+
+    let create = |salt: u8| {
+        s.client.try_create_token(
+            &creator,
+            &s.salt(salt),
+            &String::from_str(&s.env, "T"),
+            &String::from_str(&s.env, "T"),
+            &7,
+            &0_i128,
+            &None,
+            &1_000,
+        )
+    };
+
+    // Not listed: view says false, gate rejects.
+    assert!(!s.client.is_whitelisted(&creator));
+    assert_eq!(create(0), Err(Ok(Error::NotWhitelisted)));
+
+    // Listed: view says true, gate lets the call through.
+    whitelist_add(&s, &creator);
+    assert!(s.client.is_whitelisted(&creator));
+    assert!(create(1) != Err(Ok(Error::NotWhitelisted)));
+
+    // Removed: view says false again, gate rejects again.
+    s.client.remove_from_whitelist(&s.admin, &creator);
+    assert!(!s.client.is_whitelisted(&creator));
+    assert_eq!(create(2), Err(Ok(Error::NotWhitelisted)));
+}
+
+/// The batch path must apply exactly the same gate as the single path.
+#[test]
+fn test_whitelist_gate_consistent_across_single_and_batch() {
+    let s = Setup::new();
+    enable_whitelist(&s);
+    let creator = Address::generate(&s.env);
+    s.fund(&creator, 10_000);
+
+    let params = soroban_sdk::vec![
+        &s.env,
+        BatchTokenParams {
+            salt: s.salt(9),
+            name: String::from_str(&s.env, "T"),
+            symbol: String::from_str(&s.env, "T"),
+            decimals: 7,
+            initial_supply: 0,
+            max_supply: None,
+        }
+    ];
+
+    assert_eq!(
+        s.client.try_create_tokens_batch(&creator, &params, &1_000),
+        Err(Ok(Error::NotWhitelisted))
+    );
+
+    whitelist_add(&s, &creator);
+    assert!(
+        s.client.try_create_tokens_batch(&creator, &params, &1_000)
+            != Err(Ok(Error::NotWhitelisted))
+    );
+}
+
+// ── Issue #916: transfer_admin / update_admin are one operation ──────────────
+//
+// The two entrypoints were independent copies of the same logic that had
+// drifted: only `update_admin` emitted `adm_upd`, so a rotation performed via
+// `transfer_admin` left no on-chain trace and any indexer following the event
+// stream kept reporting the previous admin. Both now delegate to
+// `rotate_admin`.
+
+/// Rotating via `transfer_admin` must store a pending proposal, not move admin
+/// rights immediately. The new admin must call `accept_admin` to complete.
+#[test]
+fn test_transfer_admin_grants_new_admin_rights() {
+    let s = Setup::new();
+    let new_admin = Address::generate(&s.env);
+
+    s.client.transfer_admin(&s.admin, &new_admin);
+
+    // Proposal stored, but admin has NOT changed yet.
+    assert_eq!(s.client.get_state().pending_admin, Some(new_admin.clone()));
+    assert_eq!(s.client.get_state().admin, s.admin);
+
+    // Complete the handover.
+    s.client.accept_admin(&new_admin);
+
+    assert_eq!(s.client.get_state().admin, new_admin);
+    assert_eq!(s.client.get_state().pending_admin, None);
+    // The new admin can exercise an admin-only entrypoint...
+    s.client.pause(&new_admin);
+    assert!(s.client.get_state().paused);
+    // ...and the old admin can no longer.
+    assert_eq!(s.client.try_unpause(&s.admin), Err(Ok(Error::Unauthorized)));
+}
+
+/// Both `transfer_admin` and `update_admin` must enforce identical guards,
+/// since they are aliases for `propose_admin`.
+#[test]
+fn test_transfer_admin_and_update_admin_share_guards() {
+    let s = Setup::new();
+    let stranger = Address::generate(&s.env);
+    let target = Address::generate(&s.env);
+
+    // Unauthorized caller.
+    assert_eq!(
+        s.client.try_transfer_admin(&stranger, &target),
+        s.client.try_update_admin(&stranger, &target)
+    );
+    // Self-transfer.
+    assert_eq!(
+        s.client.try_transfer_admin(&s.admin, &s.admin),
+        s.client.try_update_admin(&s.admin, &s.admin)
+    );
+}
+
+/// Both `transfer_admin` and `update_admin` must leave the factory in the
+/// same intermediate (proposal-pending) state.
+#[test]
+fn test_transfer_admin_and_update_admin_produce_same_state() {
+    let via_transfer = {
+        let s = Setup::new();
+        let new_admin = Address::generate(&s.env);
+        s.client.transfer_admin(&s.admin, &new_admin);
+        (s.client.get_state().pending_admin, new_admin)
+    };
+    let via_update = {
+        let s = Setup::new();
+        let new_admin = Address::generate(&s.env);
+        s.client.update_admin(&s.admin, &new_admin);
+        (s.client.get_state().pending_admin, new_admin)
+    };
+    // Both should record the correct pending_admin.
+    assert_eq!(via_transfer.0, Some(via_transfer.1));
+    assert_eq!(via_update.0, Some(via_update.1));
+}
+
+// ── migrate: schema-v3 chunked walk must be resumable ───────────────────────
+//
+// The v3 step walks `TokenInfo` indices `1..=token_count` in slices of
+// `MIGRATE_TOKEN_INFO_CHUNK` so a factory too large to migrate in one
+// invocation's resource budget can finish across several `migrate` calls. That
+// only works if the version marker stays below 3 until the cursor catches up:
+// bumping it early makes every later call skip the block, stranding the
+// unmigrated entries in `instance` storage forever.
+
+/// Seed `count` `TokenInfo` entries in `instance` storage and rewind the
+/// factory to schema v2, simulating a pre-#1007 deployment mid-upgrade.
+fn seed_legacy_instance_tokens(s: &Setup, count: u32) {
+    s.env.as_contract(&s.client.address, || {
+        let mut state: FactoryState = s.env.storage().instance().get(&DataKey::State).unwrap();
+        state.token_count = count;
+        state.schema_version = 2;
+        s.env.storage().instance().set(&DataKey::State, &state);
+        s.env.storage().instance().set(&symbol_short!("sv"), &2u32);
+
+        for i in 1..=count {
+            let info = TokenInfo {
+                name: String::from_str(&s.env, "T"),
+                symbol: String::from_str(&s.env, "T"),
+                decimals: 7,
+                creator: s.admin.clone(),
+                created_at: 0,
+                burn_enabled: true,
+                max_supply: None,
+            };
+            s.env
+                .storage()
+                .instance()
+                .set(&DataKey::TokenInfo(i), &info);
+        }
+    });
+}
+
+#[test]
+fn test_migrate_v3_does_not_complete_in_one_chunk_when_oversized() {
+    let s = Setup::new();
+    let count = MIGRATE_TOKEN_INFO_CHUNK * 3;
+    seed_legacy_instance_tokens(&s, count);
+
+    s.client.migrate(&s.admin);
+
+    // Only the first chunk moved, so the migration must still be pending.
+    assert_eq!(s.client.get_state().schema_version, 2);
+    s.env.as_contract(&s.client.address, || {
+        let cursor: u32 = s
+            .env
+            .storage()
+            .instance()
+            .get(&symbol_short!("mig3cur"))
+            .unwrap();
+        assert_eq!(cursor, MIGRATE_TOKEN_INFO_CHUNK);
+    });
+}
+
+#[test]
+fn test_migrate_v3_completes_across_repeated_calls() {
+    let s = Setup::new();
+    let count = MIGRATE_TOKEN_INFO_CHUNK * 3;
+    seed_legacy_instance_tokens(&s, count);
+
+    // Three chunks' worth of entries need three calls to finish.
+    for _ in 0..3 {
+        s.client.migrate(&s.admin);
+    }
+
+    assert_eq!(s.client.get_state().schema_version, CURRENT_SCHEMA_VERSION);
+
+    // Every entry must now live in persistent storage, and none in instance.
+    s.env.as_contract(&s.client.address, || {
+        for i in 1..=count {
+            let key = DataKey::TokenInfo(i);
+            assert!(
+                s.env.storage().persistent().has(&key),
+                "TokenInfo({i}) was not migrated to persistent storage"
+            );
+            assert!(
+                !s.env.storage().instance().has(&key),
+                "TokenInfo({i}) was left behind in instance storage"
+            );
+        }
+    });
+}
+
+/// A factory small enough to migrate in one chunk must still finish in a
+/// single call — the resumability fix must not slow down the common case.
+#[test]
+fn test_migrate_v3_completes_in_one_call_when_small() {
+    let s = Setup::new();
+    seed_legacy_instance_tokens(&s, 3);
+
+    s.client.migrate(&s.admin);
+
+    assert_eq!(s.client.get_state().schema_version, CURRENT_SCHEMA_VERSION);
+}
+
+// ── Issue #943: index → address reverse mapping ──────────────────────────────
+//
+// The factory could resolve address → index (`get_token_index`) but not the
+// inverse, and `get_token_info(index)` does not carry the token's own address.
+// The enumerable key space `1..=token_count` was therefore useless to an
+// off-chain indexer: it could reach `TokenInfo` but never the address it
+// belongs to, so addresses could only be learned from `created` events —
+// which reach back only as far as the RPC's event-retention window. That is
+// precisely the truncation issue #943 exists to remove.
+
+/// `seed_token` mirrors the real creation path, so the reverse mapping it
+/// writes must round-trip in both directions.
+#[test]
+fn test_get_token_address_round_trips_with_get_token_index() {
+    let s = Setup::new();
+    let creator = Address::generate(&s.env);
+    let token_addr = seed_token(&s, &creator, true, None);
+
+    let index = s.client.get_token_index(&token_addr);
+    assert_eq!(s.client.get_token_address(&index), token_addr);
+}
+
+/// Every index in `1..=token_count` must resolve, which is what lets an
+/// indexer enumerate the whole token set from contract state alone.
+#[test]
+fn test_get_token_address_enumerates_full_token_set() {
+    let s = Setup::new();
+    let creator = Address::generate(&s.env);
+
+    let mut expected = std::vec::Vec::new();
+    for _ in 0..5 {
+        expected.push(seed_token(&s, &creator, true, None));
+    }
+
+    let token_count = s.client.get_state().token_count;
+    assert_eq!(token_count, 5);
+
+    for (i, addr) in expected.iter().enumerate() {
+        // Indices are 1-based.
+        let index = (i as u32).checked_add(1).unwrap();
+        assert_eq!(&s.client.get_token_address(&index), addr);
+    }
+}
+
+#[test]
+fn test_get_token_address_unknown_index_returns_not_found() {
+    let s = Setup::new();
+    assert_eq!(
+        s.client.try_get_token_address(&999),
+        Err(Ok(Error::TokenNotFound))
+    );
+}
+
+// ── backfill_token_address ──────────────────────────────────────────────────
+
+/// Simulate a token created by a factory binary predating the reverse
+/// mapping: the forward `TokenIndex` entry exists but `TokenAddress` does not.
+fn seed_token_without_reverse_mapping(s: &Setup, creator: &Address) -> (Address, u32) {
+    let token_addr = seed_token(s, creator, true, None);
+    let index = s.client.get_token_index(&token_addr);
+    s.env.as_contract(&s.client.address, || {
+        s.env
+            .storage()
+            .persistent()
+            .remove(&DataKey::TokenAddress(index));
+    });
+    (token_addr, index)
+}
+
+#[test]
+fn test_backfill_token_address_repairs_a_pre_existing_token() {
+    let s = Setup::new();
+    let creator = Address::generate(&s.env);
+    let (token_addr, index) = seed_token_without_reverse_mapping(&s, &creator);
+
+    // Unmapped before the back-fill.
+    assert_eq!(
+        s.client.try_get_token_address(&index),
+        Err(Ok(Error::TokenNotFound))
+    );
+
+    assert_eq!(s.client.backfill_token_address(&token_addr), index);
+    assert_eq!(s.client.get_token_address(&index), token_addr);
+}
+
+#[test]
+fn test_backfill_token_address_is_idempotent() {
+    let s = Setup::new();
+    let creator = Address::generate(&s.env);
+    let (token_addr, index) = seed_token_without_reverse_mapping(&s, &creator);
+
+    assert_eq!(s.client.backfill_token_address(&token_addr), index);
+    // Re-running must be a no-op, not an error or a rewrite.
+    assert_eq!(s.client.backfill_token_address(&token_addr), index);
+    assert_eq!(s.client.get_token_address(&index), token_addr);
+}
+
+/// The entrypoint is permissionless, so it must never accept an address the
+/// factory did not itself register — otherwise anyone could point an index at
+/// a contract of their choosing.
+#[test]
+fn test_backfill_token_address_rejects_unregistered_address() {
+    let s = Setup::new();
+    let stranger = Address::generate(&s.env);
+    let rogue_token = s.new_token(&stranger);
+
+    assert_eq!(
+        s.client.try_backfill_token_address(&rogue_token),
+        Err(Ok(Error::TokenNotFound))
+    );
+}
+
+/// The index is read back from the factory's own `TokenIndex` entry, never
+/// taken from the caller, so a back-fill cannot repoint an index that is
+/// already correctly mapped to a different token.
+#[test]
+fn test_backfill_token_address_cannot_hijack_another_index() {
+    let s = Setup::new();
+    let creator = Address::generate(&s.env);
+    let first = seed_token(&s, &creator, true, None);
+    let (second, second_index) = seed_token_without_reverse_mapping(&s, &creator);
+
+    let first_index = s.client.get_token_index(&first);
+    s.client.backfill_token_address(&second);
+
+    // Each index still resolves to its own token.
+    assert_eq!(s.client.get_token_address(&first_index), first);
+    assert_eq!(s.client.get_token_address(&second_index), second);
+    assert_ne!(first_index, second_index);
 }

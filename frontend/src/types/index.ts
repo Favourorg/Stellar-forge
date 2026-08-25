@@ -125,14 +125,25 @@ export interface AppError {
 }
 
 export type SortOrder = 'newest' | 'oldest' | 'alphabetical'
+/**
+ * Every event topic the factory emits, named exactly as the contract's
+ * `symbol_short!` value. Kept in sync with `contracts/token-factory/src/lib.rs`
+ * by `scripts/check-event-topic-drift.sh` in CI.
+ *
+ * Note `adm_upd`, not `admin_update`: the frontend previously used a name the
+ * contract never emitted, so admin rotations were silently dropped from the
+ * event stream (issue #1014).
+ */
 export type ContractEventType =
-  'init' | 'created' | 'meta' | 'mint' | 'burn' | 'fees' | 'pause' | 'unpause' | 'admin_update'
   | 'init'
   | 'created'
   | 'meta'
+  | 'meta_frz'
   | 'mint'
   | 'burn'
   | 'fees'
+  | 'split_set'
+  | 'split_clr'
   | 'pause'
   | 'unpause'
   | 'adm_upd'

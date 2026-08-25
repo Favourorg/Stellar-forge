@@ -23,7 +23,7 @@ jobs:
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-unknown-unknown
+          targets: wasm32v1-none
 
       - name: Install Rust (nightly for libfuzzer)
         uses: dtolnay/rust-toolchain@nightly
@@ -109,7 +109,7 @@ jobs:
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-unknown-unknown
+          targets: wasm32v1-none
 
       - name: Install Rust (nightly for libfuzzer)
         uses: dtolnay/rust-toolchain@nightly

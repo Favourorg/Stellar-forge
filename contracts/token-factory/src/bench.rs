@@ -178,7 +178,8 @@ impl BenchSetup {
             &self.str("TestToken"),
             &self.str("TST"),
             &7,
-            &1_000_000u128,
+            &1_000_000i128,
+            &None,
             &1_000,
         )
     }
@@ -262,7 +263,8 @@ fn bench_create_token() {
         &s.str("BenchToken"),
         &s.str("BNK"),
         &7,
-        &500_000u128,
+        &500_000i128,
+        &None,
         &1_000,
     );
     assert!(result.is_ok(), "bench_create_token failed: {:?}", result);
@@ -539,7 +541,8 @@ fn bench_create_token_within_limits() {
         &s.str("LimitCheck"),
         &s.str("LCK"),
         &7,
-        &100_000u128,
+        &100_000i128,
+        &None,
         &1_000,
     );
 

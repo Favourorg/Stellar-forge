@@ -13,6 +13,21 @@ export const CONTRACT_ERROR_MESSAGES: Record<number, string> = {
   8: 'Burning is not enabled for this token.',
   9: 'Invalid burn amount. Must be greater than zero.',
   10: 'Contract is paused. Please try again later.',
+  11: 'A concurrent operation is in progress. Please try again in a moment.',
+  12: 'Arithmetic overflow. One of the amounts provided is too large.',
+  13: 'Contract state not found. The factory may not be initialized.',
+  // Fault classes below are normalized to one code each across both the
+  // single (`create_token`) and batch (`create_tokens_batch`) creation paths.
+  14: 'Invalid token name or symbol. Name must be 1–32 and symbol 1–12 characters.',
+  15: 'Invalid decimals. Must be between 0 and 18.',
+  16: 'Mint would exceed the token’s maximum supply.',
+  17: 'Invalid fee split. The basis points must sum to 10,000.',
+  18: 'Too many fee split recipients.',
+  19: 'Supply back-fill has already been applied to this token.',
+  20: 'Your address is not on the whitelist for token creation.',
+  21: 'Invalid metadata URI. It must be a non-empty ipfs:// URI within the length limit.',
+  22: 'Fee split contains a recipient with a zero share.',
+  23: 'Metadata is frozen and can no longer be updated.',
 }
 
 /**

@@ -1,6 +1,6 @@
 # StellarForge - Stellar Token Deployer
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/Favourorg/Stellar-forge&root=frontend&env=VITE_FACTORY_CONTRACT_ID,VITE_TOKEN_WASM_HASH,VITE_IPFS_API_KEY,VITE_IPFS_API_SECRET&envDescription=Required%20environment%20variables%20for%20StellarForge&envLink=https://github.com/Favourorg/Stellar-forge/blob/main/docs/deployment-vercel.md)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/Favourorg/Stellar-forge&root=frontend&env=VITE_FACTORY_CONTRACT_ID,VITE_TOKEN_WASM_HASH,PINATA_API_KEY,PINATA_API_SECRET&envDescription=Required%20environment%20variables%20for%20StellarForge&envLink=https://github.com/Favourorg/Stellar-forge/blob/main/docs/deployment-vercel.md)
 
 StellarForge is a user-friendly decentralized application (dApp) that enables creators, entrepreneurs, and businesses in emerging markets to deploy custom tokens on the Stellar blockchain without writing a single line of code.
 
@@ -49,15 +49,15 @@ Every mutating factory call that has a monetary cost (`create_token`, `create_to
 Token images and descriptions are too large and mutable to store cheaply on a Soroban ledger, so StellarForge splits metadata into two layers:
 
 1. **Off-chain payload** — the frontend uploads the image and a JSON document (`{ name, description, image }`) to IPFS through Pinata's pinning API, getting back a content identifier (CID) for each.
-2. **On-chain pointer** — `set_metadata(token_address, admin, metadata_uri, fee_payment)` stores a single `ipfs://<cid>` string against the token, one time only (`Error::MetadataAlreadySet` on a second attempt). Any client — StellarForge's UI, a block explorer, another dApp — can resolve that URI through any IPFS gateway to fetch the same image/description.
+2. **On-chain pointer** — `set_metadata(token_address, admin, metadata_uri, fee_payment)` stores the current `ipfs://<cid>` URI for the token, and each successful update increments the metadata version. The contract enforces `fee_payment >= metadata_fee`, validates the `ipfs://` prefix and length, blocks writes when the token is frozen, and keeps the admin authorization path aligned with the `admin.require_auth()` + admin identity check in the factory contract. Any client — StellarForge's UI, a block explorer, another dApp — can resolve that URI through any IPFS gateway to fetch the same image/description.
 
 ### 4. Administration, safety, and lifecycle controls
 
 - **Pause switch** — `pause`/`unpause` let the admin halt `create_token`, `create_tokens_batch`, `mint_tokens`, and `set_metadata` factory-wide in an emergency. `burn` intentionally ignores the pause flag, since token holders should always be able to reduce their own balance.
 - **Reentrancy guard** — a `locked` flag on `FactoryState` prevents a second `create_token`/`create_tokens_batch` call from interleaving with one already in progress in the same transaction context.
 - **Per-token burn toggle** — `set_burn_enabled` lets a token's creator disable burning for that token specifically (e.g. for a fixed-supply asset), independent of the factory-wide pause.
-- **Allow-list primitives** — `add_to_whitelist` / `remove_from_whitelist` / `is_whitelisted` maintain an admin-managed address allow-list in factory storage. (These are currently standalone storage primitives; no factory entrypoint gates on them yet — see the project issue tracker for the tracked follow-up to wire enforcement into `create_token`.)
-- **Admin rotation** — `transfer_admin` / `update_admin` move admin privileges to a new address (both perform the same underlying state change; `update_admin` additionally emits an `adm_upd` event).
+- **Allow-list enforcement** — `add_to_whitelist` / `remove_from_whitelist` / `is_whitelisted` maintain an admin-managed address allow-list in factory storage. When the admin calls `set_whitelist_enabled(true)`, only whitelisted addresses may call `create_token` or `create_tokens_batch`; non-whitelisted callers receive `Error::NotWhitelisted`. Enforcement defaults to `false` so existing open deployments are unaffected until an admin opts in.
+- **Admin rotation** — `propose_admin` / `accept_admin` / `cancel_admin_proposal` implement a two-step rotation: the current admin proposes a successor (emitting `adm_prop`), the proposed admin proves they can sign by calling `accept_admin` (emitting `adm_acc`), and the current admin may cancel at any time before acceptance (emitting `adm_can`). Proposals expire after ~28 hours (`ADMIN_PROPOSAL_TTL_LEDGERS`). `transfer_admin` / `update_admin` are retained as ABI-compatible aliases for `propose_admin` — neither completes the rotation on its own.
 - **Upgrade + migrate** — `upgrade` swaps the contract's executable WASM in place; `migrate` is an idempotent, versioned function (`schema_version` vs. `CURRENT_SCHEMA_VERSION`) that brings on-chain state up to date with the currently-deployed code without ever losing existing tokens or fee configuration. See [Contract Upgrade Process](#contract-upgrade-process) below.
 
 ### 5. The frontend's role
@@ -181,9 +181,29 @@ be inlined into the client bundle and shipped to every visitor:
 ```env
 PINATA_API_KEY=<pinata-api-key>
 PINATA_API_SECRET=<pinata-api-secret>
+JWT_SECRET=<random-32-byte-secret>
+VERCEL_KV_REST_API_URL=<vercel-kv-rest-url>
+VERCEL_KV_REST_API_TOKEN=<vercel-kv-rest-token>
 ```
 
-> **Note:** `VITE_FACTORY_CONTRACT_ID`, `VITE_IPFS_API_KEY`, and `VITE_IPFS_API_SECRET` are required. The app will display a misconfiguration screen if any of these are missing, rather than failing silently at runtime.
+> **The KV variables are required in production.** Uploads are gated on a
+> wallet-signature login whose challenge is issued by one request and verified
+> by another. On Vercel those are separate invocations with no routing
+> affinity, so without a shared store the second one lands on an instance that
+> has never seen the challenge, and correct clients are told to "request a new
+> challenge" at whatever rate the platform happens to scale at (issue #1091).
+> The same store backs rate limiting, which is likewise per-instance without
+> it. `GET /api/health/auth` reports which store is live: `durable: true` for
+> Vercel KV, or `503` with `store: "in-memory"` for the local-dev fallback.
+> Local development needs neither variable.
+
+> **Note:** `VITE_FACTORY_CONTRACT_ID` and `VITE_TOKEN_WASM_HASH` are required. The app will display a misconfiguration screen if either is missing, rather than failing silently at runtime.
+>
+> **Pinata credentials are not frontend variables.** Vite inlines every `VITE_`-prefixed
+> value into the built JavaScript, so a `VITE_IPFS_API_KEY` is readable by anyone who
+> loads the page. Set `PINATA_API_KEY` and `PINATA_API_SECRET` in the _server_
+> environment instead; the serverless functions in `api/ipfs/` proxy uploads, and the UI
+> learns whether they are configured from `GET /api/health/ipfs`.
 
 ## Building & Testing
 
@@ -243,14 +263,14 @@ The authoritative, field-by-field reference — including parameter tables, ever
 
 ### Token Lifecycle
 
-- `create_token(creator, salt, name, symbol, decimals, initial_supply, fee_payment)`: Deploy a single new token contract at a deterministic `(creator, salt)` address; optionally mint `initial_supply` to `creator`.
+- `create_token(creator, salt, name, symbol, decimals, initial_supply, max_supply, fee_payment)`: Deploy a single new token contract at a deterministic `(creator, salt)` address; optionally mint `initial_supply` to `creator`, and optionally cap total supply with `max_supply` (`Option<i128>`). Single-token creation shares one validation and bookkeeping routine with the batch path, so both accept/reject identical parameters with identical error codes and enforce `max_supply` with the same accounting (issue #1022).
 - `create_tokens_batch(creator, tokens, fee_payment)`: Atomically deploy a `Vec<BatchTokenParams>` (each with its own name/symbol/decimals/initial_supply and optional `max_supply` cap) in one transaction. `fee_payment` must cover `base_fee * tokens.len()`; a failure partway through the batch aborts the whole call.
 - `mint_tokens(token_address, admin, to, amount, fee_payment)`: Mint additional supply. Only the token's original creator may call this. Rejected with `MaxSupplyExceeded` if the token was created with a `max_supply` cap that minting would exceed.
 - `burn(token_address, from, amount)`: Burn `amount` from the caller's own balance. Honors the token's `burn_enabled` flag; ignores the factory-wide pause.
 
 ### Metadata
 
-- `set_metadata(token_address, admin, metadata_uri, fee_payment)`: Attach an `ipfs://` (or `https://`) metadata URI to a token. One-shot — a second call returns `MetadataAlreadySet`.
+- `set_metadata(token_address, admin, metadata_uri, fee_payment)`: Attach or update the token's `ipfs://` metadata URI. The caller must authorize as the current admin, `fee_payment` must satisfy `metadata_fee`, and updates are allowed until the token is frozen or the per-token update cap is reached; every successful write increments the metadata version.
 - `set_burn_enabled(token_address, admin, enabled)`: Toggle whether a specific token can be burned. Caller must be the token's creator.
 
 ### Admin & Governance
@@ -258,8 +278,8 @@ The authoritative, field-by-field reference — including parameter tables, ever
 - `update_fees(admin, base_fee?, metadata_fee?)`: Adjust either fee; `None` leaves it unchanged.
 - `set_fee_split(admin, splits)` / `get_fee_split()`: Configure or read a `Map<Address, u32>` of basis-point fee recipients (must sum to `10_000`, or be empty to clear the split and fall back to `treasury`).
 - `pause(admin)` / `unpause(admin)`: Halt or resume `create_token`, `create_tokens_batch`, `mint_tokens`, and `set_metadata` factory-wide.
-- `add_to_whitelist(admin, address)` / `remove_from_whitelist(admin, address)` / `is_whitelisted(address)`: Maintain an admin-managed address allow-list in contract storage (not currently enforced by any entrypoint — see the issue tracker).
-- `transfer_admin(admin, new_admin)` / `update_admin(current_admin, new_admin)`: Rotate the admin address. Equivalent effect; `update_admin` additionally emits an `adm_upd` event.
+- `add_to_whitelist(admin, address)` / `remove_from_whitelist(admin, address)` / `is_whitelisted(address)`: Maintain an admin-managed address allow-list in contract storage. Use `set_whitelist_enabled(admin, true)` to turn enforcement on — once enabled, only whitelisted addresses may call `create_token` or `create_tokens_batch` (non-whitelisted callers receive `Error::NotWhitelisted`). Enforcement is off by default.
+- `propose_admin(current_admin, new_admin)` / `accept_admin(new_admin)` / `cancel_admin_proposal(current_admin)`: Two-step admin rotation. `propose_admin` records the proposed successor; `accept_admin` (called by the proposed admin) completes the handover after proving the key can sign; `cancel_admin_proposal` lets the current admin withdraw a proposal. `transfer_admin` and `update_admin` are legacy aliases for `propose_admin`.
 - `upgrade(admin, new_wasm_hash)`: Replace the factory's executable WASM in place, preserving all state. See [Contract Upgrade Process](#contract-upgrade-process).
 - `migrate(admin)`: Idempotently bring on-chain state up to `CURRENT_SCHEMA_VERSION` after an upgrade.
 
@@ -272,7 +292,7 @@ The authoritative, field-by-field reference — including parameter tables, ever
 
 ### Errors
 
-All fallible entrypoints return `Result<T, Error>`. See the full table (17 variants, e.g. `InsufficientFee`, `Unauthorized`, `ContractPaused`, `MaxSupplyExceeded`, `InvalidFeeSplit`) in [`docs/contract-abi.md`](./docs/contract-abi.md#errors).
+All fallible entrypoints return `Result<T, Error>`. See the full table (25 variants, e.g. `InsufficientFee`, `Unauthorized`, `ContractPaused`, `MaxSupplyExceeded`, `InvalidFeeSplit`, `NoPendingProposal`, `ProposalExpired`) in [`docs/contract-abi.md`](./docs/contract-abi.md#errors).
 
 ### Events
 
@@ -282,13 +302,15 @@ The contract publishes Soroban events on `(factory, action)` topics — `init`, 
 
 1. **Connect Wallet**: Use the Freighter browser extension to connect an account. The app checks that Freighter's active network matches the app's selected network and blocks writes on mismatch.
 2. **Create Token**: Fill in name, symbol, decimals, and initial supply; the form validates against the same rules the contract enforces (name ≤ 32 chars, symbol ≤ 12 chars, decimals 0–18) before submission. Sign and submit the transaction to pay the creation fee and deploy the token contract.
-3. **Set Metadata**: Upload a token image and description — the app uploads the image to IPFS, pins a metadata JSON document referencing it, then calls `set_metadata` with the resulting `ipfs://` URI (one-time only per token).
+3. **Set Metadata**: Upload a token image and description — the app uploads the image to IPFS, pins a metadata JSON document referencing it, then calls `set_metadata` with the resulting `ipfs://` URI. Metadata updates are valid for the token until the URI is frozen or the update cap is reached; the contract increments the metadata version on every successful write.
 4. **Mint Tokens**: As the token's creator, mint additional supply to any address, subject to the token's optional `max_supply` cap.
 5. **Manage Supply**: Token holders can burn their own balance at any time (unless the creator has disabled burning for that token via `set_burn_enabled`).
 6. **Admin Panel**: The factory admin can update fees, configure a fee split, pause/unpause the factory, and rotate the admin address from the in-app Admin Panel.
 7. **Explore & Export**: Browse all deployed tokens or a specific creator's tokens in the Token Explorer/Dashboard, and export transaction history to CSV.
 
 ## Deployment
+
+Two `vercel.json` files govern two distinct Vercel deployments, and both must keep an identical `headers` block — see [docs/deployment-vercel.md](./docs/deployment-vercel.md) for which file is authoritative for which deployment.
 
 ## Deployment & Caching
 
@@ -373,8 +395,8 @@ stellar contract install \
 If you don't have a token WASM, you can use the Stellar Asset Contract:
 
 ```bash
-# Download the official Stellar token contract
-wget https://github.com/stellar/soroban-examples/raw/main/token/target/wasm32-unknown-unknown/release/soroban_token_contract.wasm
+# Download from a pinned release tag (replace v0.x.y with a specific tag — do NOT use main)
+wget https://github.com/stellar/soroban-examples/raw/<TAG>/token/target/wasm32-unknown-unknown/release/soroban_token_contract.wasm
 
 # Install it
 stellar contract install \
@@ -449,8 +471,13 @@ Update these required variables:
 VITE_NETWORK=testnet
 VITE_FACTORY_CONTRACT_ID=<your-factory-contract-id>
 VITE_TOKEN_WASM_HASH=<your-token-wasm-hash>
-VITE_IPFS_API_KEY=<your-pinata-api-key>
-VITE_IPFS_API_SECRET=<your-pinata-api-secret>
+```
+
+Pinata credentials go in the **server** environment, never the frontend build:
+
+```env
+PINATA_API_KEY=<your-pinata-api-key>
+PINATA_API_SECRET=<your-pinata-api-secret>
 ```
 
 > **Keep `VITE_TOKEN_WASM_HASH` in sync with the factory.** This value must equal the
@@ -561,8 +588,9 @@ One or more required environment variables are missing. Check that your `.env` f
 
 - `VITE_FACTORY_CONTRACT_ID`
 - `VITE_TOKEN_WASM_HASH`
-- `VITE_IPFS_API_KEY`
-- `VITE_IPFS_API_SECRET`
+
+(Pinata credentials are server-side — `PINATA_API_KEY` / `PINATA_API_SECRET` — and
+their absence disables uploads with an inline notice rather than this screen.)
 
 Restart the dev server after changing `.env` files.
 
@@ -849,7 +877,7 @@ We take security seriously. If you discover a security vulnerability, please rev
 
 ### Content Security Policy (CSP)
 
-A strict CSP is defined as a `<meta>` tag in `frontend/index.html`:
+A strict CSP is defined as a `<meta>` tag in `frontend/index.html` (all configs are generated from `frontend/src/csp/policy.ts` via `npm run prebuild`):
 
 ```
 default-src 'self';
@@ -857,6 +885,8 @@ connect-src 'self' https://*.stellar.org https://api.pinata.cloud;
 img-src 'self' data: https://gateway.pinata.cloud;
 script-src 'self'
 ```
+
+> **Security hardening** — the `style-src` directive is locked to `'self'` (no `'unsafe-inline'`). Tailwind CSS v4 generates all styles at build time, and the three remaining inline style usages in the codebase have been migrated to static classes and CSSOM-based dynamic updates. The `ProgressBar` component uses a CSSOM ref to set its fill width, which is permitted by CSP-level 3 without requiring `'unsafe-inline'`.
 
 For stronger enforcement, set the CSP as an HTTP response header on your hosting provider instead of (or in addition to) the meta tag — HTTP headers take precedence and support more directives like `frame-ancestors`.
 
@@ -916,13 +946,10 @@ Two utilities are exported from `frontend/src/services/stellar.ts`:
 ```ts
 // 1. Wrap a signed inner transaction in a fee bump envelope.
 //    The fee-source account (connected via Freighter) signs the bump.
-const signedFeeBumpXdr = await buildFeeBumpTransaction(
-  innerTxXdr,
-  feeSourceAddress,
-);
+const signedFeeBumpXdr = await buildFeeBumpTransaction(innerTxXdr, feeSourceAddress)
 
 // 2. Submit the fee bump and wait for confirmation.
-const txHash = await submitFeeBumpTransaction(signedFeeBumpXdr);
+const txHash = await submitFeeBumpTransaction(signedFeeBumpXdr)
 ```
 
 The fee source must have enough XLM to cover the base fee. The inner transaction is not re-signed — only the fee bump envelope requires the fee source's signature.
@@ -953,11 +980,7 @@ The factory contract supports in-place WASM upgrades without redeploying or migr
 | 1       | Initial versioned schema — added `schema_version` field to `FactoryState`                                                                                                                                                                                                                                                                                                                                                                                                  |
 | 2       | Max-supply accounting fix (issue #1006) — `deploy_one` now seeds the per-token supply counter with `initial_supply`; version bump only, no `FactoryState` field changes. Pre-fix capped tokens must be back-filled individually via `backfill_capped_supply` (see [docs/contract-abi.md](./docs/contract-abi.md#supply-cap-accounting))                                                                                                                                    |
 | 3       | Persistent-storage migration (issue #1007) — per-token bookkeeping (`TokenInfo`, `TokenIndex`, `Metadata`, `owner`, `supply`, `CreatorTokens`) moves out of the shared `instance` ledger entry into `persistent` storage, keeping `instance` storage O(1) in `token_count`. `TokenInfo` migrates in bounded, resumable chunks per `migrate` call; everything else migrates lazily on next access (see [docs/contract-abi.md](./docs/contract-abi.md#storage-architecture)) |
-| Version | Change                                                                                                                                                                                                                                                                                                                                  |
-| ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1       | Initial versioned schema — added `schema_version` field to `FactoryState`                                                                                                                                                                                                                                                               |
-| 2       | Max-supply accounting fix (issue #1006) — `deploy_one` now seeds the per-token supply counter with `initial_supply`; version bump only, no `FactoryState` field changes. Pre-fix capped tokens must be back-filled individually via `backfill_capped_supply` (see [docs/contract-abi.md](./docs/contract-abi.md#supply-cap-accounting)) |
-| 3       | Added `whitelist_enabled: bool` to `FactoryState`; new `set_whitelist_enabled` entrypoint; `create_token` and `create_tokens_batch` enforce the whitelist gate when enabled                                                                                                                                                              |
+| 4       | Two-step admin rotation — added `pending_admin: Option<Address>` and `pending_admin_expiry: Option<u64>` to `FactoryState`; new `propose_admin`, `accept_admin`, `cancel_admin_proposal` entrypoints; `transfer_admin` and `update_admin` now delegate to `propose_admin` (no single-step rotation path remains). New error codes 24 (`NoPendingProposal`) and 25 (`ProposalExpired`). New events `adm_prop`, `adm_acc`, `adm_can`.                                        |
 
 ### Adding a new migration (version N → N+1)
 
