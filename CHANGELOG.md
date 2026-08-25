@@ -1,3 +1,10 @@
+## [1.8.5](https://github.com/Favourorg/Stellar-forge/compare/v1.8.4...v1.8.5) (2026-08-25)
+
+
+### Bug Fixes
+
+* **frontend:** whitelist the real mainnet Soroban RPC host in CSP ([#1174](https://github.com/Favourorg/Stellar-forge/issues/1174)) ([d5f2ad1](https://github.com/Favourorg/Stellar-forge/commit/d5f2ad108a52c5e4748e7b8625270dcbac4d9057))
+
 ## [1.8.4](https://github.com/Favourorg/Stellar-forge/compare/v1.8.3...v1.8.4) (2026-08-25)
 
 
