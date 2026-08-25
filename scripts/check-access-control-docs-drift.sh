@@ -71,7 +71,7 @@ get_expected_claims() {
         "is_whitelisted") echo "view_only" ;;
         "create_token") echo "creator_auth:whitelist_gate" ;;
         "create_tokens_batch") echo "creator_auth:whitelist_gate" ;;
-        "set_metadata") echo "admin_auth:creator_auth:admin_check" ;;
+        "set_metadata") echo "admin_auth:creator_check" ;;
         *) echo "" ;;
     esac
 }
@@ -141,6 +141,34 @@ pattern = sys.argv[2]
 text = Path(lib_rs_file).read_text()
 lines = text.splitlines()
 
+
+def strip_line_comment(line):
+    """Drop a trailing `//` comment, ignoring `//` inside a string literal.
+
+    A naive `re.sub(r'//.*$', ...)` truncates lines such as
+    `if &buf[..7] != b"ipfs://" {`, swallowing the opening brace and making
+    the brace counter close the enclosing function early.
+    """
+    in_string = False
+    escaped = False
+    i = 0
+    while i < len(line):
+        ch = line[i]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == '\\':
+                escaped = True
+            elif ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+        elif ch == '/' and line[i + 1:i + 2] == '/':
+            return line[:i]
+        i += 1
+    return line
+
+
 for i, line in enumerate(lines):
     if not re.match(r'^\s*(?:pub\s+)?fn\s+[A-Za-z_][A-Za-z0-9_]*\s*\(', line):
         continue
@@ -157,7 +185,7 @@ for i, line in enumerate(lines):
 
     while j < len(lines):
         raw = lines[j]
-        no_comments = re.sub(r'//.*$', '', raw)
+        no_comments = strip_line_comment(raw)
         body.append(no_comments)
         depth += no_comments.count('{') - no_comments.count('}')
         if not saw_open and depth > 0:
@@ -183,6 +211,15 @@ detect_creator_auth() {
     local lib_rs_file="$1"
     local output_file="$2"
     fn_contains_pattern "$lib_rs_file" "creator\\.require_auth" > "$output_file"
+}
+
+# Rule A2b: Detect stored-creator identity check (e.g., creator != admin).
+# `set_metadata` names its caller `admin`, but the guard compares it against
+# the token's stored creator — factory-admin privilege grants nothing here.
+detect_creator_check() {
+    local lib_rs_file="$1"
+    local output_file="$2"
+    fn_contains_pattern "$lib_rs_file" "creator\\s*!=\\s*admin" > "$output_file"
 }
 
 # Rule A3: Detect admin identity check (e.g., state.admin != admin)
@@ -254,6 +291,7 @@ build_actual_claims() {
     # Apply detection rules
     detect_admin_auth "$lib_rs_file" "${temp_dir}/admin_auth_fns.txt"
     detect_creator_auth "$lib_rs_file" "${temp_dir}/creator_auth_fns.txt"
+    detect_creator_check "$lib_rs_file" "${temp_dir}/creator_check_fns.txt"
     detect_admin_check "$lib_rs_file" "${temp_dir}/admin_check_fns.txt"
     detect_whitelist_gate "$lib_rs_file" "${temp_dir}/whitelist_gate_fns.txt"
     
@@ -268,6 +306,7 @@ build_actual_claims() {
         # Check each rule
         grep -q "^${fn}$" "${temp_dir}/admin_auth_fns.txt" 2>/dev/null && claims+=("admin_auth")
         grep -q "^${fn}$" "${temp_dir}/creator_auth_fns.txt" 2>/dev/null && claims+=("creator_auth")
+        grep -q "^${fn}$" "${temp_dir}/creator_check_fns.txt" 2>/dev/null && claims+=("creator_check")
         grep -q "^${fn}$" "${temp_dir}/admin_check_fns.txt" 2>/dev/null && claims+=("admin_check")
         grep -q "^${fn}$" "${temp_dir}/whitelist_gate_fns.txt" 2>/dev/null && claims+=("whitelist_gate")
         
