@@ -97,8 +97,8 @@ async function handleVerifyChallenge(req: VercelRequest, res: VercelResponse) {
     return
   }
 
-  // Verify the signature using Stellar's public key cryptography
-  // Freighter's signMessage returns the signature as XDR; we use the Stellar SDK to verify
+  // Verify the signature using Stellar's public key cryptography (SEP-53).
+  // Freighter's signMessage returns a base64-encoded 64-byte Ed25519 signature.
   try {
     const verified = await verifyStellarSignature(address, storedChallenge, signature)
 
@@ -122,42 +122,39 @@ async function handleVerifyChallenge(req: VercelRequest, res: VercelResponse) {
 }
 
 /**
- * Verifies a Stellar message signature.
- * `signature` is the XDR-encoded signed message from Freighter's signMessage.
- * We use ed25519 public key cryptography (Stellar uses ed25519).
+ * Verifies a Stellar message signature produced by Freighter's signMessage.
+ *
+ * Wire format (SEP-53, @stellar/freighter-api v6+):
+ *   signedMessage = base64( Ed25519Sign( SHA256("Stellar Signed Message:\n" + challenge) ) )
+ *
+ * Verification algorithm:
+ *   1. Reconstruct the SEP-53 payload: SHA256("Stellar Signed Message:\n" + message)
+ *   2. Decode the base64 signature to 64 raw bytes.
+ *   3. Use Keypair.verify() from stellar-sdk (ed25519) to check the signature.
+ *
+ * Only stellar-sdk is required — no tweetnacl, no StrKey decoding.
  */
 async function verifyStellarSignature(
   address: string,
   message: string,
-  signatureXdr: string,
+  signatureBase64: string,
 ): Promise<boolean> {
   try {
-    // Import Stellar SDK for verification
-    // The package is `stellar-sdk`; `@stellar/js-sdk` does not exist on npm,
-    // so this import used to throw and every verification silently fell
-    // through to `return false`.
-    const { StrKey, Keypair, TransactionBuilder } = await import('stellar-sdk')
+    const { createHash } = await import('crypto')
+    const { Keypair } = await import('stellar-sdk')
 
-    // Extract public key from the address (Stellar address is an encoded public key)
-    const publicKey = StrKey.decodeEd25519PublicKey(address)
+    // SEP-53: prefix + message, then SHA-256
+    const payload = Buffer.from('Stellar Signed Message:\n' + message, 'utf-8')
+    const hash = createHash('sha256').update(payload).digest()
 
-    // Create a keypair from the public key (for verification only)
+    // Decode the raw 64-byte Ed25519 signature from base64
+    const signatureBytes = Buffer.from(signatureBase64, 'base64')
+
+    // Keypair.verify(data, signature) — returns true if valid, false otherwise
     const keypair = Keypair.fromPublicKey(address)
-
-    // The signatureXdr from Freighter contains the signature; extract it
-    // For simplicity, we assume the signature is base64-encoded directly
-    // (Freighter returns the signature directly, not wrapped in XDR)
-    const signatureBuffer = Buffer.from(signatureXdr, 'base64')
-
-    // Verify using libsodium/tweetnacl (ed25519)
-    const { sign } = await import('tweetnacl')
-    const messageBuffer = Buffer.from(message, 'utf-8')
-
-    // ed25519 verification: open returns the message if valid, null if invalid
-    const result = sign.detached.verify(messageBuffer, signatureBuffer, publicKey)
-    return result
+    return keypair.verify(hash, signatureBytes)
   } catch (err) {
-    // If verification fails for any reason, reject
+    // Malformed address, malformed base64, or SDK error → reject
     console.error('Signature verification error:', err)
     return false
   }

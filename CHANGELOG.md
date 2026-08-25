@@ -1,4 +1,5 @@
 # 1.0.0 (2026-08-24)
+## [1.8.1](https://github.com/Favourorg/Stellar-forge/compare/v1.8.0...v1.8.1) (2026-08-25)
 
 
 ### Bug Fixes
@@ -317,6 +318,7 @@
 * apply useMemo, useCallback, and React.memo for render optimizations ([8afb78a](https://github.com/ignaciojulio/Stellar-forge/commit/8afb78ab2911e0681f21866959e39a6fbf41e427))
 * fetch creator token pages concurrently with capped concurrency ([#969](https://github.com/ignaciojulio/Stellar-forge/issues/969)) ([bfdc828](https://github.com/ignaciojulio/Stellar-forge/commit/bfdc8285861c5382f87933f48f45c85dfdc50c5d)), closes [#16](https://github.com/ignaciojulio/Stellar-forge/issues/16)
 * **frontend:** implement route-level code splitting and lazy load stellar-sdk ([a9ed488](https://github.com/ignaciojulio/Stellar-forge/commit/a9ed488c4633a910765ae678de6f5cc63589a4e2))
+* **api:** correct Freighter SEP-53 signature verification in auth challenge ([#1169](https://github.com/Favourorg/Stellar-forge/issues/1169)) ([21cbed6](https://github.com/Favourorg/Stellar-forge/commit/21cbed64699d8eef3796f7e3d895e4ba93ef427a))
 
 # [1.8.0](https://github.com/Favourorg/Stellar-forge/compare/v1.7.0...v1.8.0) (2026-08-24)
 
