@@ -141,6 +141,12 @@ jobs:
       - name: Analytics Bypass Check
         run: npm run check:analytics-bypass
 
+      # Must run before Build: `npm run build` fires the prebuild generator,
+      # which rewrites the deployment configs in place and would mask drift
+      # between policy.ts and the committed vercel.json / _headers / index.html.
+      - name: CSP Config Drift Check
+        run: npm run check:csp
+
       - name: Typecheck
         run: npm run typecheck
 

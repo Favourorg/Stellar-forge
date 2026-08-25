@@ -16,6 +16,7 @@
     "format:check": "prettier --check \"src/**/*.{ts,tsx}\"",
     "preview": "vite preview",
     "check:analytics-bypass": "node scripts/check-analytics-bypass.mjs",
+    "check:csp": "npx tsx scripts/generateCSP.ts --check",
     "test": "vitest",
     "test:ui": "vitest --ui",
     "test:coverage": "vitest --coverage",

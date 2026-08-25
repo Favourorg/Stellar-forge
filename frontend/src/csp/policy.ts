@@ -70,7 +70,7 @@ export const CSP_DIRECTIVES: CSPDirectives = {
     'https://horizon.stellar.org',
     'https://horizon-testnet.stellar.org',
     'https://soroban-testnet.stellar.org',
-    'https://rpc-mainnet.stellar.org',
+    'https://soroban-mainnet.stellar.org',
     'https://gateway.pinata.cloud',
     'https://api.pinata.cloud',
     'https://*.ingest.sentry.io',
