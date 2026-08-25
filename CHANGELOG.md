@@ -1,3 +1,10 @@
+## [1.8.2](https://github.com/Favourorg/Stellar-forge/compare/v1.8.1...v1.8.2) (2026-08-25)
+
+
+### Bug Fixes
+
+* **ci:** resolve access-control workflow triggers, ipfs cid validation, and test suites drift ([#1171](https://github.com/Favourorg/Stellar-forge/issues/1171)) ([da7930d](https://github.com/Favourorg/Stellar-forge/commit/da7930d89f1cf303038c4c35010316ca8c211614))
+
 # 1.0.0 (2026-08-24)
 ## [1.8.1](https://github.com/Favourorg/Stellar-forge/compare/v1.8.0...v1.8.1) (2026-08-25)
 
