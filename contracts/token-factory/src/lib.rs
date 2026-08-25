@@ -462,16 +462,14 @@ impl TokenFactory {
             let mut treasury_extra: i128 = remainder; // any unassigned rounding remainder
             for i in 0..n {
                 if let (Ok(Some(addr)), Ok(Some(share))) = (addrs.try_get(i), floors.try_get(i)) {
-                    if share > 0 {
-                        if fee_client.try_transfer(payer, &addr, &share).is_err() {
-                            treasury_extra = treasury_extra
-                                .checked_add(share)
-                                .ok_or(Error::ArithmeticOverflow)?;
-                            env.events().publish(
-                                (symbol_short!("factory"), symbol_short!("fee_redir")),
-                                (addr, share),
-                            );
-                        }
+                    if share > 0 && fee_client.try_transfer(payer, &addr, &share).is_err() {
+                        treasury_extra = treasury_extra
+                            .checked_add(share)
+                            .ok_or(Error::ArithmeticOverflow)?;
+                        env.events().publish(
+                            (symbol_short!("factory"), symbol_short!("fee_redir")),
+                            (addr, share),
+                        );
                     }
                 }
             }
