@@ -1,7 +1,12 @@
 # Analytics Integration Spec
 
+> **Superseded by ADR-005.** This historical stub is retained only to record
+> the discrepancy found in Issue #1118. Its opt-in `CookieConsentBanner`
+> language is not normative; the implemented policy is ADR-005's explicit
+> opt-out via `AnalyticsOptOut`.
+
 ## Status
-**Shipped & Verified**
+**Superseded — do not implement**
 
 ## Summary
 Integrates privacy-preserving telemetry and user consent tracking into the StellarForge frontend application following strict opt-in guidelines.
