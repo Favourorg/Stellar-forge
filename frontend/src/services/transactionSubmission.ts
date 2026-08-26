@@ -24,6 +24,7 @@
 
 import { rpc, FeeBumpTransaction, Transaction } from 'stellar-sdk'
 import { parseContractError } from '../utils/contractErrors'
+import { decodeTransactionFailure } from '../utils/transactionResult'
 import { isTransientError } from '../utils/retry'
 import { nextBackoffDelay } from '../utils/pollWithBackoff'
 
@@ -77,8 +78,21 @@ const RETRY_SAFETY: Record<TransactionFailureStatus, boolean> = {
 /** A submission that ended without an applied transaction, with the reason. */
 export class TransactionSubmissionError extends Error {
   readonly status: TransactionFailureStatus
-  /** True only when resubmission provably cannot execute the call twice. */
+  /**
+   * Whether a "try again" affordance may be offered.
+   *
+   * Two conditions, both required: resubmission cannot execute the call twice
+   * (see {@link RETRY_SAFETY}), *and* it is not a deterministic contract-logic
+   * rejection that would fail identically. A paused factory, an exceeded
+   * supply cap or a stale fee is safe to resubmit but pointless — retrying
+   * burns another network fee for a verdict that cannot change until the
+   * on-chain condition does. {@link retryRequirement} says what that is.
+   */
   readonly safeToRetry: boolean
+  /** The contract's `Error` enum code, when the diagnostics carried one. */
+  readonly contractErrorCode: number | undefined
+  /** What has to change before a retry could succeed, when known. */
+  readonly retryRequirement: string | undefined
   /** Hash of the envelope, when one was computed by the server. */
   readonly txHash: string | undefined
   /** Number of `sendTransaction` calls made for this envelope. */
@@ -89,13 +103,23 @@ export class TransactionSubmissionError extends Error {
   constructor(
     status: TransactionFailureStatus,
     message: string,
-    options: { txHash?: string; attempts?: number; cause?: unknown } = {},
+    options: {
+      txHash?: string
+      attempts?: number
+      cause?: unknown
+      contractErrorCode?: number
+      retryRequirement?: string
+      /** Set when the same call would deterministically fail again. */
+      deterministic?: boolean
+    } = {},
   ) {
     super(message)
     this.name = 'TransactionSubmissionError'
     this.cause = options.cause
     this.status = status
-    this.safeToRetry = RETRY_SAFETY[status]
+    this.safeToRetry = RETRY_SAFETY[status] && !options.deterministic
+    this.contractErrorCode = options.contractErrorCode
+    this.retryRequirement = options.retryRequirement
     this.txHash = options.txHash
     this.attempts = options.attempts
   }
@@ -191,14 +215,43 @@ function deadlinePassed(
   return false
 }
 
-function errorResultMessage(response: rpc.Api.SendTransactionResponse): string {
+/**
+ * Options carrying a decoded on-chain rejection into
+ * {@link TransactionSubmissionError}.
+ *
+ * `errorResult` / `resultXdr` are already-parsed `xdr.TransactionResult`
+ * objects. Re-serialising one with `.toXDR('base64')` (what this module used to
+ * do) hands the user opaque binary and can never match the friendly
+ * `Error(Contract, N)` table — see `utils/transactionResult.ts`.
+ */
+function failureOptions(input: {
+  result?: Parameters<typeof decodeTransactionFailure>[0]['result']
+  diagnosticEvents?: Parameters<typeof decodeTransactionFailure>[0]['diagnosticEvents']
+  fallbackMessage?: string | undefined
+}): {
+  message: string
+  contractErrorCode?: number
+  retryRequirement?: string
+  deterministic: boolean
+} {
+  let decoded
   try {
-    const xdrString = response.errorResult?.toXDR('base64')
-    if (xdrString) return xdrString
+    decoded = decodeTransactionFailure(input)
   } catch {
     // A malformed result XDR must not mask the rejection itself.
+    return {
+      message: input.fallbackMessage ?? 'The network rejected the transaction',
+      deterministic: false,
+    }
   }
-  return 'The network rejected the transaction'
+  return {
+    message: decoded.message,
+    ...(decoded.contractErrorCode !== undefined
+      ? { contractErrorCode: decoded.contractErrorCode }
+      : {}),
+    ...(decoded.retryRequirement ? { retryRequirement: decoded.retryRequirement } : {}),
+    deterministic: decoded.deterministic,
+  }
 }
 
 export interface SendResult {
@@ -301,16 +354,18 @@ export async function sendSignedTransaction(
         continue
       }
 
-      case 'ERROR':
+      case 'ERROR': {
         onStatus?.('failed')
-        throw new TransactionSubmissionError(
-          'failed',
-          parseContractError(new Error(errorResultMessage(response))).message,
-          {
-            ...(response.hash ? { txHash: response.hash } : {}),
-            attempts: attempt + 1,
-          },
-        )
+        const { message, ...failure } = failureOptions({
+          result: response.errorResult,
+          diagnosticEvents: response.diagnosticEvents,
+        })
+        throw new TransactionSubmissionError('failed', message, {
+          ...failure,
+          ...(response.hash ? { txHash: response.hash } : {}),
+          attempts: attempt + 1,
+        })
+      }
 
       default: {
         // An undocumented status must never fall through to hash-polling: we
@@ -415,20 +470,12 @@ export async function awaitTransactionInclusion(
 
     if (response.status === rpc.Api.GetTransactionStatus.FAILED) {
       onStatus?.('failed')
-      let detail = `Transaction failed: ${hash}`
-      try {
-        const resultXdr = response.resultXdr?.toXDR('base64')
-        if (resultXdr) detail = resultXdr
-      } catch {
-        // Fall back to the generic message; the verdict is unchanged.
-      }
-      throw new TransactionSubmissionError(
-        'failed',
-        parseContractError(new Error(detail)).message,
-        {
-          txHash: hash,
-        },
-      )
+      const { message, ...failure } = failureOptions({
+        result: response.resultXdr,
+        diagnosticEvents: response.diagnosticEventsXdr,
+        fallbackMessage: `Transaction failed: ${hash}`,
+      })
+      throw new TransactionSubmissionError('failed', message, { ...failure, txHash: hash })
     }
 
     // NOT_FOUND: expected until the transaction lands. The only definitive

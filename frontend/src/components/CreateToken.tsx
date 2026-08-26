@@ -131,12 +131,17 @@ export const CreateToken: React.FC<CreateTokenProps> = ({ onSuccess }) => {
             }),
             'warning',
           )
-        } else if (err instanceof TransactionSubmissionError && !err.safeToRetry) {
+        } else if (err instanceof TransactionSubmissionError && err.status === 'unconfirmed') {
           // The envelope may still land: same uncertainty as a client-side
           // timeout, so show the banner rather than an error the user would
           // answer by re-signing (and possibly minting twice).
           setShowTimeoutBanner(true)
           addToast(err.message, 'warning')
+        } else if (err instanceof TransactionSubmissionError && err.retryRequirement) {
+          // A decoded contract rejection: the same call cannot succeed until
+          // the named condition changes, so say so rather than leaving the
+          // user to resubmit and pay the fee again.
+          addToast(`${err.message} ${err.retryRequirement}`, 'error')
         } else {
           logger.error('Deployment error:', err)
           addToast(err instanceof Error ? err.message : t('tokenForm.deployError'), 'error')

@@ -32,6 +32,7 @@ import type { Network } from '../config/stellar'
 import { withRetry, HttpError } from '../utils/retry'
 import { fetchAllContractEvents } from '../utils/fetchAllContractEvents'
 import { parseContractError } from '../utils/contractErrors'
+import { contractErrorCodeFromScVal } from '../utils/transactionResult'
 import {
   submitAndConfirm,
   TransactionSubmissionError,
@@ -407,6 +408,15 @@ function scValToString(val: xdr.ScVal | undefined): string {
     if (type === xdr.ScValType.scvVec()) {
       return (val.vec() ?? []).map((v) => scValToString(v)).join(', ')
     }
+    // An error value in an event payload is readable data, not an opaque blob:
+    // render the contract code rather than re-serialising it to base64.
+    if (type === xdr.ScValType.scvError()) {
+      const code = contractErrorCodeFromScVal(val)
+      if (code !== undefined) return `Error(Contract, ${code})`
+      return val.error().switch().name
+    }
+    // Last resort for a value type this helper does not model. Not an error
+    // path — nothing here is shown to a user as a failure reason.
     return val.toXDR('base64')
   } catch {
     return ''

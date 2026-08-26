@@ -25,8 +25,18 @@ import {
   type TransactionRpc,
 } from './transactionSubmission'
 import type { Transaction, FeeBumpTransaction } from 'stellar-sdk'
+import { CONTRACT_ERROR_MESSAGES } from '../utils/contractErrors'
+import {
+  contractErrorDiagnosticEvent,
+  roundTripEvent,
+  roundTripResult,
+  trappedTransactionResult,
+} from '../test/xdrFixtures'
 
 const HASH = 'a'.repeat(64)
+
+/** Base64/XDR text must never reach the user as an error message. */
+const BASE64 = /^[A-Za-z0-9+/]{16,}={0,2}$/
 
 // ── Response builders ─────────────────────────────────────────────────────────
 
@@ -66,7 +76,16 @@ function success() {
   } as unknown as rpc.Api.GetTransactionResponse
 }
 
-function failed() {
+/**
+ * A ledger-included failure, shaped exactly as the RPC client delivers one:
+ * `resultXdr` is a parsed `xdr.TransactionResult` (the host function trapped)
+ * and the contract's own error code rides in the diagnostic events.
+ *
+ * The old mock returned `{ toXDR: () => 'Error(Contract, 7)' }` — a
+ * debug-format literal `toXDR('base64')` can never produce — which is what let
+ * the dead decode path in the module under test pass its tests (issue #1160).
+ */
+function failed(contractErrorCode?: number) {
   return {
     status: rpc.Api.GetTransactionStatus.FAILED,
     txHash: HASH,
@@ -75,7 +94,10 @@ function failed() {
     oldestLedger: 1,
     oldestLedgerCloseTime: 1_600_000_000,
     ledger: 104,
-    resultXdr: { toXDR: () => 'Error(Contract, 7)' },
+    resultXdr: roundTripResult(trappedTransactionResult()),
+    ...(contractErrorCode !== undefined
+      ? { diagnosticEventsXdr: [roundTripEvent(contractErrorDiagnosticEvent(contractErrorCode))] }
+      : {}),
   } as unknown as rpc.Api.GetTransactionResponse
 }
 
@@ -173,12 +195,13 @@ describe('sendSignedTransaction', () => {
     expect(seen[seen.length - 1]).toBe('dropped')
   })
 
-  it('ERROR → surfaces the parsed result XDR and does not poll', async () => {
-    const send = vi
-      .fn()
-      .mockResolvedValue(
-        sendResponse('ERROR', { errorResult: { toXDR: () => 'Error(Contract, 1)' } }),
-      )
+  it('ERROR → decodes the result XDR and does not poll', async () => {
+    const send = vi.fn().mockResolvedValue(
+      sendResponse('ERROR', {
+        errorResult: roundTripResult(trappedTransactionResult()),
+        diagnosticEvents: [roundTripEvent(contractErrorDiagnosticEvent(1))],
+      }),
+    )
     const server = mockServer({ sendTransaction: send })
 
     const error = (await sendSignedTransaction(server, envelope(), { sleep: noSleep }).catch(
@@ -187,8 +210,28 @@ describe('sendSignedTransaction', () => {
 
     expect(error).toBeInstanceOf(TransactionSubmissionError)
     expect(error.status).toBe('failed')
+    // The mapped message, not the base64 the result would re-serialise to.
+    expect(error.message).toBe(CONTRACT_ERROR_MESSAGES[1])
+    expect(error.contractErrorCode).toBe(1)
+    expect(error.message).not.toMatch(BASE64)
     expect(send).toHaveBeenCalledTimes(1)
     expect(server.getTransaction).not.toHaveBeenCalled()
+  })
+
+  it('ERROR with no diagnostics still reports words rather than XDR', async () => {
+    const send = vi
+      .fn()
+      .mockResolvedValue(
+        sendResponse('ERROR', { errorResult: roundTripResult(trappedTransactionResult()) }),
+      )
+    const server = mockServer({ sendTransaction: send })
+
+    const error = (await sendSignedTransaction(server, envelope(), { sleep: noSleep }).catch(
+      (e: unknown) => e,
+    )) as TransactionSubmissionError
+
+    expect(error.message).toMatch(/contract rejected the call/i)
+    expect(error.message).not.toMatch(BASE64)
   })
 
   it('an unrecognised status is never treated as accepted', async () => {
@@ -340,6 +383,63 @@ describe('awaitTransactionInclusion', () => {
 
     expect(error.status).toBe('failed')
     expect(seen[seen.length - 1]).toBe('failed')
+    // No base64 leaks out even when there is no contract code to decode.
+    expect(error.message).not.toMatch(BASE64)
+  })
+
+  /**
+   * The regression at the heart of issue #1160: a mint rejected on-chain for
+   * exceeding the token's maximum supply used to reach the user as the base64
+   * re-serialisation of the result XDR.
+   */
+  it('surfaces the mapped contract message for a ledger-included rejection', async () => {
+    const server = mockServer({ getTransaction: vi.fn().mockResolvedValue(failed(16)) })
+
+    const error = (await awaitTransactionInclusion(
+      server,
+      HASH,
+      { maxTime: 1_700_000_600 },
+      { sleep: noSleep },
+    ).catch((e: unknown) => e)) as TransactionSubmissionError
+
+    expect(error.status).toBe('failed')
+    expect(error.message).toBe(CONTRACT_ERROR_MESSAGES[16])
+    expect(error.contractErrorCode).toBe(16)
+    expect(error.message).not.toMatch(BASE64)
+    expect(error.txHash).toBe(HASH)
+  })
+
+  it('withholds the retry affordance for a deterministic contract rejection', async () => {
+    // Contract paused: the identical transaction cannot succeed until an
+    // admin unpauses, so a one-click retry would just burn another fee.
+    const server = mockServer({ getTransaction: vi.fn().mockResolvedValue(failed(10)) })
+
+    const error = (await awaitTransactionInclusion(
+      server,
+      HASH,
+      { maxTime: 1_700_000_600 },
+      { sleep: noSleep },
+    ).catch((e: unknown) => e)) as TransactionSubmissionError
+
+    expect(error.message).toBe(CONTRACT_ERROR_MESSAGES[10])
+    expect(error.safeToRetry).toBe(false)
+    expect(error.retryRequirement).toMatch(/unpause/i)
+  })
+
+  it('still allows a retry for a transient contract rejection', async () => {
+    // Code 11 is the contract's concurrency guard — it clears on its own.
+    const server = mockServer({ getTransaction: vi.fn().mockResolvedValue(failed(11)) })
+
+    const error = (await awaitTransactionInclusion(
+      server,
+      HASH,
+      { maxTime: 1_700_000_600 },
+      { sleep: noSleep },
+    ).catch((e: unknown) => e)) as TransactionSubmissionError
+
+    expect(error.message).toBe(CONTRACT_ERROR_MESSAGES[11])
+    expect(error.safeToRetry).toBe(true)
+    expect(error.retryRequirement).toBeUndefined()
   })
 
   it('tolerates a bounded run of transport errors without ending the poll', async () => {
