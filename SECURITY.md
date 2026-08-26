@@ -10,6 +10,7 @@ Instead, report it privately using one of the following channels:
 2. **Email** — send details to `security@stellarforge.app` with the subject line `[SECURITY] <brief description>`.
 
 Please include:
+
 - A clear description of the vulnerability and its impact.
 - Steps to reproduce (proof-of-concept code or exploit path).
 - Affected contract addresses or frontend versions.
@@ -19,24 +20,24 @@ We will acknowledge your report within **72 hours** and provide an estimated fix
 
 ## Scope
 
-| Component | In scope |
-|---|---|
-| Token factory Soroban contract (mainnet + testnet) | ✅ |
-| React frontend (wallet integration, transaction flow) | ✅ |
-| IPFS / Pinata integration | ✅ |
-| Admin key custody and access controls | ✅ |
-| Dependency vulnerabilities with active exploit paths | ✅ |
+| Component                                                        | In scope                             |
+| ---------------------------------------------------------------- | ------------------------------------ |
+| Token factory Soroban contract (mainnet + testnet)               | ✅                                   |
+| React frontend (wallet integration, transaction flow)            | ✅                                   |
+| IPFS / Pinata integration                                        | ✅                                   |
+| Admin key custody and access controls                            | ✅                                   |
+| Dependency vulnerabilities with active exploit paths             | ✅                                   |
 | Third-party services (Stellar network itself, Pinata, Freighter) | ❌ — report to the respective vendor |
-| Theoretical issues with no practical exploit path | ❌ |
+| Theoretical issues with no practical exploit path                | ❌                                   |
 
 ## Severity definitions
 
-| Severity | Description |
-|---|---|
+| Severity     | Description                                                                                    |
+| ------------ | ---------------------------------------------------------------------------------------------- |
 | **Critical** | Remote code execution, admin key theft, total loss of funds, contract upgrade to attacker WASM |
-| **High** | Partial fund loss, admin privilege escalation, persistent denial of service |
-| **Medium** | Temporary DoS, fee manipulation without fund loss, user-data leakage |
-| **Low** | Minor information disclosure, UX security issues |
+| **High**     | Partial fund loss, admin privilege escalation, persistent denial of service                    |
+| **Medium**   | Temporary DoS, fee manipulation without fund loss, user-data leakage                           |
+| **Low**      | Minor information disclosure, UX security issues                                               |
 
 ## Incident response
 
@@ -53,11 +54,21 @@ For details on how the team responds to a confirmed security incident — includ
 
 ### Admin key is a single point of trust
 
-The factory contract's `admin` address can upgrade the contract, change fees, redirect treasury funds, and transfer admin rights. Key custody is documented in the [Mainnet Deployment Checklist](./docs/mainnet-deployment-checklist.md). A compromised admin key is a **Critical** severity event; see the [Incident Response Runbook](./docs/incident-response.md) for the response procedure.
+The factory contract's `admin` address can upgrade the contract, change fees, redirect treasury funds, transfer admin rights, pause/unpause the factory, change the whitelist state, and update token metadata. Those privileged entrypoints require the exact admin authorization path enforced in `contracts/token-factory/src/lib.rs` (`admin.require_auth()` plus the admin identity check), and metadata writes remain subject to the `metadata_fee` gate, validation of the `ipfs://` URI, and the per-token freeze/version cap. Key custody is documented in the [Mainnet Deployment Checklist](./docs/mainnet-deployment-checklist.md). A compromised admin key is a **Critical** severity event; see the [Incident Response Runbook](./docs/incident-response.md) for the response procedure.
 
 ### Upgrade lacks an on-chain event (issue #9)
 
 The `upgrade` function currently emits no Soroban event. Detection of a malicious WASM replacement currently requires active polling of the on-chain WASM hash. The monitoring script is documented in the [Incident Response Runbook](./docs/incident-response.md#22-wasm-hash-polling-required-until-issue-9-is-resolved).
+
+### Admin rotation takes two transactions (issue #1159)
+
+`propose_admin` records a successor; only `accept_admin`, signed by that successor, actually rotates the admin, and the proposal expires after ~28.8 hours. The `transfer_admin` and `update_admin` names are **deprecated aliases** that delegate to `propose_admin` — they used to rotate in one transaction and no longer do. To make that downgrade impossible to miss, they return an `AdminRotationReceipt` with `rotation_complete: false` instead of `void`, and emit an `adm_dep` event naming the deprecated entrypoint alongside the usual `adm_prop`.
+
+The operational hazard is retiring the outgoing key while a proposal is merely pending: if `accept_admin` never lands, the proposal expires, the factory stays under the old key, and there is no guardian override or timelock bypass — governance is lost permanently. The rotation procedure is in the [Mainnet Deployment Checklist](./docs/mainnet-deployment-checklist.md#admin-key-rotation); stale pending proposals are monitored by `scripts/check-pending-admin-proposal.sh` ([runbook §2.5](./docs/incident-response.md#25-stale-pending-admin-proposals)).
+
+### IPFS unpin requires CID ownership (issue #1155)
+
+`POST /api/ipfs/unpin` requires more than a valid JWT: any wallet can obtain one for free via the challenge/response flow, so JWT possession alone does not prove a right to delete someone else's pinned content. The endpoint additionally checks the requesting wallet address against an ownership record captured at upload time (`api/_lib/pinOwnership.ts`, populated by `upload-json.ts` / `upload-file.ts`). A CID with no ownership record on file is **denied by default** — it is never treated as unpinnable-by-anyone. See `api/ipfs/unpin.ts` and its regression tests in `api/ipfs/unpin.test.ts`.
 
 ### Content Security Policy
 

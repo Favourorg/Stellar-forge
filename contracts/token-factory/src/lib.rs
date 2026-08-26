@@ -10,7 +10,7 @@
 
 use soroban_sdk::{
     contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, token, vec,
-    Address, BytesN, Env, IntoVal, Map, String, TryFromVal, Val, Vec,
+    Address, BytesN, Env, IntoVal, Map, String, Symbol, TryFromVal, Val, Vec,
 };
 
 /// Minimal interface for initializing a deployed SEP-41 token contract.
@@ -87,7 +87,27 @@ pub struct TokenInfo {
 
 /// Current schema version written by `initialize` and bumped by `migrate`.
 /// Increment this constant whenever `FactoryState` gains new fields.
-pub const CURRENT_SCHEMA_VERSION: u32 = 3;
+pub const CURRENT_SCHEMA_VERSION: u32 = 4;
+
+/// Number of ledgers a pending admin proposal remains valid before it expires.
+///
+/// At ~6 seconds per ledger, 17,280 ledgers ≈ 28.8 hours — long enough for
+/// the proposed admin to notice and sign, short enough that a stale proposal
+/// from a key that has since changed hands cannot be accepted years later.
+/// The current admin may always cancel a proposal early via
+/// `cancel_admin_proposal`; an expired proposal is treated the same as a
+/// cancelled one.
+///
+/// This window was deliberately kept rather than extended, and there is no
+/// entrypoint to renew a live proposal: renewal would have to be authorized by
+/// the *current* admin — the very key that is unavailable in the scenario a
+/// longer TTL would be meant to rescue — while a long-lived proposal is a
+/// standing, accept-anytime claim on the factory if the proposed key is later
+/// lost or changes hands. A handover that needs longer is handled
+/// procedurally: verify the incoming key can sign before proposing, monitor
+/// for stale proposals, and re-propose if the window lapses. See
+/// `docs/incident-response.md` section 2.5.
+pub const ADMIN_PROPOSAL_TTL_LEDGERS: u64 = 17_280;
 
 #[contracttype]
 #[derive(Clone)]
@@ -150,6 +170,45 @@ pub struct FactoryState {
     /// When true, only addresses on the whitelist may call `create_token` or
     /// `create_tokens_batch`.
     pub whitelist_enabled: bool,
+    /// The proposed next admin address, pending acceptance. `None` when no
+    /// proposal is live. Written by `propose_admin`, cleared by `accept_admin`
+    /// or `cancel_admin_proposal`.
+    pub pending_admin: Option<Address>,
+    /// Ledger number at which the pending proposal expires. `None` when no
+    /// proposal is live. A proposal is live iff `pending_admin.is_some()` AND
+    /// the current ledger sequence has not yet reached this value.
+    pub pending_admin_expiry: Option<u64>,
+}
+
+/// What a call to the legacy `transfer_admin` / `update_admin` aliases
+/// actually did — returned so no caller can mistake a *proposal* for a
+/// *completed* rotation (issue #1159).
+///
+/// Before two-step rotation existed, both aliases moved `state.admin` in a
+/// single transaction. They now delegate to `propose_admin`, which records a
+/// proposal that the incoming admin must accept within
+/// `ADMIN_PROPOSAL_TTL_LEDGERS` ledgers. A caller built against the old
+/// semantics would otherwise see a successful transaction and conclude the
+/// rotation was done — and, following the old runbook, decommission the
+/// outgoing key while the factory is still owned by it. Returning a struct
+/// rather than `()` makes that impossible to miss: the value is
+/// self-describing, and any client decoding the old `void` return fails
+/// loudly instead of silently succeeding.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AdminRotationReceipt {
+    /// Always `false` from these entrypoints — the rotation is *pending*, not
+    /// applied. `state.admin` is unchanged until `accept_admin` runs.
+    pub rotation_complete: bool,
+    /// The address that must call `required_next_call` to finish the rotation.
+    pub pending_admin: Address,
+    /// Ledger sequence at which the proposal expires. Once reached, the
+    /// proposal can never be accepted and the rotation must be restarted from
+    /// the *current* admin key — which is why that key must not be
+    /// decommissioned before `accept_admin` has succeeded.
+    pub expires_at_ledger: u64,
+    /// The entrypoint that still has to be called: `accept_admin`.
+    pub required_next_call: Symbol,
 }
 
 #[contracterror]
@@ -186,6 +245,19 @@ pub enum Error {
     ZeroFeeSplitEntry = 22,
     /// Metadata has been frozen and can no longer be updated
     MetadataFrozen = 23,
+    /// A fee transfer to `treasury` itself failed (either the direct
+    /// non-split payment, or the redirect of a bad split recipient's share
+    /// / rounding remainder). There is no further fallback recipient, so
+    /// this is a hard error that aborts the call.
+    TreasuryTransferFailed = 24,
+    /// `create_tokens_batch` batch size exceeds `MAX_BATCH_SIZE`
+    BatchSizeExceeded = 25,
+    /// `accept_admin` called when no proposal is pending, or the proposed
+    /// address does not match the caller
+    NoPendingProposal = 26,
+    /// The pending admin proposal has passed its expiry ledger and can no
+    /// longer be accepted; the current admin must open a new proposal
+    ProposalExpired = 27,
 }
 
 #[contract]
@@ -234,6 +306,18 @@ const MIGRATE_TOKEN_INFO_CHUNK: u32 = 20;
 /// `MAX_FEE_SPLIT_RECIPIENTS` recipients are rejected with
 /// `Error::TooManyFeeSplitRecipients` before any storage write occurs.
 pub const MAX_FEE_SPLIT_RECIPIENTS: u32 = 10;
+
+/// Maximum number of tokens allowed in a single `create_tokens_batch` call.
+///
+/// Measured against Soroban's per-transaction CPU/memory/ledger-entry
+/// budgets (see `docs/contract-abi.md`'s "Batch size limits and resource
+/// costs" table): batch size 20 stays comfortably within mainnet limits,
+/// while resource exhaustion is observed at batch size 30. This was
+/// previously enforced only client-side (`frontend/src/utils/validation.ts`
+/// → `MAX_BATCH_SIZE`), which a caller invoking the contract directly could
+/// bypass entirely; it is now enforced here so every caller gets the same
+/// clean, typed rejection.
+pub const MAX_BATCH_SIZE: u32 = 20;
 
 #[contractimpl]
 impl TokenFactory {
@@ -290,6 +374,8 @@ impl TokenFactory {
             token_count: 0,
             whitelist_enabled: false,
             schema_version: CURRENT_SCHEMA_VERSION,
+            pending_admin: None,
+            pending_admin_expiry: None,
         };
 
         env.storage().instance().set(&DataKey::State, &state);
@@ -324,8 +410,18 @@ impl TokenFactory {
     /// distribution deterministic regardless of map iteration order.
     ///
     /// Per-recipient transfer failures are isolated: a recipient whose
-    /// address cannot accept the fee token does NOT abort the whole call —
-    /// their share is redirected to treasury so user transactions always succeed.
+    /// address cannot accept the fee token (frozen account, revoked
+    /// trustline, clawback-locked balance, misbehaving contract, ...) does
+    /// NOT abort the whole call. Each recipient transfer uses
+    /// `try_transfer` rather than the panicking `transfer`; a failure is
+    /// caught and that recipient's share is redirected to `treasury`
+    /// instead, and a `(factory, fee_redir)` event is emitted so admins can
+    /// detect a broken split recipient without reading contract logs.
+    ///
+    /// `treasury` itself has no further fallback: if the redirect transfer
+    /// (or the direct non-split payment) to `treasury` fails, `distribute_fee`
+    /// returns `Error::TreasuryTransferFailed` and the whole call reverts,
+    /// since there is nowhere else to safely park the funds.
     fn distribute_fee(
         env: &Env,
         state: &FactoryState,
@@ -399,21 +495,40 @@ impl TokenFactory {
                 remainder = remainder.saturating_sub(1);
             }
 
-            // Pass 3: execute transfers; redirect any leftover to treasury.
-            let treasury_extra: i128 = remainder; // any unassigned remainder
+            // Pass 3: execute transfers. A recipient whose transfer fails
+            // (frozen account, revoked trustline, clawback-locked balance,
+            // misbehaving contract, ...) does NOT abort the call — their
+            // share is redirected to treasury instead, per the isolation
+            // guarantee documented on `distribute_fee` above.
+            let mut treasury_extra: i128 = remainder; // any unassigned rounding remainder
             for i in 0..n {
                 if let (Ok(Some(addr)), Ok(Some(share))) = (addrs.try_get(i), floors.try_get(i)) {
-                    if share > 0 {
-                        fee_client.transfer(payer, &addr, &share);
+                    if share > 0 && fee_client.try_transfer(payer, &addr, &share).is_err() {
+                        treasury_extra = treasury_extra
+                            .checked_add(share)
+                            .ok_or(Error::ArithmeticOverflow)?;
+                        env.events().publish(
+                            (symbol_short!("factory"), symbol_short!("fee_redir")),
+                            (addr, share),
+                        );
                     }
                 }
             }
 
-            if treasury_extra > 0 {
-                fee_client.transfer(payer, &state.treasury, &treasury_extra);
+            // The redirect target itself has no further fallback — if the
+            // treasury can't accept the fee token, that's a hard error.
+            if treasury_extra > 0
+                && fee_client
+                    .try_transfer(payer, &state.treasury, &treasury_extra)
+                    .is_err()
+            {
+                return Err(Error::TreasuryTransferFailed);
             }
-        } else {
-            fee_client.transfer(payer, &state.treasury, &amount);
+        } else if fee_client
+            .try_transfer(payer, &state.treasury, &amount)
+            .is_err()
+        {
+            return Err(Error::TreasuryTransferFailed);
         }
         Ok(())
     }
@@ -877,6 +992,9 @@ impl TokenFactory {
         let count = tokens.len() as i128;
         if count == 0 {
             return Err(Error::InvalidParameters);
+        }
+        if tokens.len() > MAX_BATCH_SIZE {
+            return Err(Error::BatchSizeExceeded);
         }
 
         for p in tokens.iter() {
@@ -1527,6 +1645,15 @@ impl TokenFactory {
             }
         }
 
+        // The v3 walk is chunked, so it may still be mid-flight here. Every
+        // later step must wait: bumping the version marker past 3 would make
+        // the next `migrate` call skip the v3 block entirely and strand the
+        // `TokenInfo` entries beyond the cursor in `instance` storage forever.
+        // Return successfully so the caller simply calls `migrate` again.
+        if on_chain_version < 3 {
+            return Ok(());
+        }
+
         // Each future migration step follows the same pattern:
         //
         //   if on_chain_version < N {
@@ -1538,6 +1665,22 @@ impl TokenFactory {
         // Because `on_chain_version` is updated in-place between blocks,
         // a contract that is K versions behind will walk through every pending
         // step in a single `migrate` call, arriving at CURRENT_SCHEMA_VERSION.
+
+        if on_chain_version < 4 {
+            // Version 4: add `pending_admin` and `pending_admin_expiry` fields
+            // to `FactoryState` for two-step admin rotation (issue #1095 /
+            // two-step-admin-rotation PR). Both fields default to `None` so
+            // existing deployments remain in "no pending proposal" state after
+            // migration — there is no behavioral change until `propose_admin`
+            // is first called.
+            let mut s = Self::load_state(&env)?;
+            s.pending_admin = None;
+            s.pending_admin_expiry = None;
+            s.schema_version = 4;
+            Self::save_state(&env, &s);
+            on_chain_version = 4;
+            env.storage().instance().set(&sv_key, &on_chain_version);
+        }
 
         let _ = on_chain_version; // suppress unused-variable warning when no further steps exist
         Ok(())
@@ -1596,43 +1739,197 @@ impl TokenFactory {
         Ok(())
     }
 
-    /// Single implementation of admin rotation, shared by both public
-    /// entrypoints (issue #916).
+    /// Propose a new admin for the factory (step 1 of two-step rotation).
     ///
-    /// `transfer_admin` and `update_admin` were independently written copies
-    /// of the same operation that had drifted apart: only `update_admin`
-    /// emitted `adm_upd`, so a rotation performed via `transfer_admin` left
-    /// no on-chain trace and any indexer following the event stream kept
-    /// reporting the previous admin indefinitely. Both entrypoints now
-    /// delegate here so authorization, the self-transfer guard, the state
-    /// write and the event are identical whichever name a caller uses.
-    fn rotate_admin(env: &Env, current_admin: Address, new_admin: Address) -> Result<(), Error> {
+    /// The current admin names `new_admin` as the proposed successor. The
+    /// proposal is recorded in `FactoryState` and expires after
+    /// `ADMIN_PROPOSAL_TTL_LEDGERS` ledgers (~28 hours). Until then the
+    /// proposed admin can accept (via `accept_admin`) or the current admin
+    /// can cancel (via `cancel_admin_proposal`). Issuing a second proposal
+    /// **overwrites** the first, resetting the expiry window and allowing the
+    /// current admin to correct a typo without waiting for the old proposal to
+    /// expire.
+    ///
+    /// Emits `adm_prop` so a watcher can detect a pending rotation before it
+    /// takes effect.
+    ///
+    /// Does **not** complete the rotation — only `accept_admin` does that.
+    /// There is no single-step rotation path: the deprecated `transfer_admin`
+    /// and `update_admin` aliases both delegate here, and additionally emit
+    /// `adm_dep` and return an `AdminRotationReceipt` so a caller written
+    /// against the old single-step semantics cannot mistake the proposal for a
+    /// finished rotation.
+    pub fn propose_admin(
+        env: Env,
+        current_admin: Address,
+        new_admin: Address,
+    ) -> Result<(), Error> {
         current_admin.require_auth();
-        let mut state = Self::load_state(env)?;
+        let mut state = Self::load_state(&env)?;
         if state.admin != current_admin {
             return Err(Error::Unauthorized);
         }
         if current_admin == new_admin {
             return Err(Error::InvalidParameters);
         }
-        state.admin = new_admin.clone();
-        Self::save_state(env, &state);
+        let expiry = env
+            .ledger()
+            .sequence()
+            .checked_add(ADMIN_PROPOSAL_TTL_LEDGERS as u32)
+            .ok_or(Error::ArithmeticOverflow)? as u64;
+        state.pending_admin = Some(new_admin.clone());
+        state.pending_admin_expiry = Some(expiry);
+        Self::save_state(&env, &state);
         env.events().publish(
-            (symbol_short!("factory"), symbol_short!("adm_upd")),
-            (current_admin, new_admin),
+            (symbol_short!("factory"), symbol_short!("adm_prop")),
+            (current_admin, new_admin, expiry),
         );
         Ok(())
     }
 
-    /// Rotate the factory admin. Retained as an alias of `update_admin` for
-    /// callers built against the older ABI; both emit `adm_upd`.
-    pub fn transfer_admin(env: Env, admin: Address, new_admin: Address) -> Result<(), Error> {
-        Self::rotate_admin(&env, admin, new_admin)
+    /// Complete a pending admin-rotation proposal (step 2 of two-step rotation).
+    ///
+    /// The **proposed** admin — the address that was named in the most recent
+    /// `propose_admin` call — must call this and supply their own auth. This
+    /// cryptographically proves the proposed key can sign, eliminating the risk
+    /// of locking the factory to an uncontrolled address.
+    ///
+    /// Fails with:
+    /// - `Error::NoPendingProposal` — no proposal is pending, or the caller
+    ///   is not the proposed admin.
+    /// - `Error::ProposalExpired` — the proposal's expiry ledger has passed.
+    ///
+    /// Emits `adm_acc` on success.
+    pub fn accept_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        new_admin.require_auth();
+        let mut state = Self::load_state(&env)?;
+        let proposed = match state.pending_admin.as_ref() {
+            Some(p) => p.clone(),
+            None => return Err(Error::NoPendingProposal),
+        };
+        if proposed != new_admin {
+            return Err(Error::NoPendingProposal);
+        }
+        let expiry = state.pending_admin_expiry.unwrap_or(0);
+        if (env.ledger().sequence() as u64) >= expiry {
+            // Returning an error reverts the whole invocation, so an expired
+            // proposal cannot be cleared from here — any write we made would
+            // be rolled back with the rest of the call. It simply stays on
+            // record as inert: it can never be accepted, and the current
+            // admin removes it with `cancel_admin_proposal` or replaces it by
+            // calling `propose_admin` again.
+            return Err(Error::ProposalExpired);
+        }
+        // Accepted — the proposal is consumed.
+        state.pending_admin = None;
+        state.pending_admin_expiry = None;
+        let old_admin = state.admin.clone();
+        state.admin = new_admin.clone();
+        Self::save_state(&env, &state);
+        env.events().publish(
+            (symbol_short!("factory"), symbol_short!("adm_acc")),
+            (old_admin, new_admin),
+        );
+        Ok(())
     }
 
-    /// Rotate the factory admin, emitting `adm_upd`.
-    pub fn update_admin(env: Env, current_admin: Address, new_admin: Address) -> Result<(), Error> {
-        Self::rotate_admin(&env, current_admin, new_admin)
+    /// Cancel a pending admin-rotation proposal.
+    ///
+    /// Only the **current** admin may cancel. Calling this when no proposal
+    /// is pending is a no-op (idempotent). Emits `adm_can` when a live
+    /// proposal is cancelled.
+    pub fn cancel_admin_proposal(env: Env, current_admin: Address) -> Result<(), Error> {
+        current_admin.require_auth();
+        let mut state = Self::load_state(&env)?;
+        if state.admin != current_admin {
+            return Err(Error::Unauthorized);
+        }
+        if state.pending_admin.is_none() {
+            // Nothing to cancel — idempotent.
+            return Ok(());
+        }
+        let cancelled = match state.pending_admin.take() {
+            Some(addr) => addr,
+            None => return Ok(()), // already cleared — idempotent
+        };
+        state.pending_admin_expiry = None;
+        Self::save_state(&env, &state);
+        env.events().publish(
+            (symbol_short!("factory"), symbol_short!("adm_can")),
+            (current_admin, cancelled),
+        );
+        Ok(())
+    }
+
+    /// **Deprecated** — initiate an admin rotation via the legacy
+    /// `transfer_admin` name. Use `propose_admin` + `accept_admin` instead.
+    ///
+    /// Delegates to `propose_admin` so **no single-step rotation path
+    /// remains**: this records step 1 only, and the proposed admin must still
+    /// call `accept_admin` within `ADMIN_PROPOSAL_TTL_LEDGERS` ledgers for the
+    /// rotation to take effect. Retained so tooling built against the old name
+    /// keeps working — but *not* silently: it returns an
+    /// [`AdminRotationReceipt`] with `rotation_complete: false` and emits an
+    /// extra `adm_dep` event naming the deprecated entrypoint, so neither a
+    /// caller reading the return value nor an indexer reading the event stream
+    /// can conclude the rotation is finished (issue #1159).
+    ///
+    /// Do not decommission `admin`'s key until `accept_admin` has succeeded.
+    pub fn transfer_admin(
+        env: Env,
+        admin: Address,
+        new_admin: Address,
+    ) -> Result<AdminRotationReceipt, Error> {
+        let alias = Symbol::new(&env, "transfer_admin");
+        Self::propose_admin_via_legacy_alias(env, admin, new_admin, alias)
+    }
+
+    /// **Deprecated** — initiate an admin rotation via the legacy
+    /// `update_admin` name. See `transfer_admin` above; identical behavior,
+    /// with `update_admin` reported as the deprecated entrypoint.
+    pub fn update_admin(
+        env: Env,
+        current_admin: Address,
+        new_admin: Address,
+    ) -> Result<AdminRotationReceipt, Error> {
+        let alias = Symbol::new(&env, "update_admin");
+        Self::propose_admin_via_legacy_alias(env, current_admin, new_admin, alias)
+    }
+
+    /// Shared body of the two deprecated aliases: propose the rotation, then
+    /// announce — in both the event stream and the return value — that this
+    /// is a proposal and nothing more.
+    ///
+    /// The `adm_dep` event is emitted *in addition to* `adm_prop`, not instead
+    /// of it, so existing rotation monitoring keeps working unchanged while
+    /// gaining a distinct signal that some caller is still driving rotations
+    /// through a pre-two-step entrypoint — the exact condition that precedes
+    /// an abandoned, expiring proposal.
+    fn propose_admin_via_legacy_alias(
+        env: Env,
+        current_admin: Address,
+        new_admin: Address,
+        deprecated_entrypoint: Symbol,
+    ) -> Result<AdminRotationReceipt, Error> {
+        Self::propose_admin(env.clone(), current_admin.clone(), new_admin.clone())?;
+        // `propose_admin` has just written this, so it is always `Some`; the
+        // fallback keeps the no-unwrap lint satisfied without a panic path.
+        let expires_at_ledger = Self::load_state(&env)?.pending_admin_expiry.unwrap_or(0);
+        env.events().publish(
+            (symbol_short!("factory"), symbol_short!("adm_dep")),
+            (
+                current_admin,
+                new_admin.clone(),
+                expires_at_ledger,
+                deprecated_entrypoint,
+            ),
+        );
+        Ok(AdminRotationReceipt {
+            rotation_complete: false,
+            pending_admin: new_admin,
+            expires_at_ledger,
+            required_next_call: Symbol::new(&env, "accept_admin"),
+        })
     }
 
     pub fn get_state(env: Env) -> Result<FactoryState, Error> {
@@ -1808,6 +2105,63 @@ impl TokenFactory {
             }
         }
         page_out
+    }
+}
+
+/// Test/fuzz-only helper for registering a token in factory storage without
+/// going through `create_token`'s WASM-deploy path — no real token WASM is
+/// available to `cargo test` or fuzz targets (see `mod bench`'s note below).
+/// Compiled only when the `testutils` feature is enabled, so it never ships
+/// in the production WASM build (the release build does not enable it).
+///
+/// This is a plain associated function, not a `#[contractimpl]` entrypoint,
+/// so it never appears in the contract's on-chain ABI. It exists so external
+/// crates that depend on this one as an ordinary library (e.g. the fuzz
+/// targets in `fuzz/`, which cannot reach this crate's private `DataKey`/
+/// `TokenInfo` types any other way) can register a real token — typically a
+/// Stellar Asset Contract — and then exercise genuine public entrypoints
+/// like `burn` against it, mirroring what `record_token` writes for a
+/// deployed token.
+#[cfg(feature = "testutils")]
+impl TokenFactory {
+    pub fn fuzz_seed_token(
+        env: &Env,
+        token_addr: &Address,
+        creator: &Address,
+        name: String,
+        symbol: String,
+        decimals: u32,
+        burn_enabled: bool,
+        max_supply: Option<i128>,
+    ) -> u32 {
+        let mut state = Self::load_state(env).expect("factory must be initialized before seeding");
+        state.token_count = state
+            .token_count
+            .checked_add(1)
+            .expect("token_count overflow while seeding");
+        let index = state.token_count;
+
+        Self::set_persistent(
+            env,
+            &DataKey::TokenInfo(index),
+            &TokenInfo {
+                name,
+                symbol,
+                decimals,
+                creator: creator.clone(),
+                created_at: env.ledger().timestamp(),
+                burn_enabled,
+                max_supply,
+            },
+        );
+        Self::append_creator_token(env, creator, index)
+            .expect("append_creator_token failed while seeding");
+        Self::set_persistent(env, &DataKey::TokenIndex(token_addr.clone()), &index);
+        Self::set_persistent(env, &DataKey::TokenAddress(index), token_addr);
+        Self::set_persistent(env, &(token_addr, symbol_short!("owner")), creator);
+
+        Self::save_state(env, &state);
+        index
     }
 }
 

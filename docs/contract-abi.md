@@ -165,9 +165,9 @@ The table below shows measured CPU instructions and memory bytes consumed by `cr
 >
 > Protocol limits may change with network upgrades. Re-run the benchmark harness after each SDK bump and update this table. The CI job in `.github/workflows/benchmarks.yml` runs on every PR touching `contracts/` and surfaces regressions automatically.
 
-**✅ Recommended maximum batch size: 20 tokens**
+**✅ Maximum batch size: 20 tokens (contract-enforced)**
 
-This limit is enforced client-side by the frontend (`frontend/src/utils/validation.ts → validateBatchSize`) and documented here. Callers using the contract directly must enforce this limit themselves to avoid failed transactions.
+This limit is enforced on-chain: `create_tokens_batch` rejects any call with more than `MAX_BATCH_SIZE` (20) entries with `Error::BatchSizeExceeded`, checked before any per-item validation or deployment work begins. The frontend (`frontend/src/utils/validation.ts → validateBatchSize`) mirrors the same value for early client-side feedback, but the contract is the source of truth and rejects oversized batches regardless of caller.
 
 If you need to deploy more than 20 tokens, split them into multiple sequential `create_tokens_batch` calls, each containing ≤ 20 entries.
 
@@ -237,7 +237,7 @@ Toggle the burn flag for a token.
 
 ### `get_state() → FactoryState`
 
-Inspect factory configuration and aggregate counts.
+Inspect factory configuration and aggregate counts. As of schema version 4, the returned `FactoryState` also includes `pending_admin: Option<Address>` (the proposed-but-not-yet-accepted admin, or `None`) and `pending_admin_expiry: Option<u64>` (the ledger sequence at which the proposal lapses, or `None`). Callers can use these fields to detect a pending rotation before it completes.
 
 ### `get_base_fee() → i128`
 
@@ -335,6 +335,8 @@ Set a fee split where `splits` is a `Map<Address, u32>` of basis-point recipient
 
 **Rounding:** `distribute_fee` uses the **largest-remainder method**. Each recipient's share is `floor(amount * bps / 10_000)`. Remainder stroops (at most `recipients - 1`) are awarded one-at-a-time to the entries with the largest fractional parts, so the sum of all transfers always equals the full fee amount. No recipient with non-zero `bps` receives zero forever as long as the fee amount is ≥ 1 stroop (the largest-remainder guarantee).
 
+**Per-recipient failure isolation:** `distribute_fee` pays each split recipient with the non-panicking `try_transfer` rather than `transfer`. If a recipient's address cannot accept the fee token (frozen account, revoked trustline, clawback-locked balance, or a misbehaving contract address), that single transfer failure does **not** abort the call — the recipient's share is redirected to `treasury` instead, and a `fee_redir` event is emitted naming the skipped recipient and the redirected amount, so an admin can detect and fix a broken split (via `set_fee_split`) without reading contract logs. This holds for both the split path and the non-split (`treasury`-only) path. `treasury` itself is the terminal fallback: if the payment (or redirect) to `treasury` fails there is nowhere else to send the funds, so `distribute_fee` returns `Error::TreasuryTransferFailed` and the whole call reverts.
+
 Emits a `split_set` event on successful configuration and a `split_clr` event when the split is cleared.
 
 **Recipient cap:** `splits` may contain at most **10 recipients** (`MAX_FEE_SPLIT_RECIPIENTS`). Exceeding it is rejected with `Error::TooManyFeeSplitRecipients` before the basis-point sum is even checked. This exists because `distribute_fee` transfers a share to every configured recipient on **every** `create_token`, `create_tokens_batch`, `mint_tokens`, and `set_metadata` call — an unbounded admin-configured split would make every fee-paying call on the contract arbitrarily expensive for the caller, and risk exceeding Soroban's per-transaction resource limits outright.
@@ -345,11 +347,62 @@ The cap is conservative: typical treasury + referral + protocol-fund structures 
 
 Read the current split (empty map means no split).
 
-### `update_admin(current_admin, new_admin)` / `transfer_admin(admin, new_admin)`
+### `propose_admin(current_admin, new_admin)` — step 1
 
-Hand the admin privilege to `new_admin`. The two names are aliases for one operation: both delegate to the same internal implementation, so both require the current admin's auth, both reject a self-transfer with `Error::InvalidParameters`, and **both emit `adm_upd`**.
+Propose a new admin address. The current admin calls this to name a successor. The proposal is stored in `FactoryState` and expires after `ADMIN_PROPOSAL_TTL_LEDGERS` ledgers (~28 hours at 6 seconds/ledger). If a second proposal is issued before the first is accepted or cancelled, it **overwrites** the first, resetting the expiry.
 
-Before the fix for issue #916 these were independently written copies that had drifted apart — only `update_admin` emitted the event, so a rotation performed through `transfer_admin` left no on-chain trace and indexers following the event stream kept reporting the previous admin indefinitely. `transfer_admin` is retained only for callers built against the older ABI; new integrations should use `update_admin`.
+| Param           | Type      | Description                                           |
+| --------------- | --------- | ----------------------------------------------------- |
+| `current_admin` | `Address` | Current admin; must authorize this call.              |
+| `new_admin`     | `Address` | Proposed successor. Must differ from `current_admin`. |
+
+Emits `adm_prop` with `(current_admin, new_admin, expiry_ledger)`.
+
+Errors: `Unauthorized` if caller is not the current admin; `InvalidParameters` for self-proposal.
+
+### `accept_admin(new_admin)` — step 2
+
+Complete a pending rotation. **The proposed admin** calls this, proving they control the proposed key. Only succeeds when a live (non-expired) proposal exists for `new_admin`.
+
+| Param       | Type      | Description                                                         |
+| ----------- | --------- | ------------------------------------------------------------------- |
+| `new_admin` | `Address` | The address that was named in the most recent `propose_admin` call. |
+
+Emits `adm_acc` with `(old_admin, new_admin)` on success.
+
+Errors:
+
+- `NoPendingProposal` (code 26) — no proposal is pending, or `new_admin` does not match the proposed address.
+- `ProposalExpired` (code 27) — the proposal's expiry ledger has passed. The rejection reverts the call, so the expired proposal stays on record but can never be accepted; the current admin clears it with `cancel_admin_proposal` or replaces it with a new `propose_admin` call.
+
+### `cancel_admin_proposal(current_admin)`
+
+Cancel a live proposal. Only the current admin may cancel. Idempotent when no proposal is pending. Emits `adm_can` with `(current_admin, cancelled_address)`.
+
+### `transfer_admin(admin, new_admin)` / `update_admin(current_admin, new_admin)` — deprecated
+
+> ⚠️ **Deprecated. These do not complete a rotation.** Use `propose_admin` + `accept_admin` directly. Do **not** decommission the outgoing admin key until `accept_admin` has succeeded — see [issue #1159](https://github.com/Favourorg/Stellar-forge/issues/1159).
+
+These names are retained so tooling built before the two-step model keeps working. **Both delegate to `propose_admin`** — neither completes the rotation on its own. Before the two-step model both performed an immediate, unverified single-step rotation; there is now **no single-step rotation path** in the contract. Every rotation takes two transactions: propose (current admin) and accept (new admin).
+
+Because that downgrade would otherwise be invisible to a caller — a successful transaction that used to mean "rotated" now means "proposed" — both entrypoints report the difference twice over:
+
+**1. Return value.** They return an `AdminRotationReceipt` rather than `void`:
+
+| Field                | Type      | Value                                                                                                                |
+| -------------------- | --------- | -------------------------------------------------------------------------------------------------------------------- |
+| `rotation_complete`  | `bool`    | Always `false` — `state.admin` is unchanged.                                                                         |
+| `pending_admin`      | `Address` | The address that must accept.                                                                                        |
+| `expires_at_ledger`  | `u64`     | Ledger at which the proposal lapses; after this only a new proposal from the current admin can restart the rotation. |
+| `required_next_call` | `Symbol`  | `accept_admin`.                                                                                                      |
+
+A client that decodes the old `void` return fails loudly on this value instead of silently reporting success.
+
+**2. Event.** They emit `adm_dep` with `(current_admin, new_admin, expiry_ledger, deprecated_entrypoint)` **in addition to** `adm_prop`. Existing `adm_prop` monitoring is unaffected; `adm_dep` is the distinct signal that some caller is still driving rotations through a pre-two-step entrypoint, which is the condition that precedes an abandoned proposal quietly expiring.
+
+Errors and auth are identical to `propose_admin`.
+
+Operational guidance for completing and monitoring a rotation lives in [`docs/incident-response.md` §2.5](./incident-response.md#25-stale-pending-admin-proposals) and the [mainnet deployment checklist](./mainnet-deployment-checklist.md).
 
 ### `upgrade(admin, new_wasm_hash)`
 
@@ -361,6 +414,7 @@ Incrementally upgrades state between schema versions. Idempotent — safe to cal
 
 - Version 2: bumps the version marker for the issue #1006 max-supply fix — it does not automatically back-fill any capped token's supply counter (see `backfill_capped_supply` below and "Supply cap accounting" above).
 - Version 3: moves `TokenInfo` entries from `instance` to `persistent` storage (issue #1007 — see "Storage architecture" above), walking `token_count` in bounded chunks per call. If `token_count` is large enough that one call can't finish the walk, `schema_version` stays at 2 and a subsequent `migrate` call resumes from where the last one left off; every other affected key (`TokenIndex`, `Metadata`, `owner`, `supply`, `CreatorTokens`) migrates lazily on next access regardless of whether this step has completed.
+- Version 4: adds `pending_admin: Option<Address>` and `pending_admin_expiry: Option<u64>` to `FactoryState` for two-step admin rotation. Both fields default to `None` — no behavioral change until `propose_admin` is first called. Call `migrate` once after upgrading to this version; subsequent calls are idempotent.
 
 ### `backfill_capped_supply(admin, token_address, verified_supply)`
 
@@ -389,54 +443,66 @@ Read-only: returns `true` if `address` is on the whitelist.
 
 ## Errors
 
-| Code | Symbol                      | When                                                                                  |
-| ---- | --------------------------- | ------------------------------------------------------------------------------------- |
-| 1    | `InsufficientFee`           | `fee_payment < required_fee`                                                          |
-| 2    | `Unauthorized`              | caller is not allowed for this operation                                              |
-| 3    | `InvalidParameters`         | argument out of range or malformed                                                    |
-| 4    | `TokenNotFound`             | unknown token index or address                                                        |
-| 5    | `MetadataAlreadySet`        | _(deprecated — retained for ABI compatibility; no longer returned by `set_metadata`)_ |
-| 6    | `AlreadyInitialized`        | double-initialize attempt                                                             |
-| 7    | `BurnAmountExceedsBalance`  | `burn` > balance                                                                      |
-| 8    | `BurnNotEnabled`            | burning on a token that has been disabled                                             |
-| 9    | `InvalidBurnAmount`         | zero or negative burn                                                                 |
-| 10   | `ContractPaused`            | operation blocked because factory is paused                                           |
-| 11   | `Reentrancy`                | concurrent reentrant call detected                                                    |
-| 12   | `ArithmeticOverflow`        | checked-op failed                                                                     |
-| 13   | `StateNotFound`             | factory not yet initialized                                                           |
-| 14   | `InvalidTokenParams`        | name/symbol validation failed during token creation                                   |
-| 15   | `InvalidDecimals`           | decimals outside `[0, 18]`                                                            |
-| 16   | `MaxSupplyExceeded`         | mint would exceed cap                                                                 |
-| 17   | `InvalidFeeSplit`           | `set_fee_split` map bps do not sum to 10_000                                          |
-| 18   | `TooManyFeeSplitRecipients` | `set_fee_split` map has more than `MAX_FEE_SPLIT_RECIPIENTS` (10) recipients          |
-| 19   | `AlreadyBackfilled`         | `backfill_capped_supply` already applied for this token                               |
-| 20   | `NotWhitelisted`            | creator is not on the whitelist when enforcement is enabled                           |
-| 21   | `InvalidMetadataUri`        | URI is empty, missing `ipfs://` prefix, exceeds 128 bytes, or has no CID              |
-| 22   | `ZeroFeeSplitEntry`         | `set_fee_split` map contains an entry with `bps == 0`                                 |
-| 23   | `MetadataFrozen`            | metadata is frozen (via `freeze_metadata` or auto-freeze after max updates)           |
+| Code | Symbol                      | When                                                                                   |
+| ---- | --------------------------- | -------------------------------------------------------------------------------------- |
+| 1    | `InsufficientFee`           | `fee_payment < required_fee`                                                           |
+| 2    | `Unauthorized`              | caller is not allowed for this operation                                               |
+| 3    | `InvalidParameters`         | argument out of range or malformed                                                     |
+| 4    | `TokenNotFound`             | unknown token index or address                                                         |
+| 5    | `MetadataAlreadySet`        | _(deprecated — retained for ABI compatibility; no longer returned by `set_metadata`)_  |
+| 6    | `AlreadyInitialized`        | double-initialize attempt                                                              |
+| 7    | `BurnAmountExceedsBalance`  | `burn` > balance                                                                       |
+| 8    | `BurnNotEnabled`            | burning on a token that has been disabled                                              |
+| 9    | `InvalidBurnAmount`         | zero or negative burn                                                                  |
+| 10   | `ContractPaused`            | operation blocked because factory is paused                                            |
+| 11   | `Reentrancy`                | concurrent reentrant call detected                                                     |
+| 12   | `ArithmeticOverflow`        | checked-op failed                                                                      |
+| 13   | `StateNotFound`             | factory not yet initialized                                                            |
+| 14   | `InvalidTokenParams`        | name/symbol validation failed during token creation                                    |
+| 15   | `InvalidDecimals`           | decimals outside `[0, 18]`                                                             |
+| 16   | `MaxSupplyExceeded`         | mint would exceed cap                                                                  |
+| 17   | `InvalidFeeSplit`           | `set_fee_split` map bps do not sum to 10_000                                           |
+| 18   | `TooManyFeeSplitRecipients` | `set_fee_split` map has more than `MAX_FEE_SPLIT_RECIPIENTS` (10) recipients           |
+| 19   | `AlreadyBackfilled`         | `backfill_capped_supply` already applied for this token                                |
+| 20   | `NotWhitelisted`            | creator is not on the whitelist when enforcement is enabled                            |
+| 21   | `InvalidMetadataUri`        | URI is empty, missing `ipfs://` prefix, exceeds 128 bytes, or has no CID               |
+| 22   | `ZeroFeeSplitEntry`         | `set_fee_split` map contains an entry with `bps == 0`                                  |
+| 23   | `MetadataFrozen`            | metadata is frozen (via `freeze_metadata` or auto-freeze after max updates)            |
+| 24   | `TreasuryTransferFailed`    | payment/redirect of a fee share to `treasury` itself failed (no further fallback)      |
+| 25   | `BatchSizeExceeded`         | `create_tokens_batch` called with more than `MAX_BATCH_SIZE` (20) tokens               |
+| 26   | `NoPendingProposal`         | `accept_admin` called with no live proposal, or the caller is not the proposed address |
+| 27   | `ProposalExpired`           | the pending proposal's expiry ledger has passed; current admin must re-propose         |
+
+## Test/fuzz-only helpers
+
+`fuzz_seed_token` (`src/lib.rs`, gated by `#[cfg(feature = "testutils")]`) is **not** a contract entrypoint — it is a plain associated function in a second, non-`#[contractimpl]` `impl TokenFactory` block, so it is compiled out of the production WASM entirely and never appears in the on-chain ABI. It exists so `contracts/token-factory/fuzz`'s targets (which depend on this crate as an ordinary library and so cannot reach its private `DataKey`/`TokenInfo` types any other way) can register a token in factory storage — mirroring what `create_token` writes — without a real token WASM to install at `token_wasm_hash`, which `cargo test`/fuzzing can't provide (see `mod bench`'s note in `src/lib.rs`). See `contracts/token-factory/fuzz/README.md` for how it's used.
 
 ## Events
 
 The contract emits Soroban events on a `(factory, action)` topic. The frontend parses them via `frontend/src/services/stellar-impl.ts`. Events:
 
-| Action      | Payload                                  | Trigger                                |
-| ----------- | ---------------------------------------- | -------------------------------------- |
-| `init`      | `(admin)`                                | `initialize`                           |
-| `init`      | `(admin)`                                | `__constructor`                        |
-| `created`   | `(token_address, creator, name, symbol)` | `create_token` / `create_tokens_batch` |
-| `meta`      | `(token_address, metadata_uri, version)` | `set_metadata` (every update)          |
-| `meta_frz`  | `(token_address, admin)`                 | `freeze_metadata`                      |
-| `mint`      | `(token_address, to, amount)`            | `mint_tokens`                          |
-| `burn`      | `(token_address, from, amount)`          | `burn`                                 |
-| `fees`      | `(base_fee, metadata_fee)`               | `update_fees`                          |
-| `split_set` | `(admin, splits)`                        | `set_fee_split` (non-empty)            |
-| `split_clr` | `(admin)`                                | `set_fee_split` (empty — clears split) |
-| `pause`     | `(admin)`                                | `pause`                                |
-| `unpause`   | `(admin)`                                | `unpause`                              |
-| `adm_upd`   | `(current_admin, new_admin)`             | `update_admin`                         |
-| `wl_add`    | `(address)`                              | `add_to_whitelist`                     |
-| `wl_rm`     | `(address)`                              | `remove_from_whitelist`                |
-| `wl_tog`    | `(enabled)`                              | `set_whitelist_enabled`                |
+| Action      | Payload                                                            | Trigger                                                                            |
+| ----------- | ------------------------------------------------------------------ | ---------------------------------------------------------------------------------- |
+| `init`      | `(admin)`                                                          | `initialize`                                                                       |
+| `init`      | `(admin)`                                                          | `__constructor`                                                                    |
+| `created`   | `(token_address, creator, name, symbol)`                           | `create_token` / `create_tokens_batch`                                             |
+| `meta`      | `(token_address, metadata_uri, version)`                           | `set_metadata` (every update)                                                      |
+| `meta_frz`  | `(token_address, admin)`                                           | `freeze_metadata`                                                                  |
+| `mint`      | `(token_address, to, amount)`                                      | `mint_tokens`                                                                      |
+| `burn`      | `(token_address, from, amount)`                                    | `burn`                                                                             |
+| `fees`      | `(base_fee, metadata_fee)`                                         | `update_fees`                                                                      |
+| `split_set` | `(admin, splits)`                                                  | `set_fee_split` (non-empty)                                                        |
+| `split_clr` | `(admin)`                                                          | `set_fee_split` (empty — clears split)                                             |
+| `fee_redir` | `(recipient, share)`                                               | `distribute_fee` (recipient `try_transfer` failed; share redirected to `treasury`) |
+| `pause`     | `(admin)`                                                          | `pause`                                                                            |
+| `unpause`   | `(admin)`                                                          | `unpause`                                                                          |
+| `adm_prop`  | `(current_admin, new_admin, expiry_ledger)`                        | `propose_admin` / `transfer_admin` / `update_admin`                                |
+| `adm_acc`   | `(old_admin, new_admin)`                                           | `accept_admin`                                                                     |
+| `adm_can`   | `(current_admin, cancelled_admin)`                                 | `cancel_admin_proposal`                                                            |
+| `adm_dep`   | `(current_admin, new_admin, expiry_ledger, deprecated_entrypoint)` | `transfer_admin` / `update_admin` (emitted alongside `adm_prop`)                   |
+| `wl_add`    | `(address)`                                                        | `add_to_whitelist`                                                                 |
+| `wl_rm`     | `(address)`                                                        | `remove_from_whitelist`                                                            |
+| `wl_tog`    | `(enabled)`                                                        | `set_whitelist_enabled`                                                            |
 
 ## Batch creation UI
 

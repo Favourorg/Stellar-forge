@@ -26,6 +26,7 @@ The factory references `soroban-token-sdk = "26.1.0"` for its own token interact
 ### REQ-01: Provenance documentation
 
 A document must exist in `docs/` that answers:
+
 - What is the canonical source of the token WASM used by the factory?
 - Which upstream repository, version/tag, and commit does it come from?
 - What SDK version was it compiled against?
@@ -35,6 +36,7 @@ A document must exist in `docs/` that answers:
 ### REQ-02: Deployment log template
 
 The provenance document must include a deployment log table for deployers to record:
+
 - Network (testnet/mainnet)
 - Exact source tag/commit
 - Resulting WASM hash (hex)
@@ -44,6 +46,7 @@ The provenance document must include a deployment log table for deployers to rec
 ### REQ-03: Checklist enforcement
 
 `docs/mainnet-deployment-checklist.md` must contain a specific line item requiring deployers to:
+
 - Confirm the WASM provenance is documented
 - Confirm the WASM hash is recorded
 - Confirm the audit status or risk-acceptance decision is on file
@@ -91,25 +94,31 @@ The audit gap was resolved by:
 3. Confirming that `README.md` Step 4 (Upload Token Contract WASM) correctly qualifies the `soroban-examples` source with a pinned-tag requirement and a provenance notice — it does not make any unsourced "audited" claim.
 
 If a professional audit is subsequently commissioned, the report should be filed under `docs/audits/` and both `docs/token-wasm-provenance.md` and this spec should be updated to reflect the findings.
+
 # Soroban Token SDK Security Audit Spec
 
 ## Status
+
 **Scoped, Not Executed (Active Issue #1113)**
 
 ## Summary
+
 Perform security audit and WASM verification for deployed Soroban Token Factory smart contracts and compiled WebAssembly binaries.
 
 ## Objectives & Scope
+
 1. **Bytecode Verification**: Verify target WASM bytecode hashes against source code compilations.
 2. **Reentrancy & Authorization**: Audit administrative capability checks, authorization wrappers (`require_auth`), and fee distribution logic.
 3. **Fuzzing & Property Tests**: Ensure fuzz targets in `contracts/token-factory/fuzz` achieve required coverage without panic conditions.
 4. **WASM Optimization**: Enforce contract WASM binary size constraints.
 
 ## Related Artifacts & Tools
+
 - Fuzzing suite: `contracts/token-factory/fuzz/`
 - Audit documentation: `docs/security-triage.md`
 - WASM verification workflow: `.github/workflows/wasm-verify.yml`
 
 ## Related Issues
+
 - Issue #1113: The token-WASM security-audit spec was scoped and never executed or closed
 - Issue #1117: Multiple `.kiro/specs` directories are abandoned stubs

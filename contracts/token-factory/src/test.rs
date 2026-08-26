@@ -5,9 +5,9 @@ extern crate std;
 use super::*;
 use soroban_sdk::{
     contract, contractimpl,
-    testutils::{Address as _, Events as _},
+    testutils::{Address as _, Events as _, Ledger as _},
     token::{StellarAssetClient, TokenClient},
-    Address, BytesN, Env, Map, MuxedAddress, String,
+    Address, BytesN, Env, Map, MuxedAddress, String, Symbol,
 };
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
@@ -1635,13 +1635,202 @@ fn test_burn_allowed_when_factory_paused() {
     assert_eq!(TokenClient::new(&s.env, &token_addr).balance(&burner), 300);
 }
 
-// ── transfer_admin / update_admin ─────────────────────────────────────────────
+// ── propose_admin / accept_admin / cancel_admin_proposal ──────────────────────
+//
+// Two-step admin rotation: the current admin proposes a successor; the
+// successor proves it can sign by calling accept_admin; the rotation only
+// completes when both steps have executed. transfer_admin and update_admin
+// now both delegate to propose_admin, so no single-step path remains.
 
 #[test]
-fn test_transfer_admin() {
+fn test_propose_admin_records_pending_state() {
+    let s = Setup::new();
+    let new_admin = Address::generate(&s.env);
+    s.client.propose_admin(&s.admin, &new_admin);
+    let state = s.client.get_state();
+    assert_eq!(state.pending_admin, Some(new_admin));
+    assert!(state.pending_admin_expiry.is_some());
+}
+
+#[test]
+fn test_accept_admin_completes_rotation() {
+    let s = Setup::new();
+    let new_admin = Address::generate(&s.env);
+    s.client.propose_admin(&s.admin, &new_admin);
+    s.client.accept_admin(&new_admin);
+    let state = s.client.get_state();
+    assert_eq!(state.admin, new_admin);
+    assert_eq!(state.pending_admin, None);
+    assert_eq!(state.pending_admin_expiry, None);
+}
+
+#[test]
+fn test_accept_admin_old_admin_loses_access() {
+    let s = Setup::new();
+    let new_admin = Address::generate(&s.env);
+    s.client.propose_admin(&s.admin, &new_admin);
+    s.client.accept_admin(&new_admin);
+    // Old admin can no longer exercise admin-only operations.
+    assert_eq!(s.client.try_pause(&s.admin), Err(Ok(Error::Unauthorized)));
+    // New admin can.
+    s.client.pause(&new_admin);
+    assert!(s.client.get_state().paused);
+}
+
+#[test]
+fn test_propose_admin_unauthorized() {
+    let s = Setup::new();
+    let stranger = Address::generate(&s.env);
+    let new_admin = Address::generate(&s.env);
+    assert_eq!(
+        s.client.try_propose_admin(&stranger, &new_admin),
+        Err(Ok(Error::Unauthorized))
+    );
+}
+
+#[test]
+fn test_propose_admin_self_transfer_rejected() {
+    let s = Setup::new();
+    assert_eq!(
+        s.client.try_propose_admin(&s.admin, &s.admin),
+        Err(Ok(Error::InvalidParameters))
+    );
+}
+
+#[test]
+fn test_accept_admin_wrong_address_rejected() {
+    let s = Setup::new();
+    let proposed = Address::generate(&s.env);
+    let impostor = Address::generate(&s.env);
+    s.client.propose_admin(&s.admin, &proposed);
+    // A different address trying to accept must be rejected.
+    assert_eq!(
+        s.client.try_accept_admin(&impostor),
+        Err(Ok(Error::NoPendingProposal))
+    );
+    // Proposal must still be live.
+    assert_eq!(s.client.get_state().pending_admin, Some(proposed));
+}
+
+#[test]
+fn test_accept_admin_with_no_proposal_rejected() {
+    let s = Setup::new();
+    let addr = Address::generate(&s.env);
+    assert_eq!(
+        s.client.try_accept_admin(&addr),
+        Err(Ok(Error::NoPendingProposal))
+    );
+}
+
+#[test]
+fn test_second_proposal_overwrites_first() {
+    let s = Setup::new();
+    let first = Address::generate(&s.env);
+    let second = Address::generate(&s.env);
+    s.client.propose_admin(&s.admin, &first);
+    // Overwrite with a second proposal.
+    s.client.propose_admin(&s.admin, &second);
+    let state = s.client.get_state();
+    // Only the second proposal should be active.
+    assert_eq!(state.pending_admin, Some(second.clone()));
+    // First proposed address can no longer accept.
+    assert_eq!(
+        s.client.try_accept_admin(&first),
+        Err(Ok(Error::NoPendingProposal))
+    );
+    // Second can accept.
+    s.client.accept_admin(&second);
+    assert_eq!(s.client.get_state().admin, second);
+}
+
+#[test]
+fn test_cancel_admin_proposal() {
+    let s = Setup::new();
+    let new_admin = Address::generate(&s.env);
+    s.client.propose_admin(&s.admin, &new_admin);
+    s.client.cancel_admin_proposal(&s.admin);
+    let state = s.client.get_state();
+    assert_eq!(state.pending_admin, None);
+    assert_eq!(state.pending_admin_expiry, None);
+}
+
+#[test]
+fn test_cancel_admin_proposal_idempotent() {
+    let s = Setup::new();
+    // Cancelling when there is no proposal must be a no-op, not an error.
+    s.client.cancel_admin_proposal(&s.admin);
+}
+
+#[test]
+fn test_cancel_admin_proposal_unauthorized() {
+    let s = Setup::new();
+    let new_admin = Address::generate(&s.env);
+    let stranger = Address::generate(&s.env);
+    s.client.propose_admin(&s.admin, &new_admin);
+    assert_eq!(
+        s.client.try_cancel_admin_proposal(&stranger),
+        Err(Ok(Error::Unauthorized))
+    );
+    // Proposal must still be intact after the failed cancel.
+    assert_eq!(s.client.get_state().pending_admin, Some(new_admin));
+}
+
+#[test]
+fn test_expired_proposal_cannot_be_accepted() {
+    let s = Setup::new();
+    let new_admin = Address::generate(&s.env);
+    s.client.propose_admin(&s.admin, &new_admin);
+
+    // Advance the ledger past the TTL.
+    s.env.ledger().with_mut(|li| {
+        li.sequence_number = li
+            .sequence_number
+            .saturating_add(ADMIN_PROPOSAL_TTL_LEDGERS as u32 + 1);
+    });
+
+    assert_eq!(
+        s.client.try_accept_admin(&new_admin),
+        Err(Ok(Error::ProposalExpired))
+    );
+    // The rejection reverts the whole call, so the expired proposal is still
+    // on record — inert, never acceptable, and harmless. The admin clears it
+    // by cancelling, or replaces it by proposing again.
+    let state = s.client.get_state();
+    assert_eq!(state.pending_admin, Some(new_admin.clone()));
+    assert_eq!(state.admin, s.admin);
+
+    // Re-proposing overwrites the expired entry with a fresh expiry window,
+    // and the new proposal is acceptable.
+    s.client.propose_admin(&s.admin, &new_admin);
+    s.client.accept_admin(&new_admin);
+    assert_eq!(s.client.get_state().admin, new_admin);
+    assert_eq!(s.client.get_state().pending_admin, None);
+}
+
+#[test]
+fn test_transfer_admin_delegates_to_propose_admin() {
+    // transfer_admin must be a thin alias for propose_admin — it initiates
+    // a proposal, not a completed rotation.
     let s = Setup::new();
     let new_admin = Address::generate(&s.env);
     s.client.transfer_admin(&s.admin, &new_admin);
+    // Admin must NOT have changed yet — only proposal stored.
+    assert_eq!(s.client.get_state().admin, s.admin);
+    assert_eq!(s.client.get_state().pending_admin, Some(new_admin.clone()));
+    // Completing requires accept_admin.
+    s.client.accept_admin(&new_admin);
+    assert_eq!(s.client.get_state().admin, new_admin);
+}
+
+#[test]
+fn test_update_admin_delegates_to_propose_admin() {
+    // update_admin must be a thin alias for propose_admin — same as above.
+    let s = Setup::new();
+    let new_admin = Address::generate(&s.env);
+    s.client.update_admin(&s.admin, &new_admin);
+    assert_eq!(s.client.get_state().admin, s.admin);
+    assert_eq!(s.client.get_state().pending_admin, Some(new_admin.clone()));
+    s.client.accept_admin(&new_admin);
     assert_eq!(s.client.get_state().admin, new_admin);
 }
 
@@ -1667,9 +1856,15 @@ fn test_transfer_admin_same_address_rejected() {
 
 #[test]
 fn test_update_admin_old_loses_access() {
+    // Verify the full two-step flow: the old admin loses access only after
+    // accept_admin completes.
     let s = Setup::new();
     let new_admin = Address::generate(&s.env);
     s.client.update_admin(&s.admin, &new_admin);
+    // Old admin still holds the key at proposal stage.
+    assert_eq!(s.client.get_state().admin, s.admin);
+    s.client.accept_admin(&new_admin);
+    // Now old admin must be locked out.
     assert_eq!(s.client.try_pause(&s.admin), Err(Ok(Error::Unauthorized)));
     s.client.pause(&new_admin);
     assert!(s.client.get_state().paused);
@@ -3256,6 +3451,60 @@ fn test_migrate_preserves_state_fields() {
     assert!(!state.paused);
 }
 
+// ── schema v4 migration: pending_admin fields default to None ─────────────────
+
+/// Simulating a schema-v3 deployment and running migrate must walk the v3→v4
+/// step, adding `pending_admin = None` and `pending_admin_expiry = None`.
+#[test]
+fn test_migrate_v3_to_v4_adds_pending_admin_fields() {
+    let s = Setup::new();
+
+    // Rewind to schema version 3 so the v4 step fires.
+    s.env.as_contract(&s.client.address, || {
+        let mut state: FactoryState = s.env.storage().instance().get(&DataKey::State).unwrap();
+        state.schema_version = 3;
+        s.env.storage().instance().set(&DataKey::State, &state);
+        s.env.storage().instance().set(&symbol_short!("sv"), &3u32);
+    });
+
+    s.client.migrate(&s.admin);
+
+    let state = s.client.get_state();
+    assert_eq!(state.schema_version, CURRENT_SCHEMA_VERSION);
+    // New fields must be absent (no live proposal) after migration.
+    assert_eq!(state.pending_admin, None);
+    assert_eq!(state.pending_admin_expiry, None);
+}
+
+/// Running migrate on a fully-current contract must be a no-op for
+/// pending_admin fields (idempotent).
+#[test]
+fn test_migrate_v4_idempotent_for_pending_admin() {
+    let s = Setup::new();
+    // After a fresh init, schema is already at v4.
+    s.client.migrate(&s.admin);
+    s.client.migrate(&s.admin);
+    let state = s.client.get_state();
+    assert_eq!(state.schema_version, CURRENT_SCHEMA_VERSION);
+    assert_eq!(state.pending_admin, None);
+}
+
+/// A contract starting at sv=0 must walk all four steps in a single migrate call.
+#[test]
+fn test_migrate_from_v0_walks_all_steps_to_v4() {
+    let s = Setup::new();
+
+    s.env.as_contract(&s.client.address, || {
+        let mut state: FactoryState = s.env.storage().instance().get(&DataKey::State).unwrap();
+        state.schema_version = 0;
+        s.env.storage().instance().set(&DataKey::State, &state);
+        s.env.storage().instance().set(&symbol_short!("sv"), &0u32);
+    });
+
+    s.client.migrate(&s.admin);
+    assert_eq!(s.client.get_state().schema_version, CURRENT_SCHEMA_VERSION);
+}
+
 // ── whitelist enforcement ─────────────────────────────────────────────────────
 
 /// Helper: enable whitelisting on the factory.
@@ -3952,7 +4201,8 @@ fn test_whitelist_gate_consistent_across_single_and_batch() {
 // stream kept reporting the previous admin. Both now delegate to
 // `rotate_admin`.
 
-/// Rotating via `transfer_admin` must actually move admin rights.
+/// Rotating via `transfer_admin` must store a pending proposal, not move admin
+/// rights immediately. The new admin must call `accept_admin` to complete.
 #[test]
 fn test_transfer_admin_grants_new_admin_rights() {
     let s = Setup::new();
@@ -3960,7 +4210,15 @@ fn test_transfer_admin_grants_new_admin_rights() {
 
     s.client.transfer_admin(&s.admin, &new_admin);
 
+    // Proposal stored, but admin has NOT changed yet.
+    assert_eq!(s.client.get_state().pending_admin, Some(new_admin.clone()));
+    assert_eq!(s.client.get_state().admin, s.admin);
+
+    // Complete the handover.
+    s.client.accept_admin(&new_admin);
+
     assert_eq!(s.client.get_state().admin, new_admin);
+    assert_eq!(s.client.get_state().pending_admin, None);
     // The new admin can exercise an admin-only entrypoint...
     s.client.pause(&new_admin);
     assert!(s.client.get_state().paused);
@@ -3968,8 +4226,8 @@ fn test_transfer_admin_grants_new_admin_rights() {
     assert_eq!(s.client.try_unpause(&s.admin), Err(Ok(Error::Unauthorized)));
 }
 
-/// Both entrypoints must enforce identical guards, so neither can be used to
-/// side-step a restriction the other applies.
+/// Both `transfer_admin` and `update_admin` must enforce identical guards,
+/// since they are aliases for `propose_admin`.
 #[test]
 fn test_transfer_admin_and_update_admin_share_guards() {
     let s = Setup::new();
@@ -3988,23 +4246,153 @@ fn test_transfer_admin_and_update_admin_share_guards() {
     );
 }
 
-/// Rotating with either entrypoint must leave the factory in the same state.
+/// Both `transfer_admin` and `update_admin` must leave the factory in the
+/// same intermediate (proposal-pending) state.
 #[test]
 fn test_transfer_admin_and_update_admin_produce_same_state() {
     let via_transfer = {
         let s = Setup::new();
         let new_admin = Address::generate(&s.env);
         s.client.transfer_admin(&s.admin, &new_admin);
-        (s.client.get_state().admin, new_admin)
+        (s.client.get_state().pending_admin, new_admin)
     };
     let via_update = {
         let s = Setup::new();
         let new_admin = Address::generate(&s.env);
         s.client.update_admin(&s.admin, &new_admin);
-        (s.client.get_state().admin, new_admin)
+        (s.client.get_state().pending_admin, new_admin)
     };
-    assert_eq!(via_transfer.0, via_transfer.1);
-    assert_eq!(via_update.0, via_update.1);
+    // Both should record the correct pending_admin.
+    assert_eq!(via_transfer.0, Some(via_transfer.1));
+    assert_eq!(via_update.0, Some(via_update.1));
+}
+
+// ── Issue #1159: the legacy aliases must not look like a finished rotation ───
+//
+// `transfer_admin` / `update_admin` used to complete a rotation in one
+// transaction. They now delegate to `propose_admin`, and the danger is that
+// the downgrade is *invisible*: tooling and runbooks written against the old
+// semantics see a successful transaction, assume the handover is done, and
+// decommission the outgoing key — after which nobody can complete or restart
+// the rotation once the proposal expires. Both entrypoints therefore return an
+// `AdminRotationReceipt` that says the rotation is not complete, and emit an
+// extra `adm_dep` event alongside `adm_prop`.
+
+/// `transfer_admin`'s return value must state, on its own, that the rotation
+/// has not happened yet and name the call that would complete it.
+#[test]
+fn test_transfer_admin_receipt_signals_incomplete_rotation() {
+    let s = Setup::new();
+    let new_admin = Address::generate(&s.env);
+
+    let receipt = s.client.transfer_admin(&s.admin, &new_admin);
+
+    assert!(!receipt.rotation_complete);
+    assert_eq!(receipt.pending_admin, new_admin);
+    assert_eq!(
+        receipt.required_next_call,
+        Symbol::new(&s.env, "accept_admin")
+    );
+    // The receipt's expiry is the one actually recorded in state, so a caller
+    // can schedule the follow-up from the return value alone.
+    let state = s.client.get_state();
+    assert_eq!(state.pending_admin_expiry, Some(receipt.expires_at_ledger));
+    assert_eq!(state.admin, s.admin);
+}
+
+/// Same contract for `update_admin` — the other legacy name.
+#[test]
+fn test_update_admin_receipt_signals_incomplete_rotation() {
+    let s = Setup::new();
+    let new_admin = Address::generate(&s.env);
+
+    let receipt = s.client.update_admin(&s.admin, &new_admin);
+
+    assert!(!receipt.rotation_complete);
+    assert_eq!(receipt.pending_admin, new_admin);
+    assert_eq!(
+        receipt.required_next_call,
+        Symbol::new(&s.env, "accept_admin")
+    );
+    assert_eq!(
+        s.client.get_state().pending_admin_expiry,
+        Some(receipt.expires_at_ledger)
+    );
+    assert_eq!(s.client.get_state().admin, s.admin);
+}
+
+/// A rotation driven through a deprecated alias must leave a distinct trace in
+/// the event stream: `adm_prop` *and* `adm_dep`, where `propose_admin` emits
+/// only `adm_prop`. That difference is what lets monitoring spot tooling still
+/// running on the pre-two-step assumption.
+#[test]
+fn test_legacy_aliases_emit_an_extra_deprecation_event() {
+    let s = Setup::new();
+    let new_admin = Address::generate(&s.env);
+
+    s.client.propose_admin(&s.admin, &new_admin);
+    assert_eq!(factory_event_count(&s), 1);
+
+    s.client.transfer_admin(&s.admin, &new_admin);
+    assert_eq!(factory_event_count(&s), 2);
+
+    s.client.update_admin(&s.admin, &new_admin);
+    assert_eq!(factory_event_count(&s), 2);
+}
+
+/// Acceptance criterion for issue #1159, stated as the failure it guards
+/// against: calling `transfer_admin` and nothing else does **not** rotate the
+/// admin — not immediately, and not after the proposal has expired. An
+/// operator who decommissions the old key at this point has bricked the
+/// factory's governance, which is why the call reports itself as incomplete.
+#[test]
+fn test_transfer_admin_alone_never_rotates_admin_even_after_expiry() {
+    let s = Setup::new();
+    let new_admin = Address::generate(&s.env);
+
+    s.client.transfer_admin(&s.admin, &new_admin);
+    assert_eq!(s.client.get_state().admin, s.admin);
+
+    // Let the proposal lapse without anyone calling accept_admin.
+    s.env.ledger().with_mut(|li| {
+        li.sequence_number = li
+            .sequence_number
+            .saturating_add(ADMIN_PROPOSAL_TTL_LEDGERS as u32 + 1);
+    });
+
+    // Still the original admin — the rotation never took effect...
+    assert_eq!(s.client.get_state().admin, s.admin);
+    // ...and can no longer be completed: only a fresh proposal from the
+    // current (old) admin key can restart it.
+    assert_eq!(
+        s.client.try_accept_admin(&new_admin),
+        Err(Ok(Error::ProposalExpired))
+    );
+    assert_eq!(s.client.get_state().admin, s.admin);
+    // The old admin retains every privilege, confirming the handover is inert.
+    s.client.pause(&s.admin);
+    assert!(s.client.get_state().paused);
+}
+
+/// Same for `update_admin`.
+#[test]
+fn test_update_admin_alone_never_rotates_admin_even_after_expiry() {
+    let s = Setup::new();
+    let new_admin = Address::generate(&s.env);
+
+    s.client.update_admin(&s.admin, &new_admin);
+
+    s.env.ledger().with_mut(|li| {
+        li.sequence_number = li
+            .sequence_number
+            .saturating_add(ADMIN_PROPOSAL_TTL_LEDGERS as u32 + 1);
+    });
+
+    assert_eq!(
+        s.client.try_accept_admin(&new_admin),
+        Err(Ok(Error::ProposalExpired))
+    );
+    assert_eq!(s.client.get_state().admin, s.admin);
 }
 
 // ── migrate: schema-v3 chunked walk must be resumable ───────────────────────

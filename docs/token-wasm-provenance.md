@@ -18,12 +18,12 @@ The StellarForge factory contract takes a `token_wasm_hash` parameter at initial
 
 The deployment guide in `README.md` (Step 4 — "Upload Token Contract WASM") identifies the intended token WASM as:
 
-| Field | Value |
-|---|---|
-| Repository | `stellar/soroban-examples` |
-| File path | `token/target/wasm32-unknown-unknown/release/soroban_token_contract.wasm` |
-| Interface | SEP-41 (Soroban Token Interface) |
-| SDK version pinned in factory | `soroban-sdk = "26.1.0"`, `soroban-token-sdk = "26.1.0"` |
+| Field                         | Value                                                                     |
+| ----------------------------- | ------------------------------------------------------------------------- |
+| Repository                    | `stellar/soroban-examples`                                                |
+| File path                     | `token/target/wasm32-unknown-unknown/release/soroban_token_contract.wasm` |
+| Interface                     | SEP-41 (Soroban Token Interface)                                          |
+| SDK version pinned in factory | `soroban-sdk = "26.1.0"`, `soroban-token-sdk = "26.1.0"`                  |
 
 This is the canonical example token contract published by Stellar Development Foundation (SDF) as a reference implementation of SEP-41.
 
@@ -59,10 +59,10 @@ The following should be understood by every deployer:
 
 ## Deployment log (fill this in before mainnet)
 
-| Environment | Network | WASM source tag/commit | WASM hash (hex) | Audit status | Decision owner | Date |
-|---|---|---|---|---|---|---|
-| testnet | testnet | `soroban-examples` @ _tag_ | _64-hex_ | Not audited — reference impl, internal review | _name_ | _date_ |
-| mainnet | mainnet | `soroban-examples` @ _tag_ | _64-hex_ | **TODO before launch** | _name_ | _date_ |
+| Environment | Network | WASM source tag/commit     | WASM hash (hex) | Audit status                                  | Decision owner | Date   |
+| ----------- | ------- | -------------------------- | --------------- | --------------------------------------------- | -------------- | ------ |
+| testnet     | testnet | `soroban-examples` @ _tag_ | _64-hex_        | Not audited — reference impl, internal review | _name_         | _date_ |
+| mainnet     | mainnet | `soroban-examples` @ _tag_ | _64-hex_        | **TODO before launch**                        | _name_         | _date_ |
 
 ---
 

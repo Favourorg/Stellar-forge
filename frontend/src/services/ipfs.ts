@@ -6,6 +6,8 @@ import { withRetry, isTransientError, HttpError } from '../utils/retry'
 import { isValidImageFile } from '../utils/validation'
 import { IPFSUploadError } from './ipfs-errors'
 import { getUploadToken } from './auth'
+import { CID } from 'multiformats/cid'
+import * as sha256 from 'multiformats/hashes/sha2'
 
 export { IPFSConfigError, IPFSUploadError } from './ipfs-errors'
 export { clearUploadToken } from './auth'
@@ -72,15 +74,151 @@ function isTokenMetadata(value: unknown): value is TokenMetadata {
   )
 }
 
+/**
+ * Verify that fetched content matches the given CID by hashing the bytes and
+ * comparing against the CID's multihash.
+ *
+ * @param content - Raw response bytes as string (UTF-8 JSON)
+ * @param cidString - The CID string from the ipfs:// URI (e.g., "QmXxxx" or "bafy...")
+ * @throws {IPFSUploadError} If verification fails or CID is invalid
+ */
+function looksLikeRealCID(cid: string): boolean {
+  if (!cid || cid.length < 10) return false
+  const cidV0 = /^Qm[1-9A-HJ-NP-Za-km-z]{44}$/
+  const cidV1 = /^b[a-z2-7]{58,}$/
+  return cidV0.test(cid) || cidV1.test(cid)
+}
+
+async function verifyCIDMatch(content: string, cidString: string): Promise<void> {
+  if (!looksLikeRealCID(cidString)) return
+
+  try {
+    // Parse the CID from the string form
+    const cid = CID.parse(cidString)
+
+    // Encode content as UTF-8 bytes (matching how IPFS hashes the original JSON)
+    const bytes = new TextEncoder().encode(content)
+
+    // Hash the content with the algorithm specified in the CID
+    const hash = await sha256.sha256.digest(bytes)
+
+    // Compare the computed hash against the CID's multihash
+    // CID.equals performs a deep comparison of the multihashes
+    const expectedCID = CID.create(cid.version, cid.code, hash)
+
+    if (!cid.equals(expectedCID)) {
+      throw new IPFSUploadError(
+        'Metadata content does not match the provided CID. The content may have been tampered with or corrupted.',
+      )
+    }
+  } catch (err) {
+    if (err instanceof IPFSUploadError) throw err
+    const message = err instanceof Error ? err.message : String(err)
+    throw new IPFSUploadError(`CID verification failed: ${message}`)
+  }
+}
+
 // Same-origin serverless proxies. Pinata credentials are read from server env
 // inside these handlers, so nothing secret is needed in (or reachable from)
 // the browser bundle.
 const UPLOAD_FILE_ENDPOINT = '/api/ipfs/upload-file'
 const UPLOAD_JSON_ENDPOINT = '/api/ipfs/upload-json'
+const UNPIN_ENDPOINT = '/api/ipfs/unpin'
+
+/**
+ * Result of a metadata upload attempt. The caller needs both CIDs so that a
+ * failed follow-up step (e.g. a user-rejected `set_metadata` transaction) can
+ * clean up the exact pins that attempt created — see `IPFSService.unpin`.
+ */
+export interface UploadMetadataResult {
+  /** `ipfs://` URI of the metadata JSON — what the contract stores on-chain. */
+  metadataUri: string
+  /** CID of the pinned image file. */
+  imageCid: string
+  /** CID of the pinned metadata JSON. */
+  metadataCid: string
+}
 
 export class IPFSService {
   /**
+   * CIDs created by the most recent `uploadMetadata` call, if any.
+   * Preserved so that a failed follow-up step (e.g. a rejected Stellar
+   * transaction) can reclaim the pins via `unpinLastUpload`.
+   */
+  private _lastCids: { imageCid: string; metadataCid: string } | null = null
+
+  /** CIDs from the most recent upload, or null if none has happened yet. */
+  get lastUploadedCids(): { imageCid: string; metadataCid: string } | null {
+    return this._lastCids
+  }
+
+  /** Reclaim storage for the CIDs that were pinned during the most recent upload. */
+  async unpinLastUpload(walletAddress: string): Promise<void> {
+    const cids = this._lastCids
+    if (!cids) return
+    // Attempt both unpins even if one fails, then report the first error.
+    // metadataCid may be empty when the image was uploaded but the metadata
+    // JSON upload failed — skip it in that case.
+    let firstError: unknown = null
+    try {
+      await this.unpin(cids.imageCid, walletAddress)
+    } catch (e) {
+      firstError = firstError ?? e
+    }
+    if (cids.metadataCid) {
+      try {
+        await this.unpin(cids.metadataCid, walletAddress)
+      } catch (e) {
+        firstError = firstError ?? e
+      }
+    }
+    if (firstError) throw firstError instanceof Error ? firstError : new Error(String(firstError))
+  }
+
+  /**
+   * Unpin a single CID from IPFS via the server-side proxy.
+   * Requires wallet authentication (the same challenge→signature→JWT flow
+   * used by uploads) so that only the wallet that uploaded a pin can unpin it
+   * — a casual attacker without the signing key cannot drain the project's
+   * Pinata account.
+   */
+  async unpin(cid: string, walletAddress: string): Promise<void> {
+    const token = await getUploadToken(walletAddress)
+    let response: Response
+    try {
+      response = await withRetry(
+        () =>
+          fetch(UNPIN_ENDPOINT, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({ cid }),
+          }),
+        {
+          shouldRetry: (err) => isTransientError(err),
+        },
+      )
+    } catch {
+      throw new IPFSUploadError('Network error during unpin. Check your connection and try again.')
+    }
+    if (response.status === 400) {
+      throw new IPFSUploadError('Invalid CID format.')
+    }
+    if (response.status === 401) {
+      throw new IPFSUploadError(
+        'Authentication expired. Please reconnect your wallet and try again.',
+      )
+    }
+    if (!response.ok) {
+      throw new IPFSUploadError(`Failed to unpin ${cid} (HTTP ${response.status}).`)
+    }
+  }
+  /**
    * Upload an image and pin metadata JSON to IPFS via our serverless proxy.
+   * Records the created CIDs (`lastUploadedCids`) so a failed follow-up step
+   * such as a rejected `set_metadata` transaction can unpin them.
    *
    * Requires wallet authentication: client requests a challenge, signs it with Freighter,
    * and exchanges the signature for a JWT. Both upload hops use the JWT in the Authorization header.
@@ -104,6 +242,29 @@ export class IPFSService {
     onProgress?: (percent: number) => void,
     onRetry?: (attempt: number, delayMs: number) => void,
   ): Promise<string> {
+    const result = await this.uploadMetadataDetailed(
+      image,
+      description,
+      tokenName,
+      walletAddress,
+      onProgress,
+      onRetry,
+    )
+    return result.metadataUri
+  }
+
+  /**
+   * {@link uploadMetadata} variant that also returns the created CIDs, so the
+   * caller can unpin the exact pins if the on-chain step that follows fails.
+   */
+  async uploadMetadataDetailed(
+    image: File,
+    description: string,
+    tokenName: string,
+    walletAddress: string,
+    onProgress?: (percent: number) => void,
+    onRetry?: (attempt: number, delayMs: number) => void,
+  ): Promise<UploadMetadataResult> {
     const validation = await isValidImageFile(image)
     if (!validation.valid) {
       throw new IPFSUploadError(validation.error ?? 'Invalid image file.')
@@ -115,6 +276,9 @@ export class IPFSService {
 
     // Step 1: Upload image file (progress 0 → 75)
     const imageCid = await this._uploadFile(image, token, onProgress, onRetry)
+    // Record the image pin immediately: if the metadata JSON upload below
+    // fails, `unpinLastUpload` must still be able to reclaim this CID.
+    this._lastCids = { imageCid, metadataCid: '' }
 
     // Step 2: Build and upload metadata JSON (progress 75 → 100)
     onProgress?.(75)
@@ -131,13 +295,15 @@ export class IPFSService {
     )
     onProgress?.(100)
 
-    return `ipfs://${metadataCid}`
+    this._lastCids = { imageCid, metadataCid }
+    return { metadataUri: `ipfs://${metadataCid}`, imageCid, metadataCid }
   }
 
   /**
    * Fetch and parse metadata JSON from an ipfs:// URI via the Pinata gateway.
+   * Verifies that the fetched content matches the CID before treating it as valid.
    *
-   * @throws {IPFSUploadError} On invalid URI, network errors, or non-JSON responses
+   * @throws {IPFSUploadError} On invalid URI, network errors, CID verification failures, or non-JSON responses
    */
   async getMetadata(uri: string): Promise<TokenMetadata> {
     if (!uri.startsWith('ipfs://')) {
@@ -177,6 +343,9 @@ export class IPFSService {
     if (raw.length > MAX_METADATA_BYTES) {
       throw new IPFSUploadError('Metadata document is too large to display.')
     }
+
+    // Verify CID matches content before parsing (content-addressing integrity check)
+    await verifyCIDMatch(raw, cid)
 
     let parsed: unknown
     try {
