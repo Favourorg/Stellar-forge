@@ -7,6 +7,12 @@ import {
   TransactionSubmissionError,
   type TransactionLifecycleStatus,
 } from '../services/transactionSubmission'
+import {
+  contractErrorCodeFromMessage,
+  contractErrorRetryRequirement,
+  isDeterministicContractError,
+} from '../utils/contractErrors'
+import { decodeTransactionFailure } from '../utils/transactionResult'
 
 /*
  * ┌──────────────────────────────────────────────────────────────────┐
@@ -88,9 +94,16 @@ export interface TransactionFailure {
   message: string
   /**
    * True only when resubmission provably cannot execute the call twice
-   * (dropped / expired / included-and-failed). Never true for `unconfirmed`.
+   * (dropped / expired / included-and-failed) *and* the same call would not be
+   * rejected identically. Never true for `unconfirmed`, and never true for a
+   * deterministic contract rejection (paused, supply cap, whitelist, …) — see
+   * `retryRequirement` for what has to change first.
    */
   safeToRetry: boolean
+  /** The contract's `Error` enum code, when the failure decoded to one. */
+  contractErrorCode?: number
+  /** What has to change before a retry could succeed, when known. */
+  retryRequirement?: string
   /** Hash of the signed envelope, when the network assigned one. */
   txHash?: string
 }
@@ -101,11 +114,27 @@ function toFailure(err: Error): TransactionFailure {
       kind: err.status === 'failed' ? 'error' : err.status,
       message: err.message,
       safeToRetry: err.safeToRetry,
+      ...(err.contractErrorCode !== undefined ? { contractErrorCode: err.contractErrorCode } : {}),
+      ...(err.retryRequirement ? { retryRequirement: err.retryRequirement } : {}),
       ...(err.txHash ? { txHash: err.txHash } : {}),
     }
   }
   // Errors from simulation/signing never reached the network, so nothing can
-  // have executed — retrying is safe.
+  // have executed. That makes them safe to retry — but a simulation that was
+  // rejected by contract logic (paused, supply cap, whitelist) will be
+  // rejected identically until the condition changes, so it is not offered as
+  // a one-click retry either.
+  const code = contractErrorCodeFromMessage(err.message)
+  if (code !== undefined && isDeterministicContractError(code)) {
+    const requirement = contractErrorRetryRequirement(code)
+    return {
+      kind: 'error',
+      message: err.message,
+      safeToRetry: false,
+      contractErrorCode: code,
+      ...(requirement ? { retryRequirement: requirement } : {}),
+    }
+  }
   return { kind: 'error', message: err.message, safeToRetry: true }
 }
 
@@ -232,10 +261,38 @@ export interface UseTransactionPollingResult {
   /** Sentry event ID for the polling failure, when available. */
   sentryEventId?: string
   /**
-   * True only when the transaction is known not to have applied. `unconfirmed`
-   * is never safe — the envelope may still land.
+   * True only when the transaction is known not to have applied *and* a
+   * resubmission could reach a different verdict. `unconfirmed` is never safe
+   * (the envelope may still land), and neither is a deterministic contract
+   * rejection — see `retryRequirement`.
    */
   safeToRetry: boolean
+  /** What has to change before a retry could succeed, when known. */
+  retryRequirement?: string
+}
+
+/**
+ * Read a failed transaction payload into user-facing text.
+ *
+ * Horizon returns the transaction result as a base64 `result_xdr` string; the
+ * decoder reads its result codes rather than handing the blob to the user, and
+ * recognises a contract rejection (from the result, or from an error string
+ * that already names one) so the retry affordance can be withheld.
+ */
+function describePollFailure(
+  payload: Record<string, unknown> | undefined,
+  fallbackMessage: string,
+): { message: string; deterministic: boolean; retryRequirement?: string } {
+  const resultXdr = payload?.['result_xdr']
+  const decoded = decodeTransactionFailure({
+    ...(typeof resultXdr === 'string' ? { result: resultXdr } : {}),
+    fallbackMessage,
+  })
+  return {
+    message: decoded.message,
+    deterministic: decoded.deterministic,
+    ...(decoded.retryRequirement ? { retryRequirement: decoded.retryRequirement } : {}),
+  }
 }
 
 /**
@@ -267,6 +324,10 @@ export function useTransactionPolling(txHash: string): UseTransactionPollingResu
   const [status, setStatus] = useState<TransactionPollStatus>('pending')
   const [error, setError] = useState<string | undefined>(undefined)
   const [sentryEventId, setSentryEventId] = useState<string | undefined>(undefined)
+  // Set when the failure is a contract rejection that would repeat verbatim —
+  // the retry button is withheld and this is shown instead.
+  const [retryRequirement, setRetryRequirement] = useState<string | undefined>(undefined)
+  const [deterministicFailure, setDeterministicFailure] = useState(false)
 
   useEffect(() => {
     // Reset to pending whenever txHash changes so a new poll cycle doesn't
@@ -275,6 +336,8 @@ export function useTransactionPolling(txHash: string): UseTransactionPollingResu
     setStatus('pending')
     setError(undefined)
     setSentryEventId(undefined)
+    setRetryRequirement(undefined)
+    setDeterministicFailure(false)
 
     let settled = false
     let attempt = 0
@@ -293,9 +356,14 @@ export function useTransactionPolling(txHash: string): UseTransactionPollingResu
           settled = true
           clearTimeout(pollTimeoutId)
           setStatus('failed')
-          const errorMessage =
-            typeof result.error === 'string' ? result.error : 'Transaction failed'
+          const failure = describePollFailure(
+            result,
+            typeof result.error === 'string' ? result.error : 'Transaction failed',
+          )
+          const errorMessage = failure.message
           setError(errorMessage)
+          setDeterministicFailure(failure.deterministic)
+          setRetryRequirement(failure.retryRequirement)
 
           // Capture to Sentry with full transaction correlation tags
           const eventId = captureTransactionError(
@@ -383,10 +451,16 @@ export function useTransactionPolling(txHash: string): UseTransactionPollingResu
   }, [txHash])
 
   // A transaction that was included and failed applied no state changes, so
-  // retrying is safe; `unconfirmed` (and the pre-verdict `pending`) is not.
-  const safeToRetry = status === 'failed'
+  // retrying cannot double-execute; `unconfirmed` (and the pre-verdict
+  // `pending`) is not. A decoded contract rejection is excluded too — the
+  // identical call would be rejected identically, at the cost of another fee.
+  const safeToRetry = status === 'failed' && !deterministicFailure
 
-  const base = { status, safeToRetry }
+  const base = {
+    status,
+    safeToRetry,
+    ...(retryRequirement ? { retryRequirement } : {}),
+  }
   if (error === undefined) return sentryEventId ? { ...base, sentryEventId } : base
   return sentryEventId ? { ...base, error, sentryEventId } : { ...base, error }
 }

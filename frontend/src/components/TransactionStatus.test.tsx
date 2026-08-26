@@ -2,6 +2,7 @@ import { render, screen, act, waitFor } from '@testing-library/react'
 import { describe, test, expect, vi, beforeEach, afterEach, type Mock } from 'vitest'
 import { TransactionStatus } from './TransactionStatus'
 import { stellarService } from '../services/stellar'
+import { trappedTransactionResult } from '../test/xdrFixtures'
 
 vi.mock('../services/stellar', () => ({
   stellarService: { getTransaction: vi.fn() },
@@ -146,6 +147,44 @@ describe('TransactionStatus Component', () => {
 
     screen.getByRole('button', { name: /try again/i }).click()
     expect(onRetry).toHaveBeenCalled()
+  })
+
+  /**
+   * A contract-logic rejection would be rejected identically on resubmission,
+   * so the button is replaced by what has to change first — otherwise the user
+   * pays the network fee again for the same verdict (issue #1160).
+   */
+  test('withholds "try again" for a deterministic contract rejection', async () => {
+    const onRetry = vi.fn()
+    ;(stellarService.getTransaction as Mock).mockResolvedValue({
+      status: 'failed',
+      error: 'HostError: Error(Contract, 10)',
+    })
+
+    render(<TransactionStatus txHash="test-hash" onRetry={onRetry} />)
+
+    await vi.waitFor(() => {
+      expect(screen.getByText('Transaction Failed')).toBeInTheDocument()
+    })
+
+    // The mapped message, not the raw Soroban rendering.
+    expect(screen.getByText(/Contract is paused/i)).toBeInTheDocument()
+    expect(screen.getByTestId('retry-requirement')).toHaveTextContent(/unpause/i)
+    expect(screen.queryByRole('button', { name: /try again/i })).not.toBeInTheDocument()
+    expect(onRetry).not.toHaveBeenCalled()
+  })
+
+  test('decodes a failed transaction result instead of showing raw XDR', async () => {
+    ;(stellarService.getTransaction as Mock).mockResolvedValue({
+      status: 'failed',
+      result_xdr: trappedTransactionResult().toXDR('base64'),
+    })
+
+    render(<TransactionStatus txHash="test-hash" />)
+
+    await vi.waitFor(() => {
+      expect(screen.getByText(/contract rejected the call/i)).toBeInTheDocument()
+    })
   })
 
   test('keeps polling when the hash is not indexed yet instead of failing', async () => {

@@ -30,7 +30,8 @@ export const TransactionStatus: React.FC<TransactionStatusProps> = ({
   onUnconfirmed,
   onRetry,
 }) => {
-  const { status, error, sentryEventId, safeToRetry } = useTransactionPolling(txHash)
+  const { status, error, sentryEventId, safeToRetry, retryRequirement } =
+    useTransactionPolling(txHash)
   const { network } = useNetwork()
 
   React.useEffect(() => {
@@ -143,6 +144,14 @@ export const TransactionStatus: React.FC<TransactionStatusProps> = ({
           </div>
           <span className="font-bold text-lg text-gray-800">Transaction Failed</span>
           {error && <p className="text-sm text-red-500 text-center px-2">{error}</p>}
+          {/* A contract rejected this call on its own terms — resubmitting the
+              same transaction pays the fee again for the same verdict, so say
+              what has to change instead of offering a one-click retry. */}
+          {retryRequirement && (
+            <p className="text-xs text-gray-600 text-center px-2" data-testid="retry-requirement">
+              {retryRequirement}
+            </p>
+          )}
           {safeToRetry && onRetry && (
             <button
               type="button"

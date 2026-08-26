@@ -2,6 +2,7 @@ import { renderHook, act } from '@testing-library/react'
 import { describe, test, expect, vi, beforeEach } from 'vitest'
 import { useTransaction, isTransactionInFlight } from './useTransaction'
 import { TransactionSubmissionError } from '../services/transactionSubmission'
+import { CONTRACT_ERROR_MESSAGES } from '../utils/contractErrors'
 
 describe('useTransaction', () => {
   beforeEach(() => {
@@ -180,6 +181,63 @@ describe('useTransaction', () => {
 
     expect(result.current.status).toBe('error')
     expect(result.current.failure?.kind).toBe('error')
+  })
+
+  /**
+   * A contract-logic rejection is rolled back, so resubmitting cannot
+   * double-execute — but it also cannot succeed until the on-chain condition
+   * changes. Offering "try again" there just spends another network fee
+   * (issue #1160).
+   */
+  test('a deterministic contract rejection is not offered as a retry', async () => {
+    const builder = vi.fn().mockRejectedValue(
+      new TransactionSubmissionError('failed', CONTRACT_ERROR_MESSAGES[10]!, {
+        txHash: 'abc',
+        contractErrorCode: 10,
+        retryRequirement: 'An administrator has to unpause the factory…',
+        deterministic: true,
+      }),
+    )
+
+    const { result } = renderHook(() => useTransaction(builder))
+
+    await act(async () => {
+      await result.current.execute().catch(() => undefined)
+    })
+
+    expect(result.current.status).toBe('error')
+    expect(result.current.canRetry).toBe(false)
+    expect(result.current.failure?.contractErrorCode).toBe(10)
+    expect(result.current.failure?.retryRequirement).toMatch(/unpause/i)
+  })
+
+  test('a simulation rejected by contract logic is not offered as a retry either', async () => {
+    // Pre-submission errors never reached the network, but the same call will
+    // simulate the same way until the supply cap stops being exceeded.
+    const builder = vi.fn().mockRejectedValue(new Error(CONTRACT_ERROR_MESSAGES[16]!))
+
+    const { result } = renderHook(() => useTransaction(builder))
+
+    await act(async () => {
+      await result.current.execute().catch(() => undefined)
+    })
+
+    expect(result.current.canRetry).toBe(false)
+    expect(result.current.failure?.contractErrorCode).toBe(16)
+    expect(result.current.failure?.retryRequirement).toMatch(/maximum supply/i)
+  })
+
+  test('an ordinary pre-submission error is still retryable', async () => {
+    const builder = vi.fn().mockRejectedValue(new Error('Freighter is not installed'))
+
+    const { result } = renderHook(() => useTransaction(builder))
+
+    await act(async () => {
+      await result.current.execute().catch(() => undefined)
+    })
+
+    expect(result.current.canRetry).toBe(true)
+    expect(result.current.failure?.retryRequirement).toBeUndefined()
   })
 
   test('reset clears the typed failure too', async () => {
