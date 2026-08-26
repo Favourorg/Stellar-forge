@@ -54,7 +54,36 @@ For details on how the team responds to a confirmed security incident — includ
 
 ### Admin key is a single point of trust
 
-The factory contract's `admin` address can upgrade the contract, change fees, redirect treasury funds, transfer admin rights, pause/unpause the factory, change the whitelist state, and update token metadata. Those privileged entrypoints require the exact admin authorization path enforced in `contracts/token-factory/src/lib.rs` (`admin.require_auth()` plus the admin identity check), and metadata writes remain subject to the `metadata_fee` gate, validation of the `ipfs://` URI, and the per-token freeze/version cap. Key custody is documented in the [Mainnet Deployment Checklist](./docs/mainnet-deployment-checklist.md). A compromised admin key is a **Critical** severity event; see the [Incident Response Runbook](./docs/incident-response.md) for the response procedure.
+The factory contract's `admin` address holds **factory-wide** authority. Every entrypoint below enforces the same path in `contracts/token-factory/src/lib.rs`: `admin.require_auth()` **plus** an identity check against `state.admin`. No other entrypoint gates on `state.admin` — `accept_admin` writes it and the view functions read it, but neither uses it to authorize a privileged action.
+
+| A compromised admin key can                                | Entrypoint(s)                                                                                                                                        |
+| ---------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Replace the contract WASM                                  | `upgrade`                                                                                                                                            |
+| Run a state migration                                      | `migrate`                                                                                                                                            |
+| Change the creation and metadata fees                      | `update_fees`                                                                                                                                        |
+| Redirect fee revenue away from the treasury                | `set_fee_split`                                                                                                                                      |
+| Halt or resume the factory                                 | `pause` / `unpause`                                                                                                                                  |
+| Turn the creation whitelist on/off and edit its membership | `set_whitelist_enabled`, `add_to_whitelist`, `remove_from_whitelist`                                                                                 |
+| Rewrite a capped token's tracked supply, once per token    | `backfill_capped_supply`                                                                                                                             |
+| Propose or cancel an admin rotation                        | `propose_admin`, `cancel_admin_proposal` (the deprecated `transfer_admin` / `update_admin` aliases reach this only by delegating to `propose_admin`) |
+
+**It cannot rewrite any token's metadata.** Metadata authority is **per-token and creator-scoped**: `set_metadata` compares the caller against the creator recorded under that token's `owner` key, never against `state.admin`. The parameter is conventionally named `admin` in the call signature, but it means _the token's_ admin — its original creator. A factory admin who did not create a token cannot touch its metadata, and `Error::Unauthorized` is what they get if they try. The identical creator-scoped check gates three further entrypoints — `freeze_metadata`, `mint_tokens` and `set_burn_enabled` — so a compromised admin key cannot mint supply or alter a token's burn flag either. In full, what the admin key does **not** reach:
+
+| Not available to the factory admin | Entrypoint(s)                         | Who is authorized                    |
+| ---------------------------------- | ------------------------------------- | ------------------------------------ |
+| Set or update a token's metadata   | `set_metadata`                        | that token's creator                 |
+| Freeze a token's metadata          | `freeze_metadata`                     | that token's creator                 |
+| Mint new supply                    | `mint_tokens`                         | that token's creator                 |
+| Toggle a token's burn flag         | `set_burn_enabled`                    | that token's creator                 |
+| Burn tokens                        | `burn`                                | the holder, for their own balance    |
+| Create tokens                      | `create_token`, `create_tokens_batch` | any caller, subject to the whitelist |
+| Complete an admin rotation         | `accept_admin`                        | the proposed successor only          |
+
+Metadata writes remain subject to the `metadata_fee` gate, `ipfs://` URI validation, and the per-token freeze/version cap — but those are constraints on the _creator_, not powers of the admin.
+
+**One caveat for incident scoping:** `upgrade` is an escalation path. A compromised admin key cannot rewrite metadata under the deployed contract, but it can install attacker-controlled WASM that grants itself any authority it likes. Treat "metadata is safe" as true for the _current_ code and false the moment a malicious upgrade lands — which is why WASM-hash monitoring (below) is part of the response, not an optional extra.
+
+Key custody is documented in the [Mainnet Deployment Checklist](./docs/mainnet-deployment-checklist.md). A compromised admin key is a **Critical** severity event; see the [Incident Response Runbook](./docs/incident-response.md) for the response procedure.
 
 ### Upgrade lacks an on-chain event (issue #9)
 

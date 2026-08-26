@@ -79,28 +79,36 @@ pub fn create_tokens_batch(
     Ok(vec![])
 }
 
+// Creator-authorized, NOT factory-admin gated (issue #1161).
+//
+// The caller parameter is conventionally named `admin` — it is the *token's*
+// admin, i.e. its creator — and the guard compares it against the creator
+// stored under the token's `owner` key. `state.admin` is never consulted, so
+// the factory admin key grants no metadata authority. Mirrors
+// contracts/token-factory/src/lib.rs `set_metadata`.
 pub fn set_metadata(
     env: Env,
-    admin: Address,
-    creator: Address,
     token_address: Address,
+    admin: Address,
     metadata: Metadata,
 ) -> Result<(), Error> {
     admin.require_auth();
-    let state = get_state(&env);
-    if state.admin != admin {
+
+    let creator: Address = get_token_owner(&env, &token_address)?;
+    if creator != admin {
         return Err(Error::Unauthorized);
     }
-    
-    if creator != admin {
-        creator.require_auth();
-    }
-    
+
     // Update metadata
     Ok(())
 }
 
-// Private helper function
+// Private helper functions
+fn get_token_owner(env: &Env, token_address: &Address) -> Result<Address, Error> {
+    // Stands in for `migrate_addr_keyed(&env, &(&token_address, symbol_short!("owner")))`
+    Err(Error::TokenNotFound)
+}
+
 fn require_whitelisted(env: &Env, state: &State, creator: &Address) -> Result<(), Error> {
     if !state.whitelist.contains(creator) {
         return Err(Error::NotWhitelisted);
@@ -131,4 +139,5 @@ struct TokenDefinition {
 pub enum Error {
     Unauthorized,
     NotWhitelisted,
+    TokenNotFound,
 }

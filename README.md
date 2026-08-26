@@ -49,7 +49,7 @@ Every mutating factory call that has a monetary cost (`create_token`, `create_to
 Token images and descriptions are too large and mutable to store cheaply on a Soroban ledger, so StellarForge splits metadata into two layers:
 
 1. **Off-chain payload** — the frontend uploads the image and a JSON document (`{ name, description, image }`) to IPFS through Pinata's pinning API, getting back a content identifier (CID) for each.
-2. **On-chain pointer** — `set_metadata(token_address, admin, metadata_uri, fee_payment)` stores the current `ipfs://<cid>` URI for the token, and each successful update increments the metadata version. The contract enforces `fee_payment >= metadata_fee`, validates the `ipfs://` prefix and length, blocks writes when the token is frozen, and keeps the admin authorization path aligned with the `admin.require_auth()` + admin identity check in the factory contract. Any client — StellarForge's UI, a block explorer, another dApp — can resolve that URI through any IPFS gateway to fetch the same image/description.
+2. **On-chain pointer** — `set_metadata(token_address, admin, metadata_uri, fee_payment)` stores the current `ipfs://<cid>` URI for the token, and each successful update increments the metadata version. The contract enforces `fee_payment >= metadata_fee`, validates the `ipfs://` prefix and length, and blocks writes when the token is frozen. Authorization is **per-token**: the caller must be the token's creator (the guard compares the caller against the creator stored under the token's `owner` key), not the factory admin — see [SECURITY.md](./SECURITY.md#admin-key-is-a-single-point-of-trust). Any client — StellarForge's UI, a block explorer, another dApp — can resolve that URI through any IPFS gateway to fetch the same image/description.
 
 ### 4. Administration, safety, and lifecycle controls
 
@@ -270,7 +270,7 @@ The authoritative, field-by-field reference — including parameter tables, ever
 
 ### Metadata
 
-- `set_metadata(token_address, admin, metadata_uri, fee_payment)`: Attach or update the token's `ipfs://` metadata URI. The caller must authorize as the current admin, `fee_payment` must satisfy `metadata_fee`, and updates are allowed until the token is frozen or the per-token update cap is reached; every successful write increments the metadata version.
+- `set_metadata(token_address, admin, metadata_uri, fee_payment)`: Attach or update the token's `ipfs://` metadata URI. The caller must be the token's creator (the `admin` parameter names the _token's_ admin, not the factory admin), `fee_payment` must satisfy `metadata_fee`, and updates are allowed until the token is frozen or the per-token update cap is reached; every successful write increments the metadata version.
 - `set_burn_enabled(token_address, admin, enabled)`: Toggle whether a specific token can be burned. Caller must be the token's creator.
 
 ### Admin & Governance

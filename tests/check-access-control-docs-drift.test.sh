@@ -181,11 +181,13 @@ test_drift_missing_whitelist_gate() {
 }
 
 test_drift_missing_admin_check() {
-    test_start "Destructive: Missing admin_check in set_metadata (should EXIT 1)"
+    test_start "Destructive: Missing admin_check in add_to_whitelist (should EXIT 1)"
     
     setup_test_env
     
-    # Inject drift: lib.rs WITHOUT admin check, but docs claim it
+    # Inject drift: lib.rs WITHOUT the admin identity check on a genuinely
+    # admin-only entrypoint. (Retargeted from set_metadata in issue #1161,
+    # which is creator-gated and never had an admin identity check to lose.)
     copy_fixture "lib.rs.drift_missing_admin_check" "contracts/token-factory/src/lib.rs"
     copy_fixture "contract-abi.md.baseline" "docs/contract-abi.md"
     touch "$TEST_DIR/SECURITY.md"
@@ -197,13 +199,90 @@ test_drift_missing_admin_check() {
     
     if [[ $exit_code -eq 1 ]]; then
         test_pass "Drift detection returned exit code 1 (critical)"
-        if echo "$output" | grep -qi "set_metadata\|drift"; then
-            test_pass "Output mentions set_metadata or drift"
+        if echo "$output" | grep -qi "add_to_whitelist"; then
+            test_pass "Output names the drifted entrypoint"
         else
-            test_fail "Output doesn't mention set_metadata"
+            test_fail "Output doesn't mention add_to_whitelist"
         fi
     else
         test_fail "Expected exit code 1, got $exit_code"
+        echo "OUTPUT:" && echo "$output"
+    fi
+    
+    teardown_test_env
+}
+
+# Issue #1161: SECURITY.md and ADR-009 both described set_metadata as gated on
+# the factory admin. It is not — the guard compares the caller against the
+# token's stored creator, so the factory admin key carries no metadata
+# authority. This locks the corrected expectation in: re-gating set_metadata on
+# `state.admin` must be reported as critical drift, not accepted as correct.
+test_drift_set_metadata_admin_gated() {
+    test_start "Destructive: set_metadata gated on factory admin (should EXIT 1)"
+    
+    setup_test_env
+    
+    copy_fixture "lib.rs.drift_set_metadata_admin_gated" "contracts/token-factory/src/lib.rs"
+    copy_fixture "contract-abi.md.baseline" "docs/contract-abi.md"
+    touch "$TEST_DIR/SECURITY.md"
+    
+    local exit_code=0
+    local output
+    
+    output=$(run_script_in_test_env 2>&1) || exit_code=$?
+    
+    if [[ $exit_code -eq 1 ]]; then
+        test_pass "Admin-gated set_metadata reported as critical drift"
+    else
+        test_fail "Expected exit code 1, got $exit_code"
+        echo "OUTPUT:" && echo "$output"
+        teardown_test_env
+        return
+    fi
+    
+    if echo "$output" | grep -q "set_metadata"; then
+        test_pass "Output names set_metadata"
+    else
+        test_fail "Output doesn't mention set_metadata"
+    fi
+    
+    # The expectation itself is what this test pins down: creator_check, and
+    # explicitly NOT admin_check.
+    if echo "$output" | grep -q "Expected: admin_auth:creator_check"; then
+        test_pass "Expected pattern is admin_auth:creator_check"
+    else
+        test_fail "Expected pattern is not admin_auth:creator_check"
+    fi
+    
+    if echo "$output" | grep -q "Actual:.*admin_check"; then
+        test_pass "Actual pattern reported as admin-gated"
+    else
+        test_fail "Actual pattern not reported as admin-gated"
+    fi
+    
+    teardown_test_env
+}
+
+# The mirror of the test above: the real contract's shape — caller auth plus a
+# stored-creator check, with no `state.admin` comparison — must PASS.
+test_set_metadata_creator_gated_is_accepted() {
+    test_start "Happy Path: creator-gated set_metadata is accepted (exit 0)"
+    
+    setup_test_env
+    
+    copy_fixture "lib.rs.baseline" "contracts/token-factory/src/lib.rs"
+    copy_fixture "contract-abi.md.baseline" "docs/contract-abi.md"
+    touch "$TEST_DIR/SECURITY.md"
+    
+    local exit_code=0
+    local output
+    
+    output=$(run_script_in_test_env 2>&1) || exit_code=$?
+    
+    if [[ $exit_code -eq 0 ]] && echo "$output" | grep -q "set_metadata: admin_auth:creator_check"; then
+        test_pass "set_metadata validated as admin_auth:creator_check"
+    else
+        test_fail "Expected set_metadata to validate as admin_auth:creator_check (exit $exit_code)"
         echo "OUTPUT:" && echo "$output"
     fi
     
@@ -424,10 +503,12 @@ main() {
     
     print_banner "📊 PHASE 1: HAPPY PATH VALIDATION"
     test_happy_path_baseline
+    test_set_metadata_creator_gated_is_accepted
     
     print_banner "💣 PHASE 2: DESTRUCTIVE DRIFT INJECTION"
     test_drift_missing_whitelist_gate
     test_drift_missing_admin_check
+    test_drift_set_metadata_admin_gated
     
     print_banner "🔍 PHASE 3: EDGE CASES - FILE HANDLING"
     test_missing_lib_rs

@@ -480,7 +480,11 @@ Review:
 ### 8.4 User impact assessment
 
 - Identify all `create_token` or `mint_tokens` calls that were charged inflated fees.
-- Identify any tokens whose metadata was manipulated via `set_metadata` while attacker-controlled fees were in place.
+- Identify creators who paid an inflated `metadata_fee` on a `set_metadata` call while the attacker
+  controlled fees. Scope this as **overcharging, not tampering**: `set_metadata` is authorized against the
+  token's stored creator, never `state.admin`, so a compromised admin key cannot rewrite anyone's metadata
+  under the deployed contract (see [SECURITY.md](../SECURITY.md#admin-key-is-a-single-point-of-trust)). If a
+  malicious `upgrade` landed, that guarantee is void from the upgrade onward and metadata must be re-verified.
 - Determine whether any funds in the treasury account were drained via `set_fee_split`.
 
 ### 8.5 Disclosure timeline

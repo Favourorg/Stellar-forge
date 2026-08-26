@@ -222,11 +222,16 @@ detect_creator_check() {
     fn_contains_pattern "$lib_rs_file" "creator\\s*!=\\s*admin" > "$output_file"
 }
 
-# Rule A3: Detect admin identity check (e.g., state.admin != admin)
+# Rule A3: Detect admin identity check (e.g., `state.admin != admin`, or the
+# reversed `admin != state.admin` that `update_fees` uses).
+#
+# Matching only a comparison operator — never a bare `=` — keeps the plain
+# assignment `state.admin = new_admin` in `accept_admin` from being reported as
+# an identity check it does not perform (issue #1161).
 detect_admin_check() {
     local lib_rs_file="$1"
     local output_file="$2"
-    fn_contains_pattern "$lib_rs_file" "state\\.admin.*[!=<>]" > "$output_file"
+    fn_contains_pattern "$lib_rs_file" "state\\.admin\\s*[!=<>]=|[!=<>]=\\s*state\\.admin" > "$output_file"
 }
 
 # Rule W1: Detect whitelist gate pattern
