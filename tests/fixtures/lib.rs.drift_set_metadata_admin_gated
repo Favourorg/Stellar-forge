@@ -1,10 +1,6 @@
-// DRIFT SCENARIO 2: admin identity check removed from add_to_whitelist.
-// Fixture for: DESTRUCTIVE TEST - missing admin identity check
-//
-// Retargeted from set_metadata in issue #1161: set_metadata is creator-gated,
-// never admin-gated, so "missing admin check in set_metadata" described a
-// guard the real contract does not have. add_to_whitelist is genuinely
-// admin-only, which makes the removal a real drift.
+// DRIFT SCENARIO 3: set_metadata gated on the factory admin instead of the
+// token's creator — the mischaracterization from issue #1161, in code form.
+// Fixture for: DESTRUCTIVE TEST - creator authority replaced by admin authority
 
 pub fn __constructor(env: Env, admin: Address) -> Result<(), Error> {
     admin.require_auth();
@@ -14,9 +10,10 @@ pub fn __constructor(env: Env, admin: Address) -> Result<(), Error> {
 
 pub fn add_to_whitelist(env: Env, admin: Address, account: Address) -> Result<(), Error> {
     admin.require_auth();
-    // REMOVED: if state.admin != admin { return Err(Error::Unauthorized); }
-    // ^ DRIFT: signing as any address now passes; the admin identity check is
-    //   gone, so `admin.require_auth()` alone gates an admin-only entrypoint.
+    let state = get_state(&env);
+    if state.admin != admin {
+        return Err(Error::Unauthorized);
+    }
     // Add to whitelist
     Ok(())
 }
@@ -83,13 +80,12 @@ pub fn create_tokens_batch(
     Ok(vec![])
 }
 
-// Creator-authorized, NOT factory-admin gated (issue #1161).
+// DRIFT: set_metadata re-gated on the FACTORY admin (issue #1161).
 //
-// The caller parameter is conventionally named `admin` — it is the *token's*
-// admin, i.e. its creator — and the guard compares it against the creator
-// stored under the token's `owner` key. `state.admin` is never consulted, so
-// the factory admin key grants no metadata authority. Mirrors
-// contracts/token-factory/src/lib.rs `set_metadata`.
+// The per-token creator check has been swapped for a `state.admin` check,
+// which would hand every token's metadata to the factory admin key. This is
+// the exact claim SECURITY.md and ADR-009 used to make; the checker must
+// reject it.
 pub fn set_metadata(
     env: Env,
     token_address: Address,
@@ -98,8 +94,8 @@ pub fn set_metadata(
 ) -> Result<(), Error> {
     admin.require_auth();
 
-    let creator: Address = get_token_owner(&env, &token_address)?;
-    if creator != admin {
+    let state = get_state(&env);
+    if state.admin != admin {
         return Err(Error::Unauthorized);
     }
 
