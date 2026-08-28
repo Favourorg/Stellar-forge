@@ -1,3 +1,10 @@
+# [1.9.0](https://github.com/Favourorg/Stellar-forge/compare/v1.8.7...v1.9.0) (2026-08-28)
+
+
+### Features
+
+* **api:** expose rate-limiter durability via isRateLimitDurable and health endpoint ([#1181](https://github.com/Favourorg/Stellar-forge/issues/1181)) ([389a483](https://github.com/Favourorg/Stellar-forge/commit/389a48371d274711121de0877972cc1fecc66bcc)), closes [#14](https://github.com/Favourorg/Stellar-forge/issues/14)
+
 ## [1.8.7](https://github.com/Favourorg/Stellar-forge/compare/v1.8.6...v1.8.7) (2026-08-28)
 
 
