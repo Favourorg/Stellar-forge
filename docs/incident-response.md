@@ -32,13 +32,19 @@ The factory contract's `admin` address is a single point of catastrophic trust. 
 | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
 | `update_fees(admin, base_fee, metadata_fee)` | Set arbitrarily high fees to drain users who call the contract                                                      |
 | `set_fee_split(admin, splits)`               | Redirect collected fees to an attacker-controlled address                                                           |
-| `upgrade(admin, new_wasm_hash)`              | Replace the contract with arbitrary attacker code                                                                   |
+| `propose_upgrade` + `execute_upgrade`        | Schedule and (after ~28 hours) apply a WASM swap to attacker-controlled code — mitigated by the timelock and `upg_prop` event which gives operators a cancellation window |
 | `propose_admin(admin, attacker_address)`     | Begin a rotation to an attacker-controlled address; the attacker then calls `accept_admin` to complete the transfer |
 | `pause(admin)`                               | Halt the factory, denying service to all token creators                                                             |
 
 **Two-step rotation reduces but does not eliminate admin-rotation risk.** The two-step model (`propose_admin` + `accept_admin`) prevents accidental rotation to an uncontrolled address — the incoming key must prove it can sign. However, an attacker who already holds the current admin key can still complete the rotation to their own address by controlling both steps. Detection window: a `propose_admin` call emits an `adm_prop` event that is visible on-chain _before_ `accept_admin` completes the transfer, giving operators a window to cancel via `cancel_admin_proposal` if the proposal is unauthorized.
 
-**Upgrade detection gap:** `upgrade` currently emits no on-chain event (see issue #9). Until event emission is added, detection of a malicious WASM swap requires active polling of the on-chain WASM hash. This runbook treats upgrade detection latency as high-risk and calls it out explicitly.
+**Upgrade timelock (active defense, issue #6 resolved):** The single-step `upgrade` entrypoint has been replaced by a mandatory two-step flow with a ~28-hour timelock:
+
+1. `propose_upgrade(admin, new_wasm_hash)` — records the pending hash and a `ready_at` ledger (`current + UPGRADE_TIMELOCK_LEDGERS`). Emits `upg_prop` immediately, making the scheduled upgrade observable on-chain _before_ it goes live.
+2. `execute_upgrade(admin, new_wasm_hash)` — performs the WASM swap, but only once the current ledger ≥ `ready_at`, _and_ only if `new_wasm_hash` exactly matches the proposed hash. Emits `upg_exec`.
+3. `cancel_upgrade(admin)` — aborts a pending proposal at any time before execution. Emits `upg_can`.
+
+This window is the primary on-chain defense against a compromised admin key performing an atomic WASM swap with no community warning. Alert on `upg_prop` events and cancel any unexpected proposals within the ~28-hour window using `cancel_upgrade`. WASM-hash polling (see §2.3) remains a defense-in-depth layer but is no longer the _only_ detection mechanism.
 
 ---
 
@@ -77,9 +83,24 @@ Alert on:
 - Any `fees` event with unusually large values
 - Any `pause` event not preceded by a planned maintenance notice
 
-### 2.3 WASM hash polling (required until issue #9 is resolved)
+### 2.3 Upgrade event monitoring (primary signal)
 
-Until `upgrade` emits an event, poll the on-chain WASM hash at least once per hour via a monitoring script:
+The two-step upgrade flow emits on-chain events at every stage. Subscribe to the factory contract's event stream and alert on:
+
+- **`upg_prop`** — an upgrade has been proposed. Review the `new_wasm_hash` in the event payload immediately. If unexpected, call `cancel_upgrade` before `UPGRADE_TIMELOCK_LEDGERS` (~17,280 ledgers ≈ 28.8 hours) elapse.
+- **`upg_exec`** — a proposed upgrade executed. If unexpected, the admin key is compromised; begin the key rotation procedure immediately.
+- **`upg_can`** — a pending upgrade was cancelled. Log for audit trail.
+
+```bash
+# Subscribe to upgrade events (adjust cursor=now to your baseline ledger):
+curl -N "https://horizon.stellar.org/accounts/<FACTORY_CONTRACT>/operations?cursor=now"
+# or use stellar-sdk's EventEmitter to filter by topic:
+#   topics: [["factory"], ["upg_prop", "upg_exec", "upg_can"]]
+```
+
+### 2.4 WASM hash polling (defense-in-depth)
+
+Even with event-based detection, poll the on-chain WASM hash as a defense-in-depth layer. The `token_wasm_hash` field in `get_state()` is updated atomically by `execute_upgrade`:
 
 ```bash
 #!/usr/bin/env bash
@@ -88,7 +109,7 @@ EXPECTED_HASH="<paste-the-deployed-wasm-hash-here>"
 CURRENT_HASH=$(stellar contract invoke \
   --id "$FACTORY_CONTRACT_ID" \
   --network mainnet \
-  -- get_state | jq -r '.wasm_hash // empty')
+  -- get_state | jq -r '.token_wasm_hash // empty')
 
 if [ "$CURRENT_HASH" != "$EXPECTED_HASH" ]; then
   echo "ALERT: WASM hash changed from $EXPECTED_HASH to $CURRENT_HASH" | \
@@ -96,7 +117,7 @@ if [ "$CURRENT_HASH" != "$EXPECTED_HASH" ]; then
 fi
 ```
 
-Store `EXPECTED_HASH` after each intentional upgrade and update the script immediately.
+Store `EXPECTED_HASH` after each intentional `execute_upgrade` and update the script immediately.
 
 ### 2.4 User reports
 

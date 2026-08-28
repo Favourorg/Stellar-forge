@@ -981,6 +981,7 @@ The factory contract supports in-place WASM upgrades without redeploying or migr
 | 2       | Max-supply accounting fix (issue #1006) — `deploy_one` now seeds the per-token supply counter with `initial_supply`; version bump only, no `FactoryState` field changes. Pre-fix capped tokens must be back-filled individually via `backfill_capped_supply` (see [docs/contract-abi.md](./docs/contract-abi.md#supply-cap-accounting))                                                                                                                                                                     |
 | 3       | Persistent-storage migration (issue #1007) — per-token bookkeeping (`TokenInfo`, `TokenIndex`, `Metadata`, `owner`, `supply`, `CreatorTokens`) moves out of the shared `instance` ledger entry into `persistent` storage, keeping `instance` storage O(1) in `token_count`. `TokenInfo` migrates in bounded, resumable chunks per `migrate` call; everything else migrates lazily on next access (see [docs/contract-abi.md](./docs/contract-abi.md#storage-architecture))                                  |
 | 4       | Two-step admin rotation — added `pending_admin: Option<Address>` and `pending_admin_expiry: Option<u64>` to `FactoryState`; new `propose_admin`, `accept_admin`, `cancel_admin_proposal` entrypoints; `transfer_admin` and `update_admin` now delegate to `propose_admin` (no single-step rotation path remains). New error codes 26 (`NoPendingProposal`) and 27 (`ProposalExpired`). New events `adm_prop`, `adm_acc`, `adm_can`, and `adm_dep` (emitted by the deprecated aliases alongside `adm_prop`). |
+| 5       | Two-step upgrade timelock (issue #6) — added `pending_upgrade_hash: Option<BytesN<32>>` and `pending_upgrade_ready_at: Option<u64>` to `FactoryState`; replaced single-step `upgrade` with `propose_upgrade`, `execute_upgrade`, and `cancel_upgrade`; `execute_upgrade` enforces `UPGRADE_TIMELOCK_LEDGERS` (~28.8 hours) between proposal and execution. New error codes 28 (`UpgradeNotReady`), 29 (`NoUpgradePending`), 30 (`UpgradeHashMismatch`). New events `upg_prop`, `upg_exec`, `upg_can`. |
 
 ### Adding a new migration (version N → N+1)
 
@@ -1007,6 +1008,8 @@ The factory contract supports in-place WASM upgrades without redeploying or migr
 
 ### How it works
 
+The factory contract uses a mandatory two-step upgrade flow with a ~28-hour timelock between proposal and execution. This is an active security control: an upgrade proposed by a compromised admin key can be cancelled by the legitimate team before it takes effect.
+
 1. Build and optimize the new contract WASM.
 2. Upload the new WASM to the network to obtain its hash:
    ```bash
@@ -1016,17 +1019,28 @@ The factory contract supports in-place WASM upgrades without redeploying or migr
      --network testnet
    # Outputs: <new-wasm-hash>
    ```
-3. Call `upgrade` on the deployed contract:
+3. Propose the upgrade (step 1 of 2). Records the hash and starts the timelock clock. Emits `upg_prop`:
    ```bash
    stellar contract invoke \
      --id <contract-id> \
      --source <admin-secret-key> \
      --network testnet \
-     -- upgrade \
+     -- propose_upgrade \
      --admin <admin-address> \
      --new_wasm_hash <new-wasm-hash>
    ```
-4. If the new version requires data layout changes, call `migrate` immediately after:
+4. **Wait** approximately 17,280 ledgers (~28.8 hours). `execute_upgrade` will fail with `Error::UpgradeNotReady` before this delay has elapsed.
+5. Execute the upgrade (step 2 of 2). Performs the WASM swap; only succeeds once the delay has elapsed **and** the hash matches exactly. Emits `upg_exec`:
+   ```bash
+   stellar contract invoke \
+     --id <contract-id> \
+     --source <admin-secret-key> \
+     --network testnet \
+     -- execute_upgrade \
+     --admin <admin-address> \
+     --new_wasm_hash <new-wasm-hash>
+   ```
+6. If the new version requires data layout changes, call `migrate` immediately after:
    ```bash
    stellar contract invoke \
      --id <contract-id> \
@@ -1036,7 +1050,17 @@ The factory contract supports in-place WASM upgrades without redeploying or migr
      --admin <admin-address>
    ```
 
-Only the admin address can call `upgrade` and `migrate`. Non-admin callers receive `Error::Unauthorized`. Contract state (tokens, fees, admin) is fully preserved across upgrades.
+To abort a pending upgrade at any time before execution, use `cancel_upgrade` (emits `upg_can`):
+```bash
+stellar contract invoke \
+  --id <contract-id> \
+  --source <admin-secret-key> \
+  --network testnet \
+  -- cancel_upgrade \
+  --admin <admin-address>
+```
+
+Only the admin address can call `propose_upgrade`, `execute_upgrade`, `cancel_upgrade`, and `migrate`. Non-admin callers receive `Error::Unauthorized`. Contract state (tokens, fees, admin) is fully preserved across upgrades.
 
 ## Code of Conduct
 
