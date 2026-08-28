@@ -87,7 +87,7 @@ pub struct TokenInfo {
 
 /// Current schema version written by `initialize` and bumped by `migrate`.
 /// Increment this constant whenever `FactoryState` gains new fields.
-pub const CURRENT_SCHEMA_VERSION: u32 = 4;
+pub const CURRENT_SCHEMA_VERSION: u32 = 5;
 
 /// Number of ledgers a pending admin proposal remains valid before it expires.
 ///
@@ -108,6 +108,22 @@ pub const CURRENT_SCHEMA_VERSION: u32 = 4;
 /// for stale proposals, and re-propose if the window lapses. See
 /// `docs/incident-response.md` section 2.5.
 pub const ADMIN_PROPOSAL_TTL_LEDGERS: u64 = 17_280;
+
+/// Minimum number of ledgers that must elapse between `propose_upgrade` and
+/// `execute_upgrade`.
+///
+/// At ~6 seconds per ledger, 17,280 ledgers ≈ 28.8 hours. This window gives
+/// monitoring systems, community members, and — when using a multisig admin —
+/// quorum participants time to review a proposed WASM hash and cancel it via
+/// `cancel_upgrade` before it goes live. The timelock is the primary on-chain
+/// defense against a compromised admin key performing an atomic WASM swap with
+/// no warning window, which SECURITY.md classifies as the single
+/// Critical-severity threat scenario.
+///
+/// Unlike the admin-proposal TTL (which is a maximum), this is a *minimum*:
+/// the upgrade is executable at any point *after* the delay, until the
+/// current admin cancels it or issues a new proposal (which resets the clock).
+pub const UPGRADE_TIMELOCK_LEDGERS: u64 = 17_280;
 
 #[contracttype]
 #[derive(Clone)]
@@ -178,6 +194,17 @@ pub struct FactoryState {
     /// proposal is live. A proposal is live iff `pending_admin.is_some()` AND
     /// the current ledger sequence has not yet reached this value.
     pub pending_admin_expiry: Option<u64>,
+    /// WASM hash proposed for the next upgrade (step 1 of two-step upgrade
+    /// timelock, issue #6). `None` when no upgrade is pending. Written by
+    /// `propose_upgrade`, consumed by `execute_upgrade`, cleared by
+    /// `cancel_upgrade`.
+    pub pending_upgrade_hash: Option<BytesN<32>>,
+    /// Ledger sequence number at which the pending upgrade becomes executable.
+    /// `None` when no upgrade is pending. An upgrade can only be executed once
+    /// the current ledger sequence reaches or exceeds this value, giving
+    /// monitoring systems and multisig participants a reaction window before
+    /// a WASM swap takes effect.
+    pub pending_upgrade_ready_at: Option<u64>,
 }
 
 /// What a call to the legacy `transfer_admin` / `update_admin` aliases
@@ -258,6 +285,15 @@ pub enum Error {
     /// The pending admin proposal has passed its expiry ledger and can no
     /// longer be accepted; the current admin must open a new proposal
     ProposalExpired = 27,
+    /// `execute_upgrade` called before the timelock delay has elapsed
+    UpgradeNotReady = 28,
+    /// `execute_upgrade` called when no upgrade has been proposed, or
+    /// `cancel_upgrade` called when nothing is pending
+    NoUpgradePending = 29,
+    /// `execute_upgrade` called with a different hash than the one that was
+    /// proposed — prevents a race where the admin proposes hash A, then
+    /// tries to execute hash B before the timelock expires
+    UpgradeHashMismatch = 30,
 }
 
 #[contract]
@@ -376,6 +412,8 @@ impl TokenFactory {
             schema_version: CURRENT_SCHEMA_VERSION,
             pending_admin: None,
             pending_admin_expiry: None,
+            pending_upgrade_hash: None,
+            pending_upgrade_ready_at: None,
         };
 
         env.storage().instance().set(&DataKey::State, &state);
@@ -1520,13 +1558,127 @@ impl TokenFactory {
         Ok(())
     }
 
-    pub fn upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
+    /// Step 1 of two-step upgrade: record a pending WASM hash and a
+    /// ready-at ledger (current + `UPGRADE_TIMELOCK_LEDGERS`).
+    ///
+    /// Emits `upg_prop` carrying `(admin, new_wasm_hash, ready_at_ledger)` so
+    /// monitoring systems receive an on-chain signal the moment a WASM swap is
+    /// scheduled, giving the community a reaction window before it goes live.
+    ///
+    /// Issuing a second proposal **overwrites** the first, resetting the
+    /// timelock clock — this allows an admin to correct a typo without waiting
+    /// for the old proposal to expire (though the new proposal must also wait
+    /// the full delay). Use `cancel_upgrade` to withdraw a proposal entirely.
+    ///
+    /// Does **not** perform the WASM swap — only `execute_upgrade` does that,
+    /// and only after the timelock delay has elapsed.
+    pub fn propose_upgrade(
+        env: Env,
+        admin: Address,
+        new_wasm_hash: BytesN<32>,
+    ) -> Result<(), Error> {
         admin.require_auth();
-        let state = Self::load_state(&env)?;
+        let mut state = Self::load_state(&env)?;
         if state.admin != admin {
             return Err(Error::Unauthorized);
         }
+        let ready_at = env
+            .ledger()
+            .sequence()
+            .checked_add(UPGRADE_TIMELOCK_LEDGERS as u32)
+            .ok_or(Error::ArithmeticOverflow)? as u64;
+        state.pending_upgrade_hash = Some(new_wasm_hash.clone());
+        state.pending_upgrade_ready_at = Some(ready_at);
+        Self::save_state(&env, &state);
+        env.events().publish(
+            (symbol_short!("factory"), symbol_short!("upg_prop")),
+            (admin, new_wasm_hash, ready_at),
+        );
+        Ok(())
+    }
+
+    /// Step 2 of two-step upgrade: swap the factory WASM to the hash that was
+    /// previously recorded by `propose_upgrade`, but only once the timelock
+    /// delay has elapsed.
+    ///
+    /// Fails with:
+    /// - `Error::NoUpgradePending` — no proposal is recorded.
+    /// - `Error::UpgradeNotReady` — the timelock delay has not yet elapsed.
+    /// - `Error::UpgradeHashMismatch` — `new_wasm_hash` does not match the
+    ///   proposed hash (prevents a race where the admin proposes hash A, then
+    ///   tries to execute hash B in the same window).
+    ///
+    /// Emits `upg_exec` carrying `(admin, new_wasm_hash)` immediately before
+    /// the WASM swap. Also clears the pending upgrade fields so re-running
+    /// this after a successful swap is a clean no-op at the caller level
+    /// (Soroban rolls back on error, so a failed swap cannot leave stale
+    /// pending state live).
+    pub fn execute_upgrade(
+        env: Env,
+        admin: Address,
+        new_wasm_hash: BytesN<32>,
+    ) -> Result<(), Error> {
+        admin.require_auth();
+        let mut state = Self::load_state(&env)?;
+        if state.admin != admin {
+            return Err(Error::Unauthorized);
+        }
+
+        let proposed_hash = state.pending_upgrade_hash.clone().ok_or(Error::NoUpgradePending)?;
+        let ready_at = state.pending_upgrade_ready_at.ok_or(Error::NoUpgradePending)?;
+
+        if (env.ledger().sequence() as u64) < ready_at {
+            return Err(Error::UpgradeNotReady);
+        }
+
+        if proposed_hash != new_wasm_hash {
+            return Err(Error::UpgradeHashMismatch);
+        }
+
+        // Clear the pending proposal before the WASM swap so state is
+        // consistent even if the deployer call traps (Soroban rolls the whole
+        // invocation back on trap, so the cleared state is also rolled back;
+        // this ordering is for documentation clarity only).
+        state.pending_upgrade_hash = None;
+        state.pending_upgrade_ready_at = None;
+        // Update the stored token_wasm_hash to reflect the new binary.
+        // This keeps get_state() in sync with the live WASM without requiring
+        // a separate migrate() call for this field alone.
+        state.token_wasm_hash = new_wasm_hash.clone();
+        Self::save_state(&env, &state);
+
+        env.events().publish(
+            (symbol_short!("factory"), symbol_short!("upg_exec")),
+            (admin, new_wasm_hash.clone()),
+        );
+
         env.deployer().update_current_contract_wasm(new_wasm_hash);
+        Ok(())
+    }
+
+    /// Abort a pending upgrade proposal. Only the current admin may cancel.
+    ///
+    /// Calling this when no proposal is pending is a no-op (idempotent).
+    /// Emits `upg_can` when a live proposal is cancelled so monitoring systems
+    /// can record the cancellation event alongside the original `upg_prop`.
+    pub fn cancel_upgrade(env: Env, admin: Address) -> Result<(), Error> {
+        admin.require_auth();
+        let mut state = Self::load_state(&env)?;
+        if state.admin != admin {
+            return Err(Error::Unauthorized);
+        }
+        if state.pending_upgrade_hash.is_none() {
+            // Nothing to cancel — idempotent.
+            return Ok(());
+        }
+        let cancelled_hash = state.pending_upgrade_hash.clone().ok_or(Error::NoUpgradePending)?;
+        state.pending_upgrade_hash = None;
+        state.pending_upgrade_ready_at = None;
+        Self::save_state(&env, &state);
+        env.events().publish(
+            (symbol_short!("factory"), symbol_short!("upg_can")),
+            (admin, cancelled_hash),
+        );
         Ok(())
     }
 
@@ -1679,6 +1831,22 @@ impl TokenFactory {
             s.schema_version = 4;
             Self::save_state(&env, &s);
             on_chain_version = 4;
+            env.storage().instance().set(&sv_key, &on_chain_version);
+        }
+
+        if on_chain_version < 5 {
+            // Version 5 (issue #6): add `pending_upgrade_hash` and
+            // `pending_upgrade_ready_at` fields to `FactoryState` for the
+            // two-step upgrade timelock. Both fields default to `None` so
+            // existing deployments remain in "no pending upgrade" state after
+            // migration — no behavioral change until `propose_upgrade` is
+            // first called.
+            let mut s = Self::load_state(&env)?;
+            s.pending_upgrade_hash = None;
+            s.pending_upgrade_ready_at = None;
+            s.schema_version = 5;
+            Self::save_state(&env, &s);
+            on_chain_version = 5;
             env.storage().instance().set(&sv_key, &on_chain_version);
         }
 

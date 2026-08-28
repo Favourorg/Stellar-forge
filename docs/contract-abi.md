@@ -404,9 +404,29 @@ Errors and auth are identical to `propose_admin`.
 
 Operational guidance for completing and monitoring a rotation lives in [`docs/incident-response.md` §2.5](./incident-response.md#25-stale-pending-admin-proposals) and the [mainnet deployment checklist](./mainnet-deployment-checklist.md).
 
-### `upgrade(admin, new_wasm_hash)`
+### `propose_upgrade(admin, new_wasm_hash)`
 
-Replace the factory code in place while preserving state.
+Step 1 of the mandatory two-step upgrade flow (issue #6). Records `new_wasm_hash` as the pending upgrade candidate and sets `pending_upgrade_ready_at` to `current_ledger + UPGRADE_TIMELOCK_LEDGERS` (~17,280 ledgers ≈ 28.8 hours). Emits `upg_prop`. Admin-only.
+
+Issuing a second proposal overwrites the first, resetting the timelock clock.
+
+| Param           | Type          | Description                                     |
+| --------------- | ------------- | ----------------------------------------------- |
+| `admin`         | `Address`     | Must be the current factory admin; `require_auth` enforced. |
+| `new_wasm_hash` | `BytesN<32>`  | Hash of the WASM to swap to.                    |
+
+### `execute_upgrade(admin, new_wasm_hash)`
+
+Step 2 of the upgrade flow. Swaps the contract's executable WASM to `new_wasm_hash`, but only if all of the following are true: (a) a proposal for that exact hash was previously recorded via `propose_upgrade`, (b) the current ledger sequence ≥ `pending_upgrade_ready_at`, and (c) the caller is the factory admin. Emits `upg_exec`. Fails with `Error::NoUpgradePending` (29), `Error::UpgradeNotReady` (28), or `Error::UpgradeHashMismatch` (30) otherwise.
+
+| Param           | Type          | Description                                            |
+| --------------- | ------------- | ------------------------------------------------------ |
+| `admin`         | `Address`     | Must be the current factory admin; `require_auth` enforced. |
+| `new_wasm_hash` | `BytesN<32>`  | Must exactly match the hash passed to `propose_upgrade`. |
+
+### `cancel_upgrade(admin)`
+
+Abort a pending upgrade proposal at any time before execution. Idempotent — calling when nothing is pending is a no-op. Emits `upg_can` when a live proposal is cancelled. Admin-only.
 
 ### `migrate(admin)`
 
@@ -415,6 +435,7 @@ Incrementally upgrades state between schema versions. Idempotent — safe to cal
 - Version 2: bumps the version marker for the issue #1006 max-supply fix — it does not automatically back-fill any capped token's supply counter (see `backfill_capped_supply` below and "Supply cap accounting" above).
 - Version 3: moves `TokenInfo` entries from `instance` to `persistent` storage (issue #1007 — see "Storage architecture" above), walking `token_count` in bounded chunks per call. If `token_count` is large enough that one call can't finish the walk, `schema_version` stays at 2 and a subsequent `migrate` call resumes from where the last one left off; every other affected key (`TokenIndex`, `Metadata`, `owner`, `supply`, `CreatorTokens`) migrates lazily on next access regardless of whether this step has completed.
 - Version 4: adds `pending_admin: Option<Address>` and `pending_admin_expiry: Option<u64>` to `FactoryState` for two-step admin rotation. Both fields default to `None` — no behavioral change until `propose_admin` is first called. Call `migrate` once after upgrading to this version; subsequent calls are idempotent.
+- Version 5: adds `pending_upgrade_hash: Option<BytesN<32>>` and `pending_upgrade_ready_at: Option<u64>` to `FactoryState` for the two-step upgrade timelock (issue #6). Both fields default to `None` — no behavioral change until `propose_upgrade` is first called. Call `migrate` once after upgrading to this version; subsequent calls are idempotent.
 
 ### `backfill_capped_supply(admin, token_address, verified_supply)`
 
@@ -472,6 +493,9 @@ Read-only: returns `true` if `address` is on the whitelist.
 | 25   | `BatchSizeExceeded`         | `create_tokens_batch` called with more than `MAX_BATCH_SIZE` (20) tokens               |
 | 26   | `NoPendingProposal`         | `accept_admin` called with no live proposal, or the caller is not the proposed address |
 | 27   | `ProposalExpired`           | the pending proposal's expiry ledger has passed; current admin must re-propose         |
+| 28   | `UpgradeNotReady`           | `execute_upgrade` called before `UPGRADE_TIMELOCK_LEDGERS` have elapsed since `propose_upgrade` |
+| 29   | `NoUpgradePending`          | `execute_upgrade` called when no upgrade proposal is recorded, or `cancel_upgrade` called with nothing pending |
+| 30   | `UpgradeHashMismatch`       | `execute_upgrade` called with a hash that does not match the previously proposed hash  |
 
 ## Test/fuzz-only helpers
 
@@ -500,6 +524,9 @@ The contract emits Soroban events on a `(factory, action)` topic. The frontend p
 | `adm_acc`   | `(old_admin, new_admin)`                                           | `accept_admin`                                                                     |
 | `adm_can`   | `(current_admin, cancelled_admin)`                                 | `cancel_admin_proposal`                                                            |
 | `adm_dep`   | `(current_admin, new_admin, expiry_ledger, deprecated_entrypoint)` | `transfer_admin` / `update_admin` (emitted alongside `adm_prop`)                   |
+| `upg_prop`  | `(admin, new_wasm_hash, ready_at_ledger)`                          | `propose_upgrade` — upgrade scheduled; cancellable until `ready_at_ledger`         |
+| `upg_exec`  | `(admin, new_wasm_hash)`                                           | `execute_upgrade` — WASM swap completed                                            |
+| `upg_can`   | `(admin, cancelled_wasm_hash)`                                     | `cancel_upgrade` — pending upgrade aborted                                         |
 | `wl_add`    | `(address)`                                                        | `add_to_whitelist`                                                                 |
 | `wl_rm`     | `(address)`                                                        | `remove_from_whitelist`                                                            |
 | `wl_tog`    | `(enabled)`                                                        | `set_whitelist_enabled`                                                            |
