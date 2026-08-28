@@ -1,3 +1,12 @@
+## [1.8.7](https://github.com/Favourorg/Stellar-forge/compare/v1.8.6...v1.8.7) (2026-08-28)
+
+
+### Bug Fixes
+
+* **auth:** replace timing-unsafe JWT signature comparison with timingSafeEqual ([#1179](https://github.com/Favourorg/Stellar-forge/issues/1179)) ([8925440](https://github.com/Favourorg/Stellar-forge/commit/89254401d71ae83a0d5c945b899ac443822c7204)), closes [#4](https://github.com/Favourorg/Stellar-forge/issues/4)
+* **contract:** replace single-step upgrade with two-step timelock (issue [#6](https://github.com/Favourorg/Stellar-forge/issues/6)) ([#1180](https://github.com/Favourorg/Stellar-forge/issues/1180)) ([cb9f98a](https://github.com/Favourorg/Stellar-forge/commit/cb9f98ad758de875ee9fa93f00991982bcd4ab77))
+* split rate-limit buckets, guard cross-tab network change, enforce error discriminant uniqueness ([#1178](https://github.com/Favourorg/Stellar-forge/issues/1178)) ([7ddf2c4](https://github.com/Favourorg/Stellar-forge/commit/7ddf2c4d1836ed65bb5088a172ed72df9015775e)), closes [#1162](https://github.com/Favourorg/Stellar-forge/issues/1162) [#1163](https://github.com/Favourorg/Stellar-forge/issues/1163) [#1164](https://github.com/Favourorg/Stellar-forge/issues/1164) [#1162](https://github.com/Favourorg/Stellar-forge/issues/1162) [#1163](https://github.com/Favourorg/Stellar-forge/issues/1163) [#1164](https://github.com/Favourorg/Stellar-forge/issues/1164)
+
 ## [1.8.6](https://github.com/Favourorg/Stellar-forge/compare/v1.8.5...v1.8.6) (2026-08-25)
 
 
