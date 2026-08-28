@@ -1,4 +1,4 @@
-import { createHmac, randomBytes } from 'crypto'
+import { createHmac, randomBytes, timingSafeEqual } from 'crypto'
 
 interface TokenPayload {
   address: string
@@ -51,9 +51,30 @@ export function verifyToken(token: string): TokenPayload {
   const [headerEncoded, payloadEncoded, signatureProvided] = parts
   const message = `${headerEncoded}.${payloadEncoded}`
 
-  // Verify signature
-  const expectedSignature = createHmac('sha256', secret).update(message).digest('base64url')
-  if (signatureProvided !== expectedSignature) {
+  // Verify signature using constant-time comparison (CWE-208).
+  //
+  // Using !== here would be a timing oracle: JavaScript string comparison
+  // short-circuits at the first mismatched character, leaking — via response
+  // latency — how many leading bytes of the expected signature the attacker
+  // has already guessed. With enough requests an attacker can incrementally
+  // forge a valid signature for an arbitrary payload without ever learning
+  // JWT_SECRET. crypto.timingSafeEqual eliminates the signal by always
+  // examining every byte of both buffers.
+  //
+  // We compare fixed-length HMAC digest Buffers (raw binary, not base64url
+  // strings) so the comparison length is always 32 bytes regardless of the
+  // provided input's length. Passing mismatched-length buffers to
+  // timingSafeEqual throws, so we guard against that by comparing the digest
+  // lengths (both derived from the same HMAC output — always 32 bytes) and
+  // not the raw input string length, which would itself be a timing signal.
+  const expectedSignatureBuffer = createHmac('sha256', secret).update(message).digest()
+  const providedSignatureBuffer = Buffer.from(signatureProvided, 'base64url')
+
+  const signatureValid =
+    expectedSignatureBuffer.length === providedSignatureBuffer.length &&
+    timingSafeEqual(expectedSignatureBuffer, providedSignatureBuffer)
+
+  if (!signatureValid) {
     throw new Error('Invalid token signature.')
   }
 
