@@ -1,3 +1,5 @@
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
+import { isRateLimited, isRateLimitDurable, clientIp } from './rateLimit'
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import {
   isRateLimited,
@@ -158,5 +160,42 @@ describe('clientIp', () => {
   it('falls back to "unknown" when nothing is available', () => {
     const req = { headers: {}, socket: {} } as never
     expect(clientIp(req)).toBe('unknown')
+  })
+})
+
+describe('isRateLimitDurable', () => {
+  const originalUrl = process.env.VERCEL_KV_REST_API_URL
+  const originalToken = process.env.VERCEL_KV_REST_API_TOKEN
+
+  beforeEach(() => {
+    delete process.env.VERCEL_KV_REST_API_URL
+    delete process.env.VERCEL_KV_REST_API_TOKEN
+  })
+
+  afterEach(() => {
+    if (originalUrl !== undefined) process.env.VERCEL_KV_REST_API_URL = originalUrl
+    else delete process.env.VERCEL_KV_REST_API_URL
+    if (originalToken !== undefined) process.env.VERCEL_KV_REST_API_TOKEN = originalToken
+    else delete process.env.VERCEL_KV_REST_API_TOKEN
+  })
+
+  it('returns true when both KV env vars are set', () => {
+    process.env.VERCEL_KV_REST_API_URL = 'https://kv.example.com'
+    process.env.VERCEL_KV_REST_API_TOKEN = 'token'
+    expect(isRateLimitDurable()).toBe(true)
+  })
+
+  it('returns false when both KV env vars are absent', () => {
+    expect(isRateLimitDurable()).toBe(false)
+  })
+
+  it('returns false when only VERCEL_KV_REST_API_URL is set', () => {
+    process.env.VERCEL_KV_REST_API_URL = 'https://kv.example.com'
+    expect(isRateLimitDurable()).toBe(false)
+  })
+
+  it('returns false when only VERCEL_KV_REST_API_TOKEN is set', () => {
+    process.env.VERCEL_KV_REST_API_TOKEN = 'token'
+    expect(isRateLimitDurable()).toBe(false)
   })
 })

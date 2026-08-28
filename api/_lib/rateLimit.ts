@@ -4,6 +4,24 @@ import { isKvConfigured, kvGet, kvSet } from './kv'
 const WINDOW_MS = 15 * 60 * 1000 // 15 minutes
 
 /**
+ * Whether the rate limiter is backed by a durable, cross-instance store.
+ *
+ * Returns `true` when Vercel KV env vars are configured. Returns `false` when
+ * the in-memory per-instance fallback is active, which means each instance
+ * enforces limits independently — not production-safe (issue #14).
+ *
+ * Read by `GET /api/health/rate-limit` so operators can detect a deployment
+ * that forgot to provision Vercel KV before it silently ships without abuse
+ * protection on the upload endpoints.
+ */
+export function isRateLimitDurable(): boolean {
+  return isKvConfigured()
+}
+
+/**
+ * Check if a wallet address has exceeded rate limits (window or daily).
+ * Uses Vercel KV for durable, cross-instance limits.
+ * Falls back to in-memory tracking if KV is unavailable.
  * Challenge-issuance limits (unauthenticated — GET /api/auth/challenge).
  *
  * These are intentionally tighter than authenticated-action limits and are
@@ -86,6 +104,21 @@ async function _isRateLimited(
   maxPerDay: number,
 ): Promise<boolean> {
   if (!isKvConfigured()) {
+    // In production, fail closed: deny all requests rather than silently
+    // shipping without working abuse protection (issue #14). This matches the
+    // fail-closed precedent in api/cron/index-tokens.ts (CRON_SECRET check).
+    // In non-production environments the in-memory fallback is fine for local
+    // development where cross-instance durability is not required.
+    if (process.env.VERCEL_ENV === 'production') {
+      console.error(
+        '[rate-limit] KV store is not configured in production. ' +
+          'Set VERCEL_KV_REST_API_URL and VERCEL_KV_REST_API_TOKEN. ' +
+          'Failing closed to prevent unprotected upload endpoints.',
+      )
+      return true
+    }
+    // Fallback: use in-memory (not production-safe, but fine for local dev)
+    return isRateLimitedInMemory(address)
     return _isRateLimitedInMemory(bucketPrefix, maxPerWindow)
   }
 
