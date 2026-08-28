@@ -46,7 +46,48 @@ Every mainnet deployment **must** be accompanied by a signed, annotated git tag 
 
 - [ ] Deploy and initialize the factory **atomically** — `initialize` runs as the contract's `__constructor`, so `scripts/deploy-contract.sh` (or an equivalent `stellar contract deploy --wasm ... -- --admin ... --treasury ... --fee_token ... --token_wasm_hash ... --base_fee ... --metadata_fee ...` invocation) deploys and initializes in a single transaction. Never deploy the WASM and initialize it as two separate transactions — that reopens a front-running window where an attacker's `initialize` call could win the race and seize the admin role (see the [Token Factory front-running writeup](https://github.com/Favourorg/Stellar-forge/issues/1005)).
 - [ ] Immediately after deployment, run `stellar contract invoke --id <contract-id> --network mainnet -- get_state` and confirm the returned `admin` field is **exactly** the intended admin address before publishing the contract ID anywhere (frontend `.env`, docs, service-worker cache key, announcements). `scripts/deploy-contract.sh` performs this check automatically and aborts if it fails.
-- [ ] If upgrading an existing factory (not a fresh deploy), call `migrate` immediately after `upgrade` to apply schema version 4 (adds `pending_admin` / `pending_admin_expiry` to `FactoryState`). Confirm `get_state().schema_version == 4` before proceeding.
+- [ ] If upgrading an existing factory (not a fresh deploy), call `migrate` immediately after `execute_upgrade` to apply schema version 5 (adds `pending_upgrade_hash` / `pending_upgrade_ready_at` to `FactoryState`). Confirm `get_state().schema_version == 5` before proceeding.
+
+## Contract Upgrade Procedure (two-step timelock)
+
+**Upgrading the factory WASM now requires two transactions separated by a mandatory ~28-hour waiting period.** This is an active security control — not a procedural suggestion. An upgrade proposed by a compromised admin key can be cancelled by the legitimate team within the waiting window.
+
+- [ ] 1. Build and optimize the new contract WASM. Run the [WASM Hash Verification workflow](https://github.com/Favourorg/Stellar-forge/actions/workflows/wasm-verify.yml) against the new release tag to confirm the on-chain bytecode will match the reviewed source.
+- [ ] 2. Upload the WASM to the network and record its hash:
+     ```bash
+     stellar contract upload \
+       --wasm target/wasm32-unknown-unknown/release/token_factory.optimized.wasm \
+       --source <admin-key> --network mainnet
+     # → <new-wasm-hash>
+     ```
+- [ ] 3. Call `propose_upgrade` with the new hash:
+     ```bash
+     stellar contract invoke --id <factory-id> --source <admin-key> --network mainnet \
+       -- propose_upgrade --admin <admin-address> --new_wasm_hash <new-wasm-hash>
+     ```
+     Confirm the `upg_prop` event appears on-chain with `ready_at` approximately 17,280 ledgers (~28.8 hours) in the future.
+- [ ] 4. Announce the pending upgrade publicly (Discord, status page, Twitter/X) so the community can review the proposed WASM hash during the waiting window. Include the `ready_at` ledger sequence and the new WASM hash.
+- [ ] 5. **Wait** until the current ledger sequence ≥ `ready_at`. Do not skip this step — `execute_upgrade` will fail with `UpgradeNotReady` before then.
+- [ ] 6. If anything looks wrong during the waiting period, call `cancel_upgrade` immediately:
+     ```bash
+     stellar contract invoke --id <factory-id> --source <admin-key> --network mainnet \
+       -- cancel_upgrade --admin <admin-address>
+     ```
+     Confirm the `upg_can` event on-chain.
+- [ ] 7. Call `execute_upgrade` with the **same** hash that was proposed:
+     ```bash
+     stellar contract invoke --id <factory-id> --source <admin-key> --network mainnet \
+       -- execute_upgrade --admin <admin-address> --new_wasm_hash <new-wasm-hash>
+     ```
+     Confirm the `upg_exec` event on-chain.
+- [ ] 8. Call `migrate` immediately after to advance the schema version:
+     ```bash
+     stellar contract invoke --id <factory-id> --source <admin-key> --network mainnet \
+       -- migrate --admin <admin-address>
+     ```
+- [ ] 9. Verify `get_state().schema_version == CURRENT_SCHEMA_VERSION` and `get_state().token_wasm_hash == <new-wasm-hash>`.
+- [ ] 10. Update `EXPECTED_HASH` in `check-wasm-hash.sh` and redeploy the monitoring script.
+- [ ] 11. If the factory upgrade also changes the token contract WASM hash, redeploy the frontend with the updated `VITE_TOKEN_WASM_HASH` in the same release window.
 
 ## Release Validation
 
@@ -69,6 +110,7 @@ These items must be verified before the factory is accessible to end users on ma
 - [ ] On-chain event monitoring for `adm_prop` (rotation proposed), `adm_acc` (rotation completed) and `adm_dep` (rotation proposed through a deprecated alias) is configured and alerting. An unexpected `adm_prop` event is actionable: the current admin can cancel via `cancel_admin_proposal` before `accept_admin` is called. An `adm_dep` event means some caller still uses `transfer_admin` / `update_admin` and may assume the rotation is already complete — track it down.
 - [ ] Stale-proposal monitoring script (`check-pending-admin-proposal.sh`) is deployed on a cron schedule (≤ 15 minutes) and confirmed to alert well inside the ~28.8-hour proposal TTL (see [runbook section 2.5](./incident-response.md#25-stale-pending-admin-proposals)).
 - [ ] WASM hash monitoring script (`check-wasm-hash.sh`) is deployed on a cron schedule (≤ 5 minutes) and confirmed to send alerts.
+- [ ] On-chain event monitoring for `upg_prop` (upgrade proposed), `upg_exec` (upgrade executed), and `upg_can` (upgrade cancelled) is configured and alerting. An unexpected `upg_prop` event is actionable: the current admin can abort via `cancel_upgrade` at any time before the `ready_at` ledger. An unexpected `upg_exec` event means the admin key is compromised; escalate immediately.
 - [ ] Sentry alert rules for mainnet anomalous-fee events and admin rotation events are active (see [runbook section 2](./incident-response.md#2-how-compromise-would-be-detected)).
 - [ ] Incident commander and break-glass custodian contact details are documented in the team's private channel, not in this file.
 - [ ] Tabletop exercise (runbook section 10) has been completed and dated in the deployment log.

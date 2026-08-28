@@ -2,8 +2,6 @@ import type { VercelRequest } from '@vercel/node'
 import { isKvConfigured, kvGet, kvSet } from './kv'
 
 const WINDOW_MS = 15 * 60 * 1000 // 15 minutes
-const MAX_REQUESTS_PER_WINDOW = parseInt(process.env.RATE_LIMIT_WINDOW ?? '10', 10)
-const MAX_REQUESTS_PER_DAY = parseInt(process.env.RATE_LIMIT_DAY ?? '100', 10)
 
 /**
  * Whether the rate limiter is backed by a durable, cross-instance store.
@@ -24,19 +22,87 @@ export function isRateLimitDurable(): boolean {
  * Check if a wallet address has exceeded rate limits (window or daily).
  * Uses Vercel KV for durable, cross-instance limits.
  * Falls back to in-memory tracking if KV is unavailable.
+ * Challenge-issuance limits (unauthenticated — GET /api/auth/challenge).
  *
- * The KV REST helpers moved to `./kv` when the challenge store (issue #1091)
- * needed the same durable path. Two behavioural notes from that move, both of
- * which make this function match the intent its own comment already stated
- * ("On error, deny the request (fail closed)"):
+ * These are intentionally tighter than authenticated-action limits and are
+ * keyed on the *requester IP*, not the target address, so an attacker who
+ * knows a victim's public address cannot exhaust the victim's login budget by
+ * flooding the challenge endpoint (issue #1162).
  *
- *   - A non-2xx read used to be indistinguishable from an empty bucket, so a
- *     KV outage silently reset every counter and let traffic through. It now
- *     throws and is caught below.
- *   - A failed write used to be ignored, leaving the limiter running against
- *     counters that were never incremented. It now throws too.
+ * The per-IP window limit is kept low to prevent one host from spamming
+ * challenges at a high rate. The daily limit is generous enough that
+ * legitimate multi-device users are never affected.
+ */
+const CHALLENGE_MAX_PER_WINDOW = parseInt(process.env.CHALLENGE_RATE_LIMIT_WINDOW ?? '20', 10)
+const CHALLENGE_MAX_PER_DAY = parseInt(process.env.CHALLENGE_RATE_LIMIT_DAY ?? '200', 10)
+
+/**
+ * Authenticated-action limits (upload-file, upload-json, unpin).
+ *
+ * These are keyed on the wallet address, which is safe because the caller
+ * has already proved possession of the corresponding private key via the
+ * challenge→signature flow before reaching these endpoints.
+ */
+const ACTION_MAX_PER_WINDOW = parseInt(process.env.RATE_LIMIT_WINDOW ?? '10', 10)
+const ACTION_MAX_PER_DAY = parseInt(process.env.RATE_LIMIT_DAY ?? '100', 10)
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+/**
+ * Rate-limit check for **challenge issuance** (GET /api/auth/challenge).
+ *
+ * Keyed on the requester's IP address so that an attacker who knows a
+ * victim's Stellar address (a public value) cannot lock the victim out of
+ * the system by flooding the unauthenticated challenge endpoint (issue #1162).
+ *
+ * @param ip   Trusted client IP, e.g. from `clientIp(req)`.
+ */
+export async function isChallengeRateLimited(ip: string): Promise<boolean> {
+  return _isRateLimited(
+    `ratelimit:challenge:${ip}`,
+    CHALLENGE_MAX_PER_WINDOW,
+    CHALLENGE_MAX_PER_DAY,
+  )
+}
+
+/**
+ * Rate-limit check for **authenticated actions** (upload-file, upload-json,
+ * unpin). Keyed on the wallet address, which is safe because possession of
+ * the corresponding private key has already been proved via the
+ * challenge→signature flow (issue #1162).
+ *
+ * @param address  The verified wallet address extracted from the JWT.
+ */
+export async function isActionRateLimited(address: string): Promise<boolean> {
+  return _isRateLimited(
+    `ratelimit:action:${address}`,
+    ACTION_MAX_PER_WINDOW,
+    ACTION_MAX_PER_DAY,
+  )
+}
+
+/**
+ * @deprecated Use `isChallengeRateLimited` or `isActionRateLimited` instead.
+ *
+ * Left in place so any external callers that were importing `isRateLimited`
+ * directly keep compiling. All internal call sites have been migrated to the
+ * split functions above (issue #1162).
  */
 export async function isRateLimited(address: string): Promise<boolean> {
+  return isActionRateLimited(address)
+}
+
+// ---------------------------------------------------------------------------
+// Shared implementation
+// ---------------------------------------------------------------------------
+
+async function _isRateLimited(
+  bucketPrefix: string,
+  maxPerWindow: number,
+  maxPerDay: number,
+): Promise<boolean> {
   if (!isKvConfigured()) {
     // In production, fail closed: deny all requests rather than silently
     // shipping without working abuse protection (issue #14). This matches the
@@ -53,12 +119,13 @@ export async function isRateLimited(address: string): Promise<boolean> {
     }
     // Fallback: use in-memory (not production-safe, but fine for local dev)
     return isRateLimitedInMemory(address)
+    return _isRateLimitedInMemory(bucketPrefix, maxPerWindow)
   }
 
   try {
     const now = Date.now()
-    const windowKey = `ratelimit:${address}:window`
-    const dayKey = `ratelimit:${address}:day`
+    const windowKey = `${bucketPrefix}:window`
+    const dayKey = `${bucketPrefix}:day`
 
     // Window bucket (15 min rolling)
     const windowData = await kvGet(windowKey)
@@ -69,7 +136,7 @@ export async function isRateLimited(address: string): Promise<boolean> {
         await kvSet(windowKey, JSON.stringify({ count: 1, windowStart: now }), 900)
       } else {
         // Window still active
-        if (count >= MAX_REQUESTS_PER_WINDOW) return true
+        if (count >= maxPerWindow) return true
         await kvSet(windowKey, JSON.stringify({ count: count + 1, windowStart }), 900)
       }
     } else {
@@ -81,7 +148,7 @@ export async function isRateLimited(address: string): Promise<boolean> {
     const dayData = await kvGet(dayKey)
     if (dayData) {
       const { count } = JSON.parse(dayData)
-      if (count >= MAX_REQUESTS_PER_DAY) return true
+      if (count >= maxPerDay) return true
       await kvSet(dayKey, JSON.stringify({ count: count + 1 }), 86400)
     } else {
       // First request in this day
@@ -104,7 +171,7 @@ interface Bucket {
 
 const buckets = new Map<string, Bucket>()
 
-function isRateLimitedInMemory(key: string): Promise<boolean> {
+function _isRateLimitedInMemory(key: string, maxPerWindow: number): Promise<boolean> {
   const now = Date.now()
   const bucket = buckets.get(key)
 
@@ -114,7 +181,7 @@ function isRateLimitedInMemory(key: string): Promise<boolean> {
   }
 
   bucket.count += 1
-  return Promise.resolve(bucket.count > MAX_REQUESTS_PER_WINDOW)
+  return Promise.resolve(bucket.count > maxPerWindow)
 }
 
 /**

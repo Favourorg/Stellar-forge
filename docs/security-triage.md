@@ -76,3 +76,70 @@ An extension with no re-verification is how a waiver quietly becomes permanent �
 ## Reporting a vulnerability in StellarForge itself
 
 This document covers third-party advisories only. To report a vulnerability in StellarForge, follow [SECURITY.md](../SECURITY.md) — do not open a public issue.
+
+---
+
+## August 2026 critical-issues audit — architectural decisions
+
+The following entries document *why* certain areas are rate-limited or validated
+differently, per the requirement in the fix for the issues below.
+
+### Issue #1162 — Challenge-issuance vs authenticated-action rate limits
+
+**Problem:** `isRateLimited(address)` in `api/_lib/rateLimit.ts` used a single
+shared bucket per Stellar address across every call site: the unauthenticated
+`GET /api/auth/challenge` (no proof-of-key-possession required) and every
+authenticated action (`upload-file`, `upload-json`, `unpin`). An attacker who
+knows a victim's public address — a public-by-design value — could exhaust the
+victim's daily budget at zero cost.
+
+**Fix:** The rate-limit namespace is now split into two independent families:
+
+| Endpoint | Function | Key | Rationale |
+|---|---|---|---|
+| `GET /api/auth/challenge` | `isChallengeRateLimited(ip)` | Requester IP | Challenge issuance requires no key possession; keying on address lets any observer deny a victim. IP is the appropriate axis here because Vercel's `x-forwarded-for` provides a spoof-resistant rightmost entry. |
+| `POST /api/auth/challenge`, uploads, unpin | `isActionRateLimited(address)` | Wallet address | These callers have already proved possession of the corresponding private key via the challenge→signature flow, so the address is a safe rate-limit key. |
+
+Exhausting the challenge-issuance IP bucket for a given requester does **not**
+affect that address's authenticated-action quota, and vice versa. The split is
+enforced in `api/_lib/rateLimit.ts`; the test in `api/_lib/rateLimit.test.ts`
+asserts both isolation properties.
+
+### Issue #1163 — Cross-tab localStorage network sync on mutating forms
+
+**Problem:** `useLocalStorage` installs a `window storage` event listener that
+silently updates `NetworkContext` whenever another tab writes the persisted
+network key. `StellarContext` rebuilds `stellarService` purely as a reaction to
+the network change, with no coordination with in-progress form state. A user
+filling `MintForm` / `BurnForm` / `SetMetadataForm` / `AdminPanel` in one tab
+while switching networks in another tab could submit a transaction against a
+contract address that belongs to the wrong network — defeating `useNetworkGuard`
+(which only checks Freighter-vs-app agreement, not "did the app's own target
+change since this tab's form was opened").
+
+**Fix:** `useNetworkGuard` now captures the network value active at hook-mount
+time and sets `networkChangedSinceMount = true` whenever `NetworkContext`
+drifts away from that baseline. This blocks form submission and surfaces an
+explicit "Network changed to X since you opened this form" banner with a
+confirmation button. Clicking the button calls `acknowledgeNetworkChange()`,
+which rebases the mount snapshot to the current network and re-enables the form.
+All four mutating forms (`MintForm`, `BurnForm`, `SetMetadataForm`, `AdminPanel`)
+consume the new return values.
+
+### Issue #1164 — Contract error discriminant uniqueness
+
+**Problem:** Rust allows duplicate explicit discriminants on a fieldless enum
+without a warning, but Soroban exposes `#[contracterror]` values to external
+callers as bare `u32` codes. Three semantically distinct errors
+(`TreasuryTransferFailed`, `BatchSizeExceeded`, `NoPendingProposal`) were
+reported as sharing discriminant 24, making them indistinguishable to any
+monitoring, retry, or UI logic that branches on the numeric code.
+
+**Fix:** The contract already carries unique discriminants (24, 25, 26, 27) for
+those three variants plus `ProposalExpired`. A compile-time test
+(`test_error_discriminants_are_unique` in `contracts/token-factory/src/test.rs`)
+now exhaustively lists every variant and asserts uniqueness via a `HashSet`,
+failing CI if any future variant reuses an existing code or is added without
+being registered in the test. `CONTRACT_ERROR_MESSAGES` and
+`CONTRACT_ERROR_REQUIREMENTS` in `frontend/src/utils/contractErrors.ts` have
+been updated to include entries for codes 24–27.

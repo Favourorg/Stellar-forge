@@ -39,7 +39,7 @@ export const BurnForm: React.FC<BurnFormProps> = ({
   const { network } = useNetwork()
   const { addToast } = useToast()
   const { requireTos } = useTos()
-  const { blocked: networkBlocked, reason: networkReason } = useNetworkGuard()
+  const { blocked: networkBlocked, reason: networkReason, networkChangedSinceMount, acknowledgeNetworkChange } = useNetworkGuard()
   const { hasSufficientBalance, shortfall, isTestnet } = useBalanceCheck(ESTIMATED_FEE_XLM)
   const { rows: myTokens } = useTokenDashboard()
   const mountedRef = useRef(true)
@@ -262,9 +262,18 @@ export const BurnForm: React.FC<BurnFormProps> = ({
         </Button>
 
         {networkBlocked && networkReason && (
-          <p className="text-sm text-red-600 dark:text-red-400" role="alert">
-            {networkReason}
-          </p>
+          <div role="alert" className="text-sm text-red-600 dark:text-red-400 space-y-1">
+            <p>{networkReason}</p>
+            {networkChangedSinceMount && (
+              <button
+                type="button"
+                onClick={acknowledgeNetworkChange}
+                className="underline text-red-700 dark:text-red-400 text-xs"
+              >
+                I've reviewed — continue on {network}
+              </button>
+            )}
+          </div>
         )}
 
         {!hasSufficientBalance && (

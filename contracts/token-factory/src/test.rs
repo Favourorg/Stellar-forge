@@ -3360,16 +3360,162 @@ fn test_cross_function_reentrancy_lock_blocks_all_entrypoints() {
     );
 }
 
-// ── upgrade ───────────────────────────────────────────────────────────────────
+// ── upgrade (two-step timelock, issue #6) ─────────────────────────────────────
 
 #[test]
-fn test_upgrade_unauthorized() {
+fn test_propose_upgrade_unauthorized() {
     let s = Setup::new();
     let stranger = Address::generate(&s.env);
-    let new_hash = s.salt(1);
+    let new_hash = BytesN::from_array(&s.env, &[0xAAu8; 32]);
     assert_eq!(
-        s.client.try_upgrade(&stranger, &new_hash),
+        s.client.try_propose_upgrade(&stranger, &new_hash),
         Err(Ok(Error::Unauthorized))
+    );
+}
+
+#[test]
+fn test_execute_upgrade_fails_before_timelock_elapses() {
+    let s = Setup::new();
+    let new_hash = BytesN::from_array(&s.env, &[0xBBu8; 32]);
+    // Propose the upgrade.
+    s.client.propose_upgrade(&s.admin, &new_hash);
+    // Attempt to execute immediately — should fail with UpgradeNotReady.
+    assert_eq!(
+        s.client.try_execute_upgrade(&s.admin, &new_hash),
+        Err(Ok(Error::UpgradeNotReady))
+    );
+}
+
+#[test]
+fn test_execute_upgrade_fails_with_wrong_hash() {
+    let s = Setup::new();
+    let proposed_hash = BytesN::from_array(&s.env, &[0xBBu8; 32]);
+    let wrong_hash = BytesN::from_array(&s.env, &[0xCCu8; 32]);
+    s.client.propose_upgrade(&s.admin, &proposed_hash);
+    // Advance past the timelock.
+    s.env.ledger().with_mut(|li| {
+        li.sequence_number = li
+            .sequence_number
+            .checked_add(UPGRADE_TIMELOCK_LEDGERS as u32 + 1)
+            .unwrap();
+    });
+    // Supplying the wrong hash must fail.
+    assert_eq!(
+        s.client.try_execute_upgrade(&s.admin, &wrong_hash),
+        Err(Ok(Error::UpgradeHashMismatch))
+    );
+}
+
+#[test]
+fn test_execute_upgrade_fails_when_no_proposal_pending() {
+    let s = Setup::new();
+    let some_hash = BytesN::from_array(&s.env, &[0xBBu8; 32]);
+    // No propose_upgrade called — must fail with NoUpgradePending.
+    assert_eq!(
+        s.client.try_execute_upgrade(&s.admin, &some_hash),
+        Err(Ok(Error::NoUpgradePending))
+    );
+}
+
+#[test]
+fn test_cancel_upgrade_clears_pending_proposal() {
+    let s = Setup::new();
+    let new_hash = BytesN::from_array(&s.env, &[0xBBu8; 32]);
+    // Propose, then cancel.
+    s.client.propose_upgrade(&s.admin, &new_hash);
+    s.client.cancel_upgrade(&s.admin);
+    // After cancellation, execute must fail with NoUpgradePending.
+    s.env.ledger().with_mut(|li| {
+        li.sequence_number = li
+            .sequence_number
+            .checked_add(UPGRADE_TIMELOCK_LEDGERS as u32 + 1)
+            .unwrap();
+    });
+    assert_eq!(
+        s.client.try_execute_upgrade(&s.admin, &new_hash),
+        Err(Ok(Error::NoUpgradePending))
+    );
+}
+
+#[test]
+fn test_cancel_upgrade_is_idempotent_when_nothing_pending() {
+    let s = Setup::new();
+    // cancel_upgrade when nothing is pending must be a no-op, not an error.
+    s.client.cancel_upgrade(&s.admin);
+}
+
+#[test]
+fn test_propose_upgrade_emits_upg_prop_event() {
+    let s = Setup::new();
+    let new_hash = BytesN::from_array(&s.env, &[0xBBu8; 32]);
+    s.client.propose_upgrade(&s.admin, &new_hash);
+    let events = s.env.events().all();
+    let upg_prop_topic = (
+        symbol_short!("factory"),
+        symbol_short!("upg_prop"),
+    );
+    let found = events.iter().any(|e| {
+        e.0 == s.client.address
+            && matches!(e.1.iter().nth(0), Some(v) if v == symbol_short!("factory").into_val(&s.env))
+            && matches!(e.1.iter().nth(1), Some(v) if v == symbol_short!("upg_prop").into_val(&s.env))
+    });
+    assert!(found, "expected upg_prop event, got: {:?}", upg_prop_topic);
+}
+
+#[test]
+fn test_cancel_upgrade_emits_upg_can_event() {
+    let s = Setup::new();
+    let new_hash = BytesN::from_array(&s.env, &[0xBBu8; 32]);
+    s.client.propose_upgrade(&s.admin, &new_hash);
+    s.client.cancel_upgrade(&s.admin);
+    let events = s.env.events().all();
+    let found = events.iter().any(|e| {
+        e.0 == s.client.address
+            && matches!(e.1.iter().nth(0), Some(v) if v == symbol_short!("factory").into_val(&s.env))
+            && matches!(e.1.iter().nth(1), Some(v) if v == symbol_short!("upg_can").into_val(&s.env))
+    });
+    assert!(found, "expected upg_can event");
+}
+
+#[test]
+fn test_propose_upgrade_stores_pending_hash_and_ready_at() {
+    let s = Setup::new();
+    let new_hash = BytesN::from_array(&s.env, &[0xBBu8; 32]);
+    let before_seq = s.env.ledger().sequence();
+    s.client.propose_upgrade(&s.admin, &new_hash);
+    let state = s.client.get_state();
+    assert_eq!(state.pending_upgrade_hash, Some(new_hash));
+    let expected_ready_at = (before_seq as u64)
+        .checked_add(UPGRADE_TIMELOCK_LEDGERS)
+        .unwrap();
+    // The sequence may have advanced by at most 1 during the call.
+    assert!(state.pending_upgrade_ready_at.unwrap() >= expected_ready_at);
+    assert!(state.pending_upgrade_ready_at.unwrap() <= expected_ready_at + 1);
+}
+
+#[test]
+fn test_second_propose_upgrade_overwrites_first_and_resets_timelock() {
+    let s = Setup::new();
+    let hash_a = BytesN::from_array(&s.env, &[0xAAu8; 32]);
+    let hash_b = BytesN::from_array(&s.env, &[0xBBu8; 32]);
+    s.client.propose_upgrade(&s.admin, &hash_a);
+    // Advance time slightly, then propose again with hash_b.
+    s.env.ledger().with_mut(|li| {
+        li.sequence_number = li.sequence_number.checked_add(100).unwrap();
+    });
+    s.client.propose_upgrade(&s.admin, &hash_b);
+    let state = s.client.get_state();
+    assert_eq!(state.pending_upgrade_hash, Some(hash_b.clone()));
+    // Trying to execute hash_a must fail.
+    s.env.ledger().with_mut(|li| {
+        li.sequence_number = li
+            .sequence_number
+            .checked_add(UPGRADE_TIMELOCK_LEDGERS as u32 + 1)
+            .unwrap();
+    });
+    assert_eq!(
+        s.client.try_execute_upgrade(&s.admin, &hash_a),
+        Err(Ok(Error::UpgradeHashMismatch))
     );
 }
 
@@ -3481,7 +3627,7 @@ fn test_migrate_v3_to_v4_adds_pending_admin_fields() {
 #[test]
 fn test_migrate_v4_idempotent_for_pending_admin() {
     let s = Setup::new();
-    // After a fresh init, schema is already at v4.
+    // After a fresh init, schema is already at v5.
     s.client.migrate(&s.admin);
     s.client.migrate(&s.admin);
     let state = s.client.get_state();
@@ -3503,6 +3649,44 @@ fn test_migrate_from_v0_walks_all_steps_to_v4() {
 
     s.client.migrate(&s.admin);
     assert_eq!(s.client.get_state().schema_version, CURRENT_SCHEMA_VERSION);
+}
+
+// ── schema v5 migration: pending_upgrade fields default to None ───────────────
+
+/// Simulating a schema-v4 deployment and running migrate must walk the v4→v5
+/// step, adding `pending_upgrade_hash = None` and `pending_upgrade_ready_at = None`.
+#[test]
+fn test_migrate_v4_to_v5_adds_pending_upgrade_fields() {
+    let s = Setup::new();
+
+    // Rewind to schema version 4 so the v5 step fires.
+    s.env.as_contract(&s.client.address, || {
+        let mut state: FactoryState = s.env.storage().instance().get(&DataKey::State).unwrap();
+        state.schema_version = 4;
+        s.env.storage().instance().set(&DataKey::State, &state);
+        s.env.storage().instance().set(&symbol_short!("sv"), &4u32);
+    });
+
+    s.client.migrate(&s.admin);
+
+    let state = s.client.get_state();
+    assert_eq!(state.schema_version, CURRENT_SCHEMA_VERSION);
+    // New upgrade fields must be absent (no pending upgrade) after migration.
+    assert_eq!(state.pending_upgrade_hash, None);
+    assert_eq!(state.pending_upgrade_ready_at, None);
+}
+
+/// Running migrate on a fully-current (v5) contract must be a no-op for
+/// pending_upgrade fields (idempotent).
+#[test]
+fn test_migrate_v5_idempotent_for_pending_upgrade() {
+    let s = Setup::new();
+    s.client.migrate(&s.admin);
+    s.client.migrate(&s.admin);
+    let state = s.client.get_state();
+    assert_eq!(state.schema_version, CURRENT_SCHEMA_VERSION);
+    assert_eq!(state.pending_upgrade_hash, None);
+    assert_eq!(state.pending_upgrade_ready_at, None);
 }
 
 // ── whitelist enforcement ─────────────────────────────────────────────────────
@@ -4623,4 +4807,67 @@ fn test_backfill_token_address_cannot_hijack_another_index() {
     assert_eq!(s.client.get_token_address(&first_index), first);
     assert_eq!(s.client.get_token_address(&second_index), second);
     assert_ne!(first_index, second_index);
+}
+
+// ── Error discriminant uniqueness (issue #1164) ───────────────────────────────
+//
+// Rust permits duplicate explicit discriminants on a fieldless enum and does
+// not warn on them, but Soroban surfaces `#[contracterror]` values to external
+// callers as bare u32 codes. A collision makes semantically distinct errors
+// indistinguishable to any monitoring, retry, or display logic that branches
+// on the numeric code. This test fails CI if any two variants share a
+// discriminant, ensuring a future collision can never ship.
+#[test]
+fn test_error_discriminants_are_unique() {
+    extern crate std;
+    use std::collections::HashSet;
+
+    let codes: &[u32] = &[
+        Error::InsufficientFee as u32,
+        Error::Unauthorized as u32,
+        Error::InvalidParameters as u32,
+        Error::TokenNotFound as u32,
+        Error::MetadataAlreadySet as u32,
+        Error::AlreadyInitialized as u32,
+        Error::BurnAmountExceedsBalance as u32,
+        Error::BurnNotEnabled as u32,
+        Error::InvalidBurnAmount as u32,
+        Error::ContractPaused as u32,
+        Error::Reentrancy as u32,
+        Error::ArithmeticOverflow as u32,
+        Error::StateNotFound as u32,
+        Error::InvalidTokenParams as u32,
+        Error::InvalidDecimals as u32,
+        Error::MaxSupplyExceeded as u32,
+        Error::InvalidFeeSplit as u32,
+        Error::TooManyFeeSplitRecipients as u32,
+        Error::AlreadyBackfilled as u32,
+        Error::NotWhitelisted as u32,
+        Error::InvalidMetadataUri as u32,
+        Error::ZeroFeeSplitEntry as u32,
+        Error::MetadataFrozen as u32,
+        Error::TreasuryTransferFailed as u32,
+        Error::BatchSizeExceeded as u32,
+        Error::NoPendingProposal as u32,
+        Error::ProposalExpired as u32,
+    ];
+
+    let mut seen = HashSet::new();
+    for &code in codes {
+        assert!(
+            seen.insert(code),
+            "Duplicate error discriminant {} — every Error variant must have a unique u32 code \
+             because Soroban surfaces them as bare wire values to external callers (issue #1164).",
+            code
+        );
+    }
+
+    // Also assert the total matches the expected variant count so this test
+    // itself fails loudly when a new variant is added without being listed.
+    assert_eq!(
+        codes.len(),
+        27,
+        "Error enum has a different number of variants than this test expects. \
+         Add the new variant(s) to the `codes` slice above (issue #1164)."
+    );
 }

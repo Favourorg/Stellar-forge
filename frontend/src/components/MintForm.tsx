@@ -43,7 +43,7 @@ export const MintForm: React.FC<MintFormProps> = ({
   const { addToast } = useToast()
   const { requireTos } = useTos()
   const { state: factoryState } = useFactoryState()
-  const { blocked: networkBlocked, reason: networkReason } = useNetworkGuard()
+  const { blocked: networkBlocked, reason: networkReason, networkChangedSinceMount, acknowledgeNetworkChange } = useNetworkGuard()
   // Pay the real on-chain base_fee; the contract rejects mint if fee_payment < base_fee.
   const feePaymentStroops = factoryState?.baseFee ?? BASE_FEE_STROOPS
   const feeXlm = stroopsToXLM(feePaymentStroops)
@@ -277,9 +277,18 @@ export const MintForm: React.FC<MintFormProps> = ({
         </Button>
 
         {networkBlocked && networkReason && (
-          <p className="text-sm text-red-600 dark:text-red-400" role="alert">
-            {networkReason}
-          </p>
+          <div role="alert" className="text-sm text-red-600 dark:text-red-400 space-y-1">
+            <p>{networkReason}</p>
+            {networkChangedSinceMount && (
+              <button
+                type="button"
+                onClick={acknowledgeNetworkChange}
+                className="underline text-red-700 dark:text-red-400 text-xs"
+              >
+                I've reviewed — continue on {network}
+              </button>
+            )}
+          </div>
         )}
 
         {!hasSufficientBalance && (
