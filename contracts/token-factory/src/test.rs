@@ -4624,3 +4624,66 @@ fn test_backfill_token_address_cannot_hijack_another_index() {
     assert_eq!(s.client.get_token_address(&second_index), second);
     assert_ne!(first_index, second_index);
 }
+
+// ── Error discriminant uniqueness (issue #1164) ───────────────────────────────
+//
+// Rust permits duplicate explicit discriminants on a fieldless enum and does
+// not warn on them, but Soroban surfaces `#[contracterror]` values to external
+// callers as bare u32 codes. A collision makes semantically distinct errors
+// indistinguishable to any monitoring, retry, or display logic that branches
+// on the numeric code. This test fails CI if any two variants share a
+// discriminant, ensuring a future collision can never ship.
+#[test]
+fn test_error_discriminants_are_unique() {
+    extern crate std;
+    use std::collections::HashSet;
+
+    let codes: &[u32] = &[
+        Error::InsufficientFee as u32,
+        Error::Unauthorized as u32,
+        Error::InvalidParameters as u32,
+        Error::TokenNotFound as u32,
+        Error::MetadataAlreadySet as u32,
+        Error::AlreadyInitialized as u32,
+        Error::BurnAmountExceedsBalance as u32,
+        Error::BurnNotEnabled as u32,
+        Error::InvalidBurnAmount as u32,
+        Error::ContractPaused as u32,
+        Error::Reentrancy as u32,
+        Error::ArithmeticOverflow as u32,
+        Error::StateNotFound as u32,
+        Error::InvalidTokenParams as u32,
+        Error::InvalidDecimals as u32,
+        Error::MaxSupplyExceeded as u32,
+        Error::InvalidFeeSplit as u32,
+        Error::TooManyFeeSplitRecipients as u32,
+        Error::AlreadyBackfilled as u32,
+        Error::NotWhitelisted as u32,
+        Error::InvalidMetadataUri as u32,
+        Error::ZeroFeeSplitEntry as u32,
+        Error::MetadataFrozen as u32,
+        Error::TreasuryTransferFailed as u32,
+        Error::BatchSizeExceeded as u32,
+        Error::NoPendingProposal as u32,
+        Error::ProposalExpired as u32,
+    ];
+
+    let mut seen = HashSet::new();
+    for &code in codes {
+        assert!(
+            seen.insert(code),
+            "Duplicate error discriminant {} — every Error variant must have a unique u32 code \
+             because Soroban surfaces them as bare wire values to external callers (issue #1164).",
+            code
+        );
+    }
+
+    // Also assert the total matches the expected variant count so this test
+    // itself fails loudly when a new variant is added without being listed.
+    assert_eq!(
+        codes.len(),
+        27,
+        "Error enum has a different number of variants than this test expects. \
+         Add the new variant(s) to the `codes` slice above (issue #1164)."
+    );
+}

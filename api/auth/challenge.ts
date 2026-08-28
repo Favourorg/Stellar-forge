@@ -2,7 +2,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { randomBytes } from 'crypto'
 import { issueToken, verifyToken } from '../_lib/jwt'
 import { deleteChallenge, getChallenge, putChallenge } from '../_lib/challengeStore'
-import { isRateLimited } from '../_lib/rateLimit'
+import { clientIp, isChallengeRateLimited, isActionRateLimited } from '../_lib/rateLimit'
 
 // Challenge storage — TTL, one-time use and the durable/dev-fallback split all
 // live in `../_lib/challengeStore` (issue #1091). It used to be a Map in this
@@ -36,9 +36,11 @@ async function handleGetChallenge(req: VercelRequest, res: VercelResponse) {
     return
   }
 
-  // Rate limit per address to prevent abuse (challenge issuance has no
-  // proof-of-possession, so it gets a tighter window than upload endpoints)
-  if (await isRateLimited(address)) {
+  // Rate limit by requester IP — not by target address — so an attacker who
+  // knows a victim's public Stellar address cannot exhaust the victim's login
+  // budget by flooding this unauthenticated endpoint (issue #1162).
+  const ip = clientIp(req)
+  if (await isChallengeRateLimited(ip)) {
     res.status(429).json({ error: 'Too many challenge requests. Please try again later.' })
     return
   }
@@ -74,8 +76,11 @@ async function handleVerifyChallenge(req: VercelRequest, res: VercelResponse) {
   }
 
   // Rate limit per address to prevent brute-force probing of the
-  // signature-verification path
-  if (await isRateLimited(address)) {
+  // signature-verification path. This is keyed on address (proof of
+  // possession already required to reach here meaningfully) and uses the
+  // authenticated-action bucket so it is independent of the challenge-issuance
+  // IP bucket (issue #1162).
+  if (await isActionRateLimited(address)) {
     res.status(429).json({ error: 'Too many verification attempts. Please try again later.' })
     return
   }

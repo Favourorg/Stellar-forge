@@ -5,6 +5,7 @@ import { isValidIPFSUri } from '../utils/validation'
 import { useToast } from '../context/ToastContext'
 import { useBalanceCheck } from '../hooks/useBalanceCheck'
 import { useNetworkGuard } from '../hooks/useNetworkGuard'
+import { useNetwork } from '../context/NetworkContext'
 import { FeeDisplay } from './FeeDisplay'
 import { useFactoryState } from '../hooks/useFactoryState'
 import { stroopsToXLM } from '../utils/formatting'
@@ -32,7 +33,8 @@ export const SetMetadataForm: React.FC<Props> = ({
   // uploads, so pinning credentials are irrelevant to whether it can be used —
   // gating it on them just disabled a working form on deployments that pin
   // elsewhere.
-  const { blocked: networkBlocked, reason: networkReason } = useNetworkGuard()
+  const { blocked: networkBlocked, reason: networkReason, networkChangedSinceMount, acknowledgeNetworkChange } = useNetworkGuard()
+  const { network } = useNetwork()
 
   const feePaymentStroops = factoryState?.metadataFee ?? METADATA_FEE_STROOPS
   const feeXlm = stroopsToXLM(feePaymentStroops)
@@ -99,9 +101,18 @@ export const SetMetadataForm: React.FC<Props> = ({
           {loading ? 'Submitting...' : 'Set Metadata'}
         </Button>
         {networkBlocked && networkReason && (
-          <p className="text-sm text-red-600 dark:text-red-400" role="alert">
-            {networkReason}
-          </p>
+          <div role="alert" className="text-sm text-red-600 dark:text-red-400 space-y-1">
+            <p>{networkReason}</p>
+            {networkChangedSinceMount && (
+              <button
+                type="button"
+                onClick={acknowledgeNetworkChange}
+                className="underline text-red-700 dark:text-red-400 text-xs"
+              >
+                I've reviewed — continue on {network === 'mainnet' ? 'Mainnet' : 'Testnet'}
+              </button>
+            )}
+          </div>
         )}
         {!hasSufficientBalance && (
           <InsufficientBalanceWarning shortfall={shortfall} isTestnet={isTestnet} />

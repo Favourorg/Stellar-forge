@@ -28,6 +28,12 @@ export const CONTRACT_ERROR_MESSAGES: Record<number, string> = {
   21: 'Invalid metadata URI. It must be a non-empty ipfs:// URI within the length limit.',
   22: 'Fee split contains a recipient with a zero share.',
   23: 'Metadata is frozen and can no longer be updated.',
+  // Codes 24–27 introduced with schema version 4 (issue #1164 — previously
+  // colliding at discriminant 24; each now has a unique wire value).
+  24: 'A fee transfer to the treasury failed. The transaction cannot proceed.',
+  25: 'Batch size exceeds the maximum allowed (20 tokens per batch).',
+  26: 'No pending admin proposal found, or the caller is not the proposed address.',
+  27: 'The pending admin proposal has expired. The current admin must open a new proposal.',
 }
 
 /**
@@ -61,6 +67,10 @@ export const CONTRACT_ERROR_REQUIREMENTS: Record<number, string> = {
   21: 'Provide a non-empty ipfs:// metadata URI within the length limit.',
   22: 'Remove the fee split recipient with a zero share.',
   23: 'Metadata is frozen for this token and can no longer be updated.',
+  24: 'Check the treasury address configuration — the fee payment could not be routed.',
+  25: 'Reduce the batch to 20 tokens or fewer and resubmit.',
+  26: 'Start a new admin proposal with propose_admin before calling accept_admin.',
+  27: 'The proposal window has lapsed. The current admin must call propose_admin again.',
 }
 
 /**

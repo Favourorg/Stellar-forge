@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
-import { isRateLimited } from '../_lib/rateLimit'
+import { isActionRateLimited } from '../_lib/rateLimit'
 import { PINATA_API_URL, pinataHeaders } from '../_lib/pinata'
 import { validateTokenMetadata } from '../_lib/schemaValidation'
 import { verifyToken } from '../_lib/jwt'
@@ -38,7 +38,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   // Check rate limits (per wallet address, durable across instances)
-  if (await isRateLimited(walletAddress)) {
+  if (await isActionRateLimited(walletAddress)) {
     res.status(429).json({ error: 'Too many upload requests. Please try again later.' })
     return
   }
