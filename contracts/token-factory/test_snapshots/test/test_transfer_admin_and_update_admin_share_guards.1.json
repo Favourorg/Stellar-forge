@@ -155,7 +155,7 @@
                         "symbol": "sv"
                       },
                       "val": {
-                        "u32": 4
+                        "u32": 5
                       }
                     },
                     {
@@ -230,10 +230,22 @@
                           },
                           {
                             "key": {
+                              "symbol": "pending_upgrade_hash"
+                            },
+                            "val": "void"
+                          },
+                          {
+                            "key": {
+                              "symbol": "pending_upgrade_ready_at"
+                            },
+                            "val": "void"
+                          },
+                          {
+                            "key": {
                               "symbol": "schema_version"
                             },
                             "val": {
-                              "u32": 4
+                              "u32": 5
                             }
                           },
                           {

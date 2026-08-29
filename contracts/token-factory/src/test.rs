@@ -242,6 +242,30 @@ fn factory_event_count(s: &Setup) -> usize {
         .len()
 }
 
+/// Whether the factory emitted an event carrying `action` as one of its topics
+/// during the most recent contract invocation.
+///
+/// `ContractEvents` exposes the raw XDR slice rather than the `(address, topics,
+/// data)` tuples the older SDK yielded, so topic matching goes through
+/// `ScVal::Symbol` directly. Scoped to the factory's own address, so token
+/// contracts' `transfer`/`burn` events cannot satisfy an assertion here.
+fn factory_emitted(s: &Setup, action: &str) -> bool {
+    use soroban_sdk::xdr::{ContractEventBody, ScVal};
+    s.env
+        .events()
+        .all()
+        .filter_by_contract(&s.client.address)
+        .events()
+        .iter()
+        .any(|e| {
+            let ContractEventBody::V0(body) = &e.body;
+            body.topics.iter().any(|t| match t {
+                ScVal::Symbol(sym) => sym.to_utf8_string_lossy() == action,
+                _ => false,
+            })
+        })
+}
+
 #[test]
 fn test_initialize_already_initialized() {
     // The constructor now runs atomically with deployment, so it can no
@@ -3449,17 +3473,15 @@ fn test_propose_upgrade_emits_upg_prop_event() {
     let s = Setup::new();
     let new_hash = BytesN::from_array(&s.env, &[0xBBu8; 32]);
     s.client.propose_upgrade(&s.admin, &new_hash);
-    let events = s.env.events().all();
-    let upg_prop_topic = (
-        symbol_short!("factory"),
-        symbol_short!("upg_prop"),
+    assert!(
+        factory_emitted(&s, "upg_prop"),
+        "expected upg_prop event after propose_upgrade"
     );
-    let found = events.iter().any(|e| {
-        e.0 == s.client.address
-            && matches!(e.1.iter().nth(0), Some(v) if v == symbol_short!("factory").into_val(&s.env))
-            && matches!(e.1.iter().nth(1), Some(v) if v == symbol_short!("upg_prop").into_val(&s.env))
-    });
-    assert!(found, "expected upg_prop event, got: {:?}", upg_prop_topic);
+    // A proposal is not an upgrade: nothing has been swapped yet.
+    assert!(
+        !factory_emitted(&s, "upg_exec"),
+        "propose_upgrade must not emit upg_exec"
+    );
 }
 
 #[test]
@@ -3468,13 +3490,19 @@ fn test_cancel_upgrade_emits_upg_can_event() {
     let new_hash = BytesN::from_array(&s.env, &[0xBBu8; 32]);
     s.client.propose_upgrade(&s.admin, &new_hash);
     s.client.cancel_upgrade(&s.admin);
-    let events = s.env.events().all();
-    let found = events.iter().any(|e| {
-        e.0 == s.client.address
-            && matches!(e.1.iter().nth(0), Some(v) if v == symbol_short!("factory").into_val(&s.env))
-            && matches!(e.1.iter().nth(1), Some(v) if v == symbol_short!("upg_can").into_val(&s.env))
-    });
-    assert!(found, "expected upg_can event");
+    assert!(
+        factory_emitted(&s, "upg_can"),
+        "expected upg_can event after cancel_upgrade"
+    );
+}
+
+#[test]
+fn test_cancel_upgrade_emits_nothing_when_no_proposal_pending() {
+    let s = Setup::new();
+    // The no-op path returns Ok early; it must not announce a cancellation
+    // that never happened, or monitoring would see phantom upgrade activity.
+    s.client.cancel_upgrade(&s.admin);
+    assert!(!factory_emitted(&s, "upg_can"));
 }
 
 #[test]

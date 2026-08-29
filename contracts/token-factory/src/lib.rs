@@ -1624,8 +1624,13 @@ impl TokenFactory {
             return Err(Error::Unauthorized);
         }
 
-        let proposed_hash = state.pending_upgrade_hash.clone().ok_or(Error::NoUpgradePending)?;
-        let ready_at = state.pending_upgrade_ready_at.ok_or(Error::NoUpgradePending)?;
+        let proposed_hash = state
+            .pending_upgrade_hash
+            .clone()
+            .ok_or(Error::NoUpgradePending)?;
+        let ready_at = state
+            .pending_upgrade_ready_at
+            .ok_or(Error::NoUpgradePending)?;
 
         if (env.ledger().sequence() as u64) < ready_at {
             return Err(Error::UpgradeNotReady);
@@ -1671,7 +1676,10 @@ impl TokenFactory {
             // Nothing to cancel — idempotent.
             return Ok(());
         }
-        let cancelled_hash = state.pending_upgrade_hash.clone().ok_or(Error::NoUpgradePending)?;
+        let cancelled_hash = state
+            .pending_upgrade_hash
+            .clone()
+            .ok_or(Error::NoUpgradePending)?;
         state.pending_upgrade_hash = None;
         state.pending_upgrade_ready_at = None;
         Self::save_state(&env, &state);
