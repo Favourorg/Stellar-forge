@@ -2,26 +2,42 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import handler from './challenge'
 import { getChallenge, putChallenge, __resetInMemoryChallenges } from '../_lib/challengeStore'
-import { isRateLimited } from '../_lib/rateLimit'
+import { isChallengeRateLimited, isActionRateLimited } from '../_lib/rateLimit'
 
+// Issue #1162 split the single `isRateLimited` bucket into an IP-keyed
+// challenge-issuance limiter and an address-keyed authenticated-action limiter.
+// Both must be stubbed: the handler calls the split functions directly, so a
+// stub on the deprecated `isRateLimited` shim would never be consulted and the
+// real in-memory limiter would leak counts across tests in this file.
 vi.mock('../_lib/rateLimit', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../_lib/rateLimit')>()
   return {
     ...actual,
-    isRateLimited: vi.fn(),
+    isChallengeRateLimited: vi.fn(),
+    isActionRateLimited: vi.fn(),
   }
 })
 
-const mockIsRateLimited = vi.mocked(isRateLimited)
+const mockIsChallengeRateLimited = vi.mocked(isChallengeRateLimited)
+const mockIsActionRateLimited = vi.mocked(isActionRateLimited)
 
 const ADDRESS = 'GBUKOFF6QUZ4YDTVAJ7NNQZ4LMHFXWNQMPQZ2VDLTMMFVDBLMEXWMXOU'
+const CLIENT_IP = '203.0.113.5'
 
 function fakeReqRes(req: Partial<VercelRequest>) {
   const json = vi.fn()
   const status = vi.fn(() => ({ json }))
   const setHeader = vi.fn()
   const res = { status, setHeader } as unknown as VercelResponse
-  return { req: { headers: {}, ...req } as unknown as VercelRequest, res, status, json }
+  return {
+    req: {
+      headers: { 'x-forwarded-for': CLIENT_IP },
+      ...req,
+    } as unknown as VercelRequest,
+    res,
+    status,
+    json,
+  }
 }
 
 const get = (address?: string) =>
@@ -34,7 +50,8 @@ beforeEach(() => {
   delete process.env.VERCEL_KV_REST_API_URL
   delete process.env.VERCEL_KV_REST_API_TOKEN
   process.env.JWT_SECRET = 'test-jwt-secret'
-  mockIsRateLimited.mockResolvedValue(false)
+  mockIsChallengeRateLimited.mockResolvedValue(false)
+  mockIsActionRateLimited.mockResolvedValue(false)
 })
 
 afterEach(() => {
@@ -42,7 +59,8 @@ afterEach(() => {
   delete process.env.VERCEL_KV_REST_API_URL
   delete process.env.VERCEL_KV_REST_API_TOKEN
   delete process.env.JWT_SECRET
-  mockIsRateLimited.mockReset()
+  mockIsChallengeRateLimited.mockReset()
+  mockIsActionRateLimited.mockReset()
 })
 
 describe('GET /api/auth/challenge', () => {
@@ -165,9 +183,9 @@ describe('/api/auth/challenge method handling', () => {
   })
 })
 
-describe('rate limiting', () => {
-  it('rejects GET with 429 when rate limited', async () => {
-    mockIsRateLimited.mockResolvedValue(true)
+describe('rate limiting (issue #1162)', () => {
+  it('rejects GET with 429 when the challenge-issuance limit is hit', async () => {
+    mockIsChallengeRateLimited.mockResolvedValue(true)
 
     const { req, res, status, json } = get(ADDRESS)
     await handler(req, res)
@@ -178,10 +196,10 @@ describe('rate limiting', () => {
     })
   })
 
-  it('rejects POST with 429 when rate limited', async () => {
+  it('rejects POST with 429 when the authenticated-action limit is hit', async () => {
     // First issue a challenge so the verification path is reached
     await putChallenge(ADDRESS, 'deadbeef')
-    mockIsRateLimited.mockResolvedValue(true)
+    mockIsActionRateLimited.mockResolvedValue(true)
 
     const { req, res, status, json } = post({ address: ADDRESS, signature: 'aGVsbG8=' })
     await handler(req, res)
@@ -192,20 +210,35 @@ describe('rate limiting', () => {
     })
   })
 
-  it('calls isRateLimited with the address for GET', async () => {
-    await handler(get(ADDRESS).req, get(ADDRESS).res)
+  it('keys GET on the requester IP, never on the target address', async () => {
+    // The whole point of the split: an attacker who knows a victim's public
+    // address must not be able to spend the victim's login budget.
+    const { req, res } = get(ADDRESS)
+    await handler(req, res)
 
-    expect(mockIsRateLimited).toHaveBeenCalledWith(ADDRESS)
+    expect(mockIsChallengeRateLimited).toHaveBeenCalledWith(CLIENT_IP)
+    expect(mockIsChallengeRateLimited).not.toHaveBeenCalledWith(ADDRESS)
   })
 
-  it('calls isRateLimited with the address for POST', async () => {
+  it('keys POST on the address, using the action bucket', async () => {
     await putChallenge(ADDRESS, 'deadbeef')
-    await handler(
-      post({ address: ADDRESS, signature: 'c2lnbmF0dXJl' }).req,
-      post({ address: ADDRESS, signature: 'c2lnbmF0dXJl' }).res,
-    )
+    const { req, res } = post({ address: ADDRESS, signature: 'c2lnbmF0dXJl' })
+    await handler(req, res)
 
-    expect(mockIsRateLimited).toHaveBeenCalledWith(ADDRESS)
+    expect(mockIsActionRateLimited).toHaveBeenCalledWith(ADDRESS)
+  })
+
+  it('does not consume the challenge bucket on POST, nor the action bucket on GET', async () => {
+    const g = get(ADDRESS)
+    await handler(g.req, g.res)
+    expect(mockIsActionRateLimited).not.toHaveBeenCalled()
+
+    mockIsChallengeRateLimited.mockClear()
+
+    await putChallenge(ADDRESS, 'deadbeef')
+    const p = post({ address: ADDRESS, signature: 'c2lnbmF0dXJl' })
+    await handler(p.req, p.res)
+    expect(mockIsChallengeRateLimited).not.toHaveBeenCalled()
   })
 })
 

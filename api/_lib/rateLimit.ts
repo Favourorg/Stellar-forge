@@ -76,11 +76,7 @@ export async function isChallengeRateLimited(ip: string): Promise<boolean> {
  * @param address  The verified wallet address extracted from the JWT.
  */
 export async function isActionRateLimited(address: string): Promise<boolean> {
-  return _isRateLimited(
-    `ratelimit:action:${address}`,
-    ACTION_MAX_PER_WINDOW,
-    ACTION_MAX_PER_DAY,
-  )
+  return _isRateLimited(`ratelimit:action:${address}`, ACTION_MAX_PER_WINDOW, ACTION_MAX_PER_DAY)
 }
 
 /**
@@ -118,7 +114,6 @@ async function _isRateLimited(
       return true
     }
     // Fallback: use in-memory (not production-safe, but fine for local dev)
-    return isRateLimitedInMemory(address)
     return _isRateLimitedInMemory(bucketPrefix, maxPerWindow)
   }
 
@@ -185,19 +180,36 @@ function _isRateLimitedInMemory(key: string, maxPerWindow: number): Promise<bool
 }
 
 /**
- * Get trusted client IP from Vercel's rightmost x-forwarded-for position.
- * On Vercel, the rightmost untrusted hop is the user's real IP.
+ * Resolve the client IP used to key challenge-issuance rate limits (issue #1162).
+ *
+ * On Vercel, `x-forwarded-for` is **overwritten** by the platform with the single
+ * public IP of the client that made the request — inbound values are discarded, so
+ * the header cannot be spoofed and there is no proxy chain to walk. That makes the
+ * header itself the answer in the deployment target this code runs on.
+ *
+ * The comma case is only reachable off-Vercel (local dev, a self-hosted proxy). There
+ * the leftmost entry is the client per standard XFF semantics — earlier entries are the
+ * originator, later ones are proxies appended in order. The previous implementation took
+ * the *rightmost* entry and called it "most trusted", which is backwards on both counts:
+ * it yields a proxy address, and it collapses every client behind one proxy into a single
+ * rate-limit bucket (issue #1114).
+ *
+ * Do not add multi-hop trust logic here unless deploying behind a proxy whose hop count is
+ * known and fixed; a leftmost read is spoofable off-Vercel, which is why the socket address
+ * is the last resort rather than the header.
  */
 export function clientIp(req: VercelRequest): string {
   const forwarded = req.headers['x-forwarded-for']
-  if (typeof forwarded === 'string') {
-    // Take the rightmost IP (last entry) as the most-trusted one
-    // e.g., "203.0.113.1, 10.0.0.1" -> use "10.0.0.1" (Vercel's edge)
-    const ips = forwarded.split(',').map((ip) => ip.trim())
-    return ips[ips.length - 1] ?? 'unknown'
+  const first = Array.isArray(forwarded) ? forwarded[0] : forwarded
+  if (typeof first === 'string' && first.trim()) {
+    // On Vercel this is already a bare single IP; split() is the off-Vercel path.
+    const client = first.split(',')[0]?.trim()
+    if (client) return client
   }
-  if (Array.isArray(forwarded) && forwarded.length > 0) {
-    return forwarded[forwarded.length - 1]
-  }
+
+  const realIp = req.headers['x-real-ip']
+  const realIpValue = Array.isArray(realIp) ? realIp[0] : realIp
+  if (typeof realIpValue === 'string' && realIpValue.trim()) return realIpValue.trim()
+
   return req.socket?.remoteAddress ?? 'unknown'
 }

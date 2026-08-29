@@ -1,10 +1,9 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
-import { isRateLimited, isRateLimitDurable, clientIp } from './rateLimit'
-import { describe, it, expect, vi, afterEach } from 'vitest'
 import {
   isRateLimited,
   isChallengeRateLimited,
   isActionRateLimited,
+  isRateLimitDurable,
   clientIp,
 } from './rateLimit'
 
@@ -82,7 +81,7 @@ describe('split rate-limit buckets (issue #1162)', () => {
     }
   })
 
-  it('exhausting the action bucket for address A does not affect address A\'s challenge bucket', async () => {
+  it("exhausting the action bucket for address A does not affect address A's challenge bucket", async () => {
     const addr = `addr-${Math.random()}`
 
     // Exhaust the action bucket
@@ -140,13 +139,57 @@ describe('split rate-limit buckets (issue #1162)', () => {
 // clientIp
 // ---------------------------------------------------------------------------
 
-describe('clientIp', () => {
-  it('reads the rightmost (most trusted) address from x-forwarded-for', () => {
+describe('clientIp (issue #1114)', () => {
+  it('returns the header verbatim when Vercel supplies a single bare IP', () => {
+    // This is the only shape that occurs on Vercel: the platform overwrites
+    // x-forwarded-for with the client's public IP and discards inbound values.
+    const req = {
+      headers: { 'x-forwarded-for': '203.0.113.5' },
+      socket: { remoteAddress: '10.0.0.1' },
+    } as never
+    expect(clientIp(req)).toBe('203.0.113.5')
+  })
+
+  it('reads the leftmost (client) address from a multi-hop x-forwarded-for', () => {
+    // Off-Vercel path. The leftmost entry is the originating client; later
+    // entries are proxies appended in order. Reading the rightmost entry
+    // returned a proxy address and collapsed every client behind that proxy
+    // into one rate-limit bucket.
     const req = {
       headers: { 'x-forwarded-for': '203.0.113.5, 10.0.0.1' },
       socket: {},
     } as never
-    expect(clientIp(req)).toBe('10.0.0.1')
+    expect(clientIp(req)).toBe('203.0.113.5')
+  })
+
+  it('does not collapse two clients behind the same proxy into one bucket', () => {
+    const a = { headers: { 'x-forwarded-for': '203.0.113.5, 10.0.0.1' }, socket: {} } as never
+    const b = { headers: { 'x-forwarded-for': '198.51.100.9, 10.0.0.1' }, socket: {} } as never
+    expect(clientIp(a)).not.toBe(clientIp(b))
+  })
+
+  it('handles a header delivered as an array', () => {
+    const req = {
+      headers: { 'x-forwarded-for': ['203.0.113.5, 10.0.0.1'] },
+      socket: {},
+    } as never
+    expect(clientIp(req)).toBe('203.0.113.5')
+  })
+
+  it('falls back to x-real-ip when x-forwarded-for is absent', () => {
+    const req = {
+      headers: { 'x-real-ip': '198.51.100.7' },
+      socket: { remoteAddress: '10.0.0.1' },
+    } as never
+    expect(clientIp(req)).toBe('198.51.100.7')
+  })
+
+  it('ignores an empty x-forwarded-for and falls through', () => {
+    const req = {
+      headers: { 'x-forwarded-for': '   ' },
+      socket: { remoteAddress: '198.51.100.7' },
+    } as never
+    expect(clientIp(req)).toBe('198.51.100.7')
   })
 
   it('falls back to the socket remote address', () => {
