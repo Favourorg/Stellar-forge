@@ -63,11 +63,35 @@ describe('issueToken / verifyToken', () => {
     const address = 'GABC1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ'
     const token = issueToken(address)
     const parts = token.split('.')
-    // Flip the last character of the signature
-    const sig = parts[2]
-    const badSig = sig.slice(0, -1) + (sig.endsWith('a') ? 'b' : 'a')
+
+    // Tamper at the byte level, not the character level. A 32-byte HMAC encodes
+    // to 43 base64url characters = 258 bits, so the final character carries two
+    // padding bits that decoding discards. Editing that character therefore
+    // produces a *different string that decodes to the same 32 bytes* roughly
+    // 1 run in 16 — and verifyToken compares decoded buffers, so the token
+    // stayed valid and the test failed at exactly that rate.
+    const sigBytes = Buffer.from(parts[2]!, 'base64url')
+    sigBytes[0] ^= 0xff
+    const badSig = sigBytes.toString('base64url')
+    expect(badSig).not.toBe(parts[2])
+
     const tampered = `${parts[0]}.${parts[1]}.${badSig}`
     expect(() => verifyToken(tampered)).toThrow('Invalid token signature.')
+  })
+
+  it('rejects a tampered signature no matter which byte was flipped', () => {
+    // Guards the regression above from the other direction: every single-byte
+    // change must be rejected, so no position in the digest is unchecked.
+    const token = issueToken('GABC1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ')
+    const parts = token.split('.')
+    const original = Buffer.from(parts[2]!, 'base64url')
+
+    for (let i = 0; i < original.length; i++) {
+      const sigBytes = Buffer.from(original)
+      sigBytes[i] ^= 0xff
+      const tampered = `${parts[0]}.${parts[1]}.${sigBytes.toString('base64url')}`
+      expect(() => verifyToken(tampered)).toThrow('Invalid token signature.')
+    }
   })
 
   // ── expired token ─────────────────────────────────────────────────────────
