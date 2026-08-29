@@ -92,7 +92,30 @@ const XDR = {
     value:
       'AAAAEAAAAAEAAAACAAAAEgAAAAAAAAAAewDXt8cBQGeVgRqR2+DijnP/4kDBS9Uz5/2QKPOot+kAAAAKAAAAAAAAAAAAAAAAAA9CQA==',
   },
+  // Two-step timelocked upgrade (issue #6). The BytesN<32> WASM hash in all
+  // three payloads is WASM_HASH_HEX below.
+  // (admin, new_wasm_hash, ready_at_ledger)
+  upg_prop: {
+    topic1: 'AAAADwAAAAh1cGdfcHJvcA==',
+    value:
+      'AAAAEAAAAAEAAAADAAAAEgAAAAAAAAAA/7SpxpEMV33pXktl+ZP53F+vX2pv4CdwdZDOdAw7Z/kAAAANAAAAIAMKERgfJi00O0JJUFdeZWxzeoGIj5adpKuyucDHztXcAAAABQAAAAAAAAgA',
+  },
+  // (admin, new_wasm_hash)
+  upg_exec: {
+    topic1: 'AAAADwAAAAh1cGdfZXhlYw==',
+    value:
+      'AAAAEAAAAAEAAAACAAAAEgAAAAAAAAAA/7SpxpEMV33pXktl+ZP53F+vX2pv4CdwdZDOdAw7Z/kAAAANAAAAIAMKERgfJi00O0JJUFdeZWxzeoGIj5adpKuyucDHztXc',
+  },
+  // (admin, cancelled_hash)
+  upg_can: {
+    topic1: 'AAAADwAAAAd1cGdfY2FuAA==',
+    value:
+      'AAAAEAAAAAEAAAACAAAAEgAAAAAAAAAAewDXt8cBQGeVgRqR2+DijnP/4kDBS9Uz5/2QKPOot+kAAAANAAAAIAMKERgfJi00O0JJUFdeZWxzeoGIj5adpKuyucDHztXc',
+  },
 } as const
+
+/** The BytesN<32> WASM hash embedded in the three upg_* fixtures, as hex. */
+const WASM_HASH_HEX = '030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dc'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -141,9 +164,12 @@ describe('CONTRACT_TOPIC_MAP', () => {
     'wl_add',
     'wl_rm',
     'wl_tog',
+    'upg_prop',
+    'upg_exec',
+    'upg_can',
   ] as const
 
-  it('contains exactly the nineteen contract topics', () => {
+  it('contains exactly the twenty-two contract topics', () => {
     expect(Object.keys(CONTRACT_TOPIC_MAP).sort()).toEqual([...EXPECTED_TOPICS].sort())
   })
 
@@ -157,6 +183,19 @@ describe('CONTRACT_TOPIC_MAP', () => {
   it('does NOT contain the legacy admin_update or single-step adm_upd keys', () => {
     expect(CONTRACT_TOPIC_MAP).not.toHaveProperty('admin_update')
     expect(CONTRACT_TOPIC_MAP).not.toHaveProperty('adm_upd')
+  })
+
+  it('maps each two-step upgrade topic to itself', () => {
+    expect(CONTRACT_TOPIC_MAP['upg_prop']).toBe('upg_prop')
+    expect(CONTRACT_TOPIC_MAP['upg_exec']).toBe('upg_exec')
+    expect(CONTRACT_TOPIC_MAP['upg_can']).toBe('upg_can')
+  })
+
+  it('does NOT contain a single-step upgrade key', () => {
+    // The pre-timelock contract had no upgrade event at all; anything named
+    // plainly "upgrade" would mean the two-step model was reverted.
+    expect(CONTRACT_TOPIC_MAP).not.toHaveProperty('upgrade')
+    expect(CONTRACT_TOPIC_MAP).not.toHaveProperty('upg')
   })
 })
 
@@ -360,6 +399,62 @@ describe('parseRpcEvent – admin rotation (adm_prop / adm_acc / adm_can)', () =
     expect(result!.data.expiryLedger).toBe('2000')
     // Names the entrypoint that was used, so the stale caller can be found.
     expect(result!.data.deprecatedEntrypoint).toBe('transfer_admin')
+  })
+})
+
+// ── parseRpcEvent – two-step upgrade ─────────────────────────────────────────
+
+/**
+ * Issue #6 replaced the single-step `upgrade` with propose → timelock → execute.
+ * The contract gained three topics; the frontend topic map did not, so upgrade
+ * activity — the single most security-relevant thing an admin can do — was
+ * dropped on the floor by the history view. These tests pin the decode path.
+ */
+describe('parseRpcEvent – two-step upgrade (upg_prop / upg_exec / upg_can)', () => {
+  it('decodes an upg_prop event — upgrade proposed, timelock started', async () => {
+    const result = await parseRpcEvent(makeRaw('upg_prop'))
+    expect(result).not.toBeNull()
+    expect(result!.type).toBe('upg_prop')
+    expect(result!.data.admin).toBe(ADDR1)
+    expect(result!.data.wasmHash).toBe(WASM_HASH_HEX)
+    expect(result!.data.readyAtLedger).toBe('2048')
+  })
+
+  it('decodes an upg_exec event — WASM actually swapped', async () => {
+    const result = await parseRpcEvent(makeRaw('upg_exec'))
+    expect(result).not.toBeNull()
+    expect(result!.type).toBe('upg_exec')
+    expect(result!.data.admin).toBe(ADDR1)
+    expect(result!.data.wasmHash).toBe(WASM_HASH_HEX)
+    // Only the execution carries no ready-at ledger: by definition the
+    // timelock has already elapsed.
+    expect(result!.data.readyAtLedger).toBeUndefined()
+  })
+
+  it('decodes an upg_can event — pending proposal withdrawn', async () => {
+    const result = await parseRpcEvent(makeRaw('upg_can'))
+    expect(result).not.toBeNull()
+    expect(result!.type).toBe('upg_can')
+    expect(result!.data.admin).toBe(ADDR2)
+    expect(result!.data.cancelledWasmHash).toBe(WASM_HASH_HEX)
+  })
+
+  it('renders the WASM hash as lowercase hex, not base64', async () => {
+    // Operators compare this against `stellar contract install` output and
+    // explorer pages, both of which print hex. A base64 blob is unverifiable
+    // by eye and was what the unmodelled scvBytes fallback produced.
+    const result = await parseRpcEvent(makeRaw('upg_exec'))
+    expect(result!.data.wasmHash).toMatch(/^[0-9a-f]{64}$/)
+  })
+
+  it('distinguishes a proposal from an execution', async () => {
+    // The distinction is the whole point of the timelock: a proposal that was
+    // never executed must never be reported as an upgrade that happened.
+    const proposed = await parseRpcEvent(makeRaw('upg_prop'))
+    const executed = await parseRpcEvent(makeRaw('upg_exec'))
+    expect(proposed!.type).not.toBe(executed!.type)
+    // Same hash, different meaning.
+    expect(proposed!.data.wasmHash).toBe(executed!.data.wasmHash)
   })
 })
 

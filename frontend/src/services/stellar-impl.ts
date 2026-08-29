@@ -408,6 +408,14 @@ function scValToString(val: xdr.ScVal | undefined): string {
     if (type === xdr.ScValType.scvVec()) {
       return (val.vec() ?? []).map((v) => scValToString(v)).join(', ')
     }
+    // BytesN<N> payloads (WASM hashes, salts) are identifiers operators compare
+    // against `stellar contract install` output and explorer pages, both of
+    // which print lowercase hex. Base64 would be unrecognisable there.
+    if (type === xdr.ScValType.scvBytes()) {
+      return Array.from(val.bytes() as unknown as Uint8Array)
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('')
+    }
     // An error value in an event payload is readable data, not an opaque blob:
     // render the contract code rather than re-serialising it to base64.
     if (type === xdr.ScValType.scvError()) {
@@ -445,7 +453,12 @@ function scValToString(val: xdr.ScVal | undefined): string {
  * pending proposal.  `adm_dep` rides alongside `adm_prop` when the proposal
  * came from the deprecated `transfer_admin` / `update_admin` aliases.
  *
- * Audit of all nineteen contract topics (lib.rs → frontend):
+ * Contract upgrades are two-step and timelocked (issue #6), so they emit three
+ * topics rather than one: `upg_prop` (hash proposed, with the ledger it becomes
+ * executable), `upg_exec` (WASM actually swapped) and `upg_can` (proposal
+ * withdrawn). Only `upg_exec` means the deployed code changed.
+ *
+ * Audit of all twenty-two contract topics (lib.rs → frontend):
  *   init      → 'init'      (factory init)
  *   created   → 'created'   (token deployed)
  *   meta      → 'meta'      (metadata URI set)
@@ -465,6 +478,9 @@ function scValToString(val: xdr.ScVal | undefined): string {
  *   wl_add    → 'wl_add'   (address added to whitelist)
  *   wl_rm     → 'wl_rm'    (address removed from whitelist)
  *   wl_tog    → 'wl_tog'   (whitelist enforcement toggled)
+ *   upg_prop  → 'upg_prop' (upgrade proposed — timelock started)
+ *   upg_exec  → 'upg_exec' (upgrade executed — factory WASM swapped)
+ *   upg_can   → 'upg_can'  (pending upgrade proposal cancelled)
  */
 export const CONTRACT_TOPIC_MAP: Record<string, ContractEventType> = {
   init: 'init',
@@ -486,6 +502,9 @@ export const CONTRACT_TOPIC_MAP: Record<string, ContractEventType> = {
   wl_add: 'wl_add',
   wl_rm: 'wl_rm',
   wl_tog: 'wl_tog',
+  upg_prop: 'upg_prop',
+  upg_exec: 'upg_exec',
+  upg_can: 'upg_can',
 } as const
 
 /** Allow-list of recognised event types, derived from CONTRACT_TOPIC_MAP. */
@@ -570,6 +589,22 @@ export async function parseRpcEvent(raw: RpcEventResponse): Promise<ContractEven
         break
       case 'wl_tog':
         data.enabled = scValToString(items[0])
+        break
+      case 'upg_prop':
+        data.admin = scValToString(items[0])
+        data.wasmHash = scValToString(items[1])
+        // The upgrade cannot be executed before this ledger. Surfacing it is the
+        // point of the timelock — it is the window in which the proposal can
+        // still be cancelled.
+        data.readyAtLedger = scValToString(items[2])
+        break
+      case 'upg_exec':
+        data.admin = scValToString(items[0])
+        data.wasmHash = scValToString(items[1])
+        break
+      case 'upg_can':
+        data.admin = scValToString(items[0])
+        data.cancelledWasmHash = scValToString(items[1])
         break
     }
 

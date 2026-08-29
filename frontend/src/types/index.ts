@@ -143,6 +143,16 @@ export type SortOrder = 'newest' | 'oldest' | 'alphabetical'
  * completes in one transaction — the condition that precedes an abandoned
  * proposal expiring (issue #1159).
  */
+/**
+ * Contract upgrades are two-step and timelocked (issue #6): `upg_prop` records
+ * a proposed WASM hash and the ledger at which it becomes executable, `upg_exec`
+ * is emitted immediately before the WASM swap actually happens, and `upg_can`
+ * is emitted when the admin withdraws a pending proposal.
+ *
+ * Only `upg_exec` means the factory's code changed. A `upg_prop` with no
+ * matching `upg_exec` is a proposal that was cancelled or left to sit, so
+ * indexers must not treat the proposal itself as an upgrade.
+ */
 export type ContractEventType =
   | 'init'
   | 'created'
@@ -163,6 +173,9 @@ export type ContractEventType =
   | 'wl_add'
   | 'wl_rm'
   | 'wl_tog'
+  | 'upg_prop'
+  | 'upg_exec'
+  | 'upg_can'
 
 export interface ContractEvent {
   id: string
