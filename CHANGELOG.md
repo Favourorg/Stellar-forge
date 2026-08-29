@@ -1,3 +1,10 @@
+## [1.9.3](https://github.com/Favourorg/Stellar-forge/compare/v1.9.2...v1.9.3) (2026-08-29)
+
+
+### Bug Fixes
+
+* **ci:** run the frontend job on Node 22 so jsdom 30 can load ([a414443](https://github.com/Favourorg/Stellar-forge/commit/a414443f4bbf8797b5c6ccbfe99285a824810de2))
+
 ## [1.9.2](https://github.com/Favourorg/Stellar-forge/compare/v1.9.1...v1.9.2) (2026-08-29)
 
 
