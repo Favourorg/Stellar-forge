@@ -1,3 +1,10 @@
+## [1.9.2](https://github.com/Favourorg/Stellar-forge/compare/v1.9.1...v1.9.2) (2026-08-29)
+
+
+### Bug Fixes
+
+* **ci:** repair invalid YAML that stopped the access-control drift workflow running ([9845fea](https://github.com/Favourorg/Stellar-forge/commit/9845fea078cd926cd9c78288e776f7d132b180d7)), closes [#1112](https://github.com/Favourorg/Stellar-forge/issues/1112)
+
 ## [1.9.1](https://github.com/Favourorg/Stellar-forge/compare/v1.9.0...v1.9.1) (2026-08-29)
 
 
