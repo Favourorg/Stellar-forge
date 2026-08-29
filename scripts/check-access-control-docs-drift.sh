@@ -72,6 +72,13 @@ get_expected_claims() {
         "create_token") echo "creator_auth:whitelist_gate" ;;
         "create_tokens_batch") echo "creator_auth:whitelist_gate" ;;
         "set_metadata") echo "admin_auth:creator_check" ;;
+        # Two-step upgrade timelock (issue #6). All three are admin-gated
+        # mutations, so the drift detector must know them — an upgrade
+        # entrypoint that silently loses its admin check is the single most
+        # damaging drift this script exists to catch.
+        "propose_upgrade") echo "admin_auth:admin_check" ;;
+        "execute_upgrade") echo "admin_auth:admin_check" ;;
+        "cancel_upgrade") echo "admin_auth:admin_check" ;;
         *) echo "" ;;
     esac
 }

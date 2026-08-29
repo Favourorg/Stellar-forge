@@ -58,7 +58,7 @@ The factory contract's `admin` address holds **factory-wide** authority. Every e
 
 | A compromised admin key can                                | Entrypoint(s)                                                                                                                                        |
 | ---------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Replace the contract WASM                                  | `upgrade`                                                                                                                                            |
+| Replace the contract WASM (two-step, timelocked)           | `propose_upgrade`, `execute_upgrade`, `cancel_upgrade`                                                                                               |
 | Run a state migration                                      | `migrate`                                                                                                                                            |
 | Change the creation and metadata fees                      | `update_fees`                                                                                                                                        |
 | Redirect fee revenue away from the treasury                | `set_fee_split`                                                                                                                                      |
@@ -81,19 +81,38 @@ The factory contract's `admin` address holds **factory-wide** authority. Every e
 
 Metadata writes remain subject to the `metadata_fee` gate, `ipfs://` URI validation, and the per-token freeze/version cap — but those are constraints on the _creator_, not powers of the admin.
 
-**One caveat for incident scoping:** `upgrade` is an escalation path. A compromised admin key cannot rewrite metadata under the deployed contract, but it can install attacker-controlled WASM that grants itself any authority it likes. Treat "metadata is safe" as true for the _current_ code and false the moment a malicious upgrade lands — which is why WASM-hash monitoring (below) is part of the response, not an optional extra.
+**One caveat for incident scoping:** the upgrade path is an escalation path. A compromised admin key cannot rewrite metadata under the deployed contract, but it can install attacker-controlled WASM that grants itself any authority it likes. Treat "metadata is safe" as true for the _current_ code and false the moment a malicious upgrade lands. The two-step timelock (below) is what turns that from an atomic surprise into a ~28.8-hour window you can act inside — but only if someone is actually alerting on `upg_prop`.
 
 Key custody is documented in the [Mainnet Deployment Checklist](./docs/mainnet-deployment-checklist.md). A compromised admin key is a **Critical** severity event; see the [Incident Response Runbook](./docs/incident-response.md) for the response procedure.
 
-### Upgrade lacks an on-chain event (issue #9)
+### Upgrades are two-step and timelocked (issues #9, #1094, #6)
 
-The `upgrade` function currently emits no Soroban event. Detection of a malicious WASM replacement currently requires active polling of the on-chain WASM hash. The monitoring script is documented in the [Incident Response Runbook](./docs/incident-response.md#22-wasm-hash-polling-required-until-issue-9-is-resolved).
+The single-step `upgrade` entrypoint no longer exists. Replacing the factory WASM now takes
+three separate admin calls, and every stage emits an on-chain event:
+
+| Step | Entrypoint        | Event      | Effect                                                                                 |
+| ---- | ----------------- | ---------- | -------------------------------------------------------------------------------------- |
+| 1    | `propose_upgrade` | `upg_prop` | Records the candidate hash and a `ready_at` ledger. **No WASM change yet.**            |
+| 2    | `execute_upgrade` | `upg_exec` | Swaps the WASM — only after the timelock elapses and only for the exact proposed hash. |
+| —    | `cancel_upgrade`  | `upg_can`  | Withdraws a pending proposal. Available at any point before step 2.                    |
+
+`UPGRADE_TIMELOCK_LEDGERS` (~17,280 ledgers ≈ 28.8 hours) separates step 1 from step 2, so a
+compromised admin key can no longer swap in attacker WASM atomically — the proposal is public
+the moment it lands, and the legitimate holder of the key can `cancel_upgrade` inside the window.
+
+**Only `upg_exec` means the deployed code changed.** A `upg_prop` with no matching `upg_exec`
+was cancelled or left to expire; do not treat the proposal alone as an upgrade.
+
+This supersedes the previous guidance that WASM-hash polling was the _only_ way to detect a
+malicious replacement. Alerting on `upg_prop` is now the primary signal; polling remains a
+defense-in-depth layer. Both are documented in the
+[Incident Response Runbook](./docs/incident-response.md#23-upgrade-event-monitoring-primary-signal).
 
 ### Admin rotation takes two transactions (issue #1159)
 
 `propose_admin` records a successor; only `accept_admin`, signed by that successor, actually rotates the admin, and the proposal expires after ~28.8 hours. The `transfer_admin` and `update_admin` names are **deprecated aliases** that delegate to `propose_admin` — they used to rotate in one transaction and no longer do. To make that downgrade impossible to miss, they return an `AdminRotationReceipt` with `rotation_complete: false` instead of `void`, and emit an `adm_dep` event naming the deprecated entrypoint alongside the usual `adm_prop`.
 
-The operational hazard is retiring the outgoing key while a proposal is merely pending: if `accept_admin` never lands, the proposal expires, the factory stays under the old key, and there is no guardian override or timelock bypass — governance is lost permanently. The rotation procedure is in the [Mainnet Deployment Checklist](./docs/mainnet-deployment-checklist.md#admin-key-rotation); stale pending proposals are monitored by `scripts/check-pending-admin-proposal.sh` ([runbook §2.5](./docs/incident-response.md#25-stale-pending-admin-proposals)).
+The operational hazard is retiring the outgoing key while a proposal is merely pending: if `accept_admin` never lands, the proposal expires, the factory stays under the old key, and there is no guardian override or timelock bypass — governance is lost permanently. The rotation procedure is in the [Mainnet Deployment Checklist](./docs/mainnet-deployment-checklist.md#admin-key-rotation); stale pending proposals are monitored by `scripts/check-pending-admin-proposal.sh` ([runbook §2.6](./docs/incident-response.md#26-stale-pending-admin-proposals)).
 
 ### IPFS unpin requires CID ownership (issue #1155)
 

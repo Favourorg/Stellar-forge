@@ -14,11 +14,11 @@ StellarForge is a user-friendly decentralized application (dApp) that enables cr
 - **IPFS Integration**: Store token metadata (images, descriptions) on IPFS via Pinata, referenced on-chain by a single `ipfs://` URI
 - **Wallet Integration**: Connect with the Freighter wallet extension for account discovery and transaction signing
 - **Burn Functionality**: Token holders can burn their own balance; each token has a per-token `burn_enabled` flag an admin can toggle off
-- **Admin Controls**: Update fees, pause/unpause the factory, rotate the admin address, and upgrade the contract's WASM in place
+- **Admin Controls**: Update fees, pause/unpause the factory, rotate the admin address, and upgrade the contract's WASM through a two-step, timelocked proposal
 - **Network Mismatch Protection**: Writes are blocked in the UI whenever the connected Freighter network differs from the app's selected network, preventing accidental cross-network signing
 - **Network Switcher**: Toggle between testnet and mainnet from the UI, each with its own contract ID, RPC endpoint, and explorer links
 - **Transaction History**: View on-chain contract events (token creation, mint, burn, metadata, fee changes) with pagination and CSV export
-- **Contract Upgradability**: In-place WASM upgrades with an idempotent, versioned state-migration path (`schema_version` + `migrate`) that preserves all existing tokens, fees, and admin state
+- **Contract Upgradability**: In-place WASM upgrades gated behind a mandatory two-step timelock (`propose_upgrade` → ~28.8h → `execute_upgrade`, cancellable throughout), plus an idempotent, versioned state-migration path (`schema_version` + `migrate`) that preserves all existing tokens, fees, and admin state
 - **Testnet & Mainnet Support**: The same frontend build supports both networks via environment configuration, with an explicit confirmation modal before mainnet-destructive actions
 
 ## How StellarForge Works
@@ -58,7 +58,7 @@ Token images and descriptions are too large and mutable to store cheaply on a So
 - **Per-token burn toggle** — `set_burn_enabled` lets a token's creator disable burning for that token specifically (e.g. for a fixed-supply asset), independent of the factory-wide pause.
 - **Allow-list enforcement** — `add_to_whitelist` / `remove_from_whitelist` / `is_whitelisted` maintain an admin-managed address allow-list in factory storage. When the admin calls `set_whitelist_enabled(true)`, only whitelisted addresses may call `create_token` or `create_tokens_batch`; non-whitelisted callers receive `Error::NotWhitelisted`. Enforcement defaults to `false` so existing open deployments are unaffected until an admin opts in.
 - **Admin rotation** — `propose_admin` / `accept_admin` / `cancel_admin_proposal` implement a two-step rotation: the current admin proposes a successor (emitting `adm_prop`), the proposed admin proves they can sign by calling `accept_admin` (emitting `adm_acc`), and the current admin may cancel at any time before acceptance (emitting `adm_can`). Proposals expire after ~28 hours (`ADMIN_PROPOSAL_TTL_LEDGERS`). `transfer_admin` / `update_admin` are retained as **deprecated** aliases for `propose_admin` — neither completes the rotation on its own, and both say so: they return an `AdminRotationReceipt` with `rotation_complete: false` and emit an extra `adm_dep` event naming the deprecated entrypoint, so no caller or indexer can read a proposal as a finished rotation (issue #1159). Never decommission the outgoing admin key until `accept_admin` has succeeded and `get_state()` reports the new `admin` with `pending_admin: null`.
-- **Upgrade + migrate** — `upgrade` swaps the contract's executable WASM in place; `migrate` is an idempotent, versioned function (`schema_version` vs. `CURRENT_SCHEMA_VERSION`) that brings on-chain state up to date with the currently-deployed code without ever losing existing tokens or fee configuration. See [Contract Upgrade Process](#contract-upgrade-process) below.
+- **Upgrade + migrate** — `propose_upgrade` records a candidate WASM hash and starts a ~28.8-hour timelock (emitting `upg_prop`); `execute_upgrade` performs the swap once that window has elapsed, and only for the exact hash proposed (emitting `upg_exec`); `cancel_upgrade` withdraws a pending proposal at any point before that (emitting `upg_can`). The delay exists so a compromised admin key cannot swap in attacker WASM atomically — the proposal is visible on-chain before it can take effect. `migrate` is an idempotent, versioned function (`schema_version` vs. `CURRENT_SCHEMA_VERSION`) that brings on-chain state up to date with the currently-deployed code without ever losing existing tokens or fee configuration. See [Contract Upgrade Process](#contract-upgrade-process) below.
 
 ### 5. The frontend's role
 
@@ -280,7 +280,7 @@ The authoritative, field-by-field reference — including parameter tables, ever
 - `pause(admin)` / `unpause(admin)`: Halt or resume `create_token`, `create_tokens_batch`, `mint_tokens`, and `set_metadata` factory-wide.
 - `add_to_whitelist(admin, address)` / `remove_from_whitelist(admin, address)` / `is_whitelisted(address)`: Maintain an admin-managed address allow-list in contract storage. Use `set_whitelist_enabled(admin, true)` to turn enforcement on — once enabled, only whitelisted addresses may call `create_token` or `create_tokens_batch` (non-whitelisted callers receive `Error::NotWhitelisted`). Enforcement is off by default.
 - `propose_admin(current_admin, new_admin)` / `accept_admin(new_admin)` / `cancel_admin_proposal(current_admin)`: Two-step admin rotation. `propose_admin` records the proposed successor; `accept_admin` (called by the proposed admin) completes the handover after proving the key can sign; `cancel_admin_proposal` lets the current admin withdraw a proposal. `transfer_admin` and `update_admin` are deprecated aliases for `propose_admin`; they return an `AdminRotationReceipt` (`rotation_complete: false`) and emit `adm_dep` alongside `adm_prop`. The rotation procedure — and the rule that the old key stays live until `accept_admin` lands — is in the [mainnet deployment checklist](./docs/mainnet-deployment-checklist.md#admin-key-rotation).
-- `upgrade(admin, new_wasm_hash)`: Replace the factory's executable WASM in place, preserving all state. See [Contract Upgrade Process](#contract-upgrade-process).
+- `propose_upgrade(admin, new_wasm_hash)` / `execute_upgrade(admin, new_wasm_hash)` / `cancel_upgrade(admin)`: Two-step, timelocked WASM replacement, preserving all state. `propose_upgrade` records the candidate hash and a `ready_at` ledger ~17,280 ledgers (~28.8 hours) out; `execute_upgrade` performs the swap only once that ledger is reached and only for the exact hash proposed; `cancel_upgrade` aborts a pending proposal. The single-step `upgrade` entrypoint was removed in schema version 5 (issue #6). See [Contract Upgrade Process](#contract-upgrade-process).
 - `migrate(admin)`: Idempotently bring on-chain state up to `CURRENT_SCHEMA_VERSION` after an upgrade.
 
 ### View Functions
@@ -969,7 +969,7 @@ Key architectural decisions are documented in [`docs/adr/`](./docs/adr/):
 
 ## Contract Upgrade Process
 
-The factory contract supports in-place WASM upgrades without redeploying or migrating state.
+The factory contract supports in-place WASM upgrades without redeploying or migrating state. Since schema version 5 the swap is **two-step and timelocked**: `propose_upgrade` starts a ~28.8-hour clock, `execute_upgrade` completes the swap after it, and `cancel_upgrade` aborts a proposal at any point in between. There is no single-step `upgrade` entrypoint.
 
 ### Schema versioning
 
@@ -981,7 +981,7 @@ The factory contract supports in-place WASM upgrades without redeploying or migr
 | 2       | Max-supply accounting fix (issue #1006) — `deploy_one` now seeds the per-token supply counter with `initial_supply`; version bump only, no `FactoryState` field changes. Pre-fix capped tokens must be back-filled individually via `backfill_capped_supply` (see [docs/contract-abi.md](./docs/contract-abi.md#supply-cap-accounting))                                                                                                                                                                     |
 | 3       | Persistent-storage migration (issue #1007) — per-token bookkeeping (`TokenInfo`, `TokenIndex`, `Metadata`, `owner`, `supply`, `CreatorTokens`) moves out of the shared `instance` ledger entry into `persistent` storage, keeping `instance` storage O(1) in `token_count`. `TokenInfo` migrates in bounded, resumable chunks per `migrate` call; everything else migrates lazily on next access (see [docs/contract-abi.md](./docs/contract-abi.md#storage-architecture))                                  |
 | 4       | Two-step admin rotation — added `pending_admin: Option<Address>` and `pending_admin_expiry: Option<u64>` to `FactoryState`; new `propose_admin`, `accept_admin`, `cancel_admin_proposal` entrypoints; `transfer_admin` and `update_admin` now delegate to `propose_admin` (no single-step rotation path remains). New error codes 26 (`NoPendingProposal`) and 27 (`ProposalExpired`). New events `adm_prop`, `adm_acc`, `adm_can`, and `adm_dep` (emitted by the deprecated aliases alongside `adm_prop`). |
-| 5       | Two-step upgrade timelock (issue #6) — added `pending_upgrade_hash: Option<BytesN<32>>` and `pending_upgrade_ready_at: Option<u64>` to `FactoryState`; replaced single-step `upgrade` with `propose_upgrade`, `execute_upgrade`, and `cancel_upgrade`; `execute_upgrade` enforces `UPGRADE_TIMELOCK_LEDGERS` (~28.8 hours) between proposal and execution. New error codes 28 (`UpgradeNotReady`), 29 (`NoUpgradePending`), 30 (`UpgradeHashMismatch`). New events `upg_prop`, `upg_exec`, `upg_can`. |
+| 5       | Two-step upgrade timelock (issue #6) — added `pending_upgrade_hash: Option<BytesN<32>>` and `pending_upgrade_ready_at: Option<u64>` to `FactoryState`; replaced single-step `upgrade` with `propose_upgrade`, `execute_upgrade`, and `cancel_upgrade`; `execute_upgrade` enforces `UPGRADE_TIMELOCK_LEDGERS` (~28.8 hours) between proposal and execution. New error codes 28 (`UpgradeNotReady`), 29 (`NoUpgradePending`), 30 (`UpgradeHashMismatch`). New events `upg_prop`, `upg_exec`, `upg_can`.       |
 
 ### Adding a new migration (version N → N+1)
 
@@ -1051,6 +1051,7 @@ The factory contract uses a mandatory two-step upgrade flow with a ~28-hour time
    ```
 
 To abort a pending upgrade at any time before execution, use `cancel_upgrade` (emits `upg_can`):
+
 ```bash
 stellar contract invoke \
   --id <contract-id> \

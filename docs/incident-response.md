@@ -15,7 +15,7 @@
 3. [Authority and contacts](#3-authority-and-contacts)
 4. [Immediate response (first five minutes)](#4-immediate-response-first-five-minutes)
 5. [Short-term stabilisation (first hour)](#5-short-term-stabilisation-first-hour)
-6. [Recovery (first 24 hours)](#6-recovery-first-24 hours)
+6. [Recovery (first 24 hours)](#6-recovery-first-24-hours)
 7. [Break-glass recovery mechanism](#7-break-glass-recovery-mechanism)
 8. [Post-incident steps](#8-post-incident-steps)
 9. [Communication plan](#9-communication-plan)
@@ -28,13 +28,13 @@
 
 The factory contract's `admin` address is a single point of catastrophic trust. An attacker in possession of the admin key can:
 
-| Action                                       | Effect                                                                                                              |
-| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `update_fees(admin, base_fee, metadata_fee)` | Set arbitrarily high fees to drain users who call the contract                                                      |
-| `set_fee_split(admin, splits)`               | Redirect collected fees to an attacker-controlled address                                                           |
+| Action                                       | Effect                                                                                                                                                                    |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `update_fees(admin, base_fee, metadata_fee)` | Set arbitrarily high fees to drain users who call the contract                                                                                                            |
+| `set_fee_split(admin, splits)`               | Redirect collected fees to an attacker-controlled address                                                                                                                 |
 | `propose_upgrade` + `execute_upgrade`        | Schedule and (after ~28 hours) apply a WASM swap to attacker-controlled code — mitigated by the timelock and `upg_prop` event which gives operators a cancellation window |
-| `propose_admin(admin, attacker_address)`     | Begin a rotation to an attacker-controlled address; the attacker then calls `accept_admin` to complete the transfer |
-| `pause(admin)`                               | Halt the factory, denying service to all token creators                                                             |
+| `propose_admin(admin, attacker_address)`     | Begin a rotation to an attacker-controlled address; the attacker then calls `accept_admin` to complete the transfer                                                       |
+| `pause(admin)`                               | Halt the factory, denying service to all token creators                                                                                                                   |
 
 **Two-step rotation reduces but does not eliminate admin-rotation risk.** The two-step model (`propose_admin` + `accept_admin`) prevents accidental rotation to an uncontrolled address — the incoming key must prove it can sign. However, an attacker who already holds the current admin key can still complete the rotation to their own address by controlling both steps. Detection window: a `propose_admin` call emits an `adm_prop` event that is visible on-chain _before_ `accept_admin` completes the transfer, giving operators a window to cancel via `cancel_admin_proposal` if the proposal is unauthorized.
 
@@ -44,7 +44,7 @@ The factory contract's `admin` address is a single point of catastrophic trust. 
 2. `execute_upgrade(admin, new_wasm_hash)` — performs the WASM swap, but only once the current ledger ≥ `ready_at`, _and_ only if `new_wasm_hash` exactly matches the proposed hash. Emits `upg_exec`.
 3. `cancel_upgrade(admin)` — aborts a pending proposal at any time before execution. Emits `upg_can`.
 
-This window is the primary on-chain defense against a compromised admin key performing an atomic WASM swap with no community warning. Alert on `upg_prop` events and cancel any unexpected proposals within the ~28-hour window using `cancel_upgrade`. WASM-hash polling (see §2.3) remains a defense-in-depth layer but is no longer the _only_ detection mechanism.
+This window is the primary on-chain defense against a compromised admin key performing an atomic WASM swap with no community warning. Alert on `upg_prop` events and cancel any unexpected proposals within the ~28-hour window using `cancel_upgrade`. WASM-hash polling (see §2.4) remains a defense-in-depth layer but is no longer the _only_ detection mechanism.
 
 ---
 
@@ -79,7 +79,7 @@ Alert on:
 
 - Any `adm_prop` event (admin rotation proposed — act immediately if unexpected; you have until `accept_admin` is called or the proposal expires to cancel via `cancel_admin_proposal`)
 - Any `adm_acc` event (admin rotation completed — if unexpected, the admin key is compromised)
-- Any `adm_dep` event (a rotation was proposed through the deprecated `transfer_admin` / `update_admin` entrypoints — the caller's tooling may still assume rotation completes in one transaction; see [§2.5](#25-stale-pending-admin-proposals))
+- Any `adm_dep` event (a rotation was proposed through the deprecated `transfer_admin` / `update_admin` entrypoints — the caller's tooling may still assume rotation completes in one transaction; see [§2.6](#26-stale-pending-admin-proposals))
 - Any `fees` event with unusually large values
 - Any `pause` event not preceded by a planned maintenance notice
 
@@ -119,11 +119,11 @@ fi
 
 Store `EXPECTED_HASH` after each intentional `execute_upgrade` and update the script immediately.
 
-### 2.4 User reports
+### 2.5 User reports
 
 Token creators reporting sudden fee increases or failed `create_token` calls with no contract-level change on your end are a strong indicator of fee manipulation.
 
-### 2.5 Stale pending admin proposals
+### 2.6 Stale pending admin proposals
 
 **What this catches:** a rotation that was started and never finished. `propose_admin` (and the deprecated `transfer_admin` / `update_admin` aliases, which delegate to it) only _records_ a successor — the rotation takes effect when the proposed admin calls `accept_admin`, and the proposal lapses after `ADMIN_PROPOSAL_TTL_LEDGERS` (17,280 ledgers ≈ **28.8 hours**). A proposal left pending is not merely untidy: if the outgoing key is decommissioned in the belief that the rotation completed, the factory is permanently stuck under a key that no longer exists once the proposal expires. There is no guardian override and no timelock bypass (issue #1159).
 
