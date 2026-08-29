@@ -1,3 +1,12 @@
+## [1.9.1](https://github.com/Favourorg/Stellar-forge/compare/v1.9.0...v1.9.1) (2026-08-29)
+
+
+### Bug Fixes
+
+* **api:** repair unreachable rate-limit fallback and correct clientIp XFF direction ([d99fb61](https://github.com/Favourorg/Stellar-forge/commit/d99fb61a74d88719502af5b222deec9dbb6cd7cc)), closes [pre-#1162](https://github.com/pre-/issues/1162) [#1114](https://github.com/Favourorg/Stellar-forge/issues/1114) [#1162](https://github.com/Favourorg/Stellar-forge/issues/1162) [#1114](https://github.com/Favourorg/Stellar-forge/issues/1114) [#1162](https://github.com/Favourorg/Stellar-forge/issues/1162)
+* **contract:** restore the upgrade event tests on soroban-sdk 27 ([dde4ea3](https://github.com/Favourorg/Stellar-forge/commit/dde4ea3594a7d17a07e716cb6ed7ada25078b8b6))
+* **frontend:** decode the two-step upgrade events dropped by CONTRACT_TOPIC_MAP ([0d2d3ec](https://github.com/Favourorg/Stellar-forge/commit/0d2d3ec066aa086d27fea344003565e8e8020543))
+
 # [1.9.0](https://github.com/Favourorg/Stellar-forge/compare/v1.8.7...v1.9.0) (2026-08-28)
 
 
