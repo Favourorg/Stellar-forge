@@ -121,9 +121,16 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Node 22, not 20, specifically for this job. jsdom 30 requires
+      # ^22.22.2 || ^24.15.0 || >=26.0.0. On Node 20 its bundled undici throws
+      # "webidl.util.markAsUncloneable is not a function" (that helper is a
+      # Node >=22.10 API) while loading jsdom/lib/api.js, so every one of the
+      # 67 test files fails to start — the run reports "no tests, 67 errors"
+      # rather than a test failure. engine-strict is off, so `npm ci` only
+      # warns and the break surfaces at runtime.
       - uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
