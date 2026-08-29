@@ -33,7 +33,12 @@ export const SetMetadataForm: React.FC<Props> = ({
   // uploads, so pinning credentials are irrelevant to whether it can be used —
   // gating it on them just disabled a working form on deployments that pin
   // elsewhere.
-  const { blocked: networkBlocked, reason: networkReason, networkChangedSinceMount, acknowledgeNetworkChange } = useNetworkGuard()
+  const {
+    blocked: networkBlocked,
+    reason: networkReason,
+    networkChangedSinceMount,
+    acknowledgeNetworkChange,
+  } = useNetworkGuard()
   const { network } = useNetwork()
 
   const feePaymentStroops = factoryState?.metadataFee ?? METADATA_FEE_STROOPS

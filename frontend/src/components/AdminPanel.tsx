@@ -28,7 +28,12 @@ export const AdminPanel: React.FC = () => {
   const { stellarService } = useStellarContext()
   const { addToast } = useToast()
   const { state, isLoading: stateLoading, refetch } = useFactoryState()
-  const { blocked: networkBlocked, reason: networkReason, networkChangedSinceMount, acknowledgeNetworkChange } = useNetworkGuard()
+  const {
+    blocked: networkBlocked,
+    reason: networkReason,
+    networkChangedSinceMount,
+    acknowledgeNetworkChange,
+  } = useNetworkGuard()
   const { network } = useNetwork()
 
   const [baseFee, setBaseFee] = useState('')

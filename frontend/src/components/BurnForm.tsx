@@ -39,7 +39,12 @@ export const BurnForm: React.FC<BurnFormProps> = ({
   const { network } = useNetwork()
   const { addToast } = useToast()
   const { requireTos } = useTos()
-  const { blocked: networkBlocked, reason: networkReason, networkChangedSinceMount, acknowledgeNetworkChange } = useNetworkGuard()
+  const {
+    blocked: networkBlocked,
+    reason: networkReason,
+    networkChangedSinceMount,
+    acknowledgeNetworkChange,
+  } = useNetworkGuard()
   const { hasSufficientBalance, shortfall, isTestnet } = useBalanceCheck(ESTIMATED_FEE_XLM)
   const { rows: myTokens } = useTokenDashboard()
   const mountedRef = useRef(true)

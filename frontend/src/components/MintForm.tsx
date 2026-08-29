@@ -43,7 +43,12 @@ export const MintForm: React.FC<MintFormProps> = ({
   const { addToast } = useToast()
   const { requireTos } = useTos()
   const { state: factoryState } = useFactoryState()
-  const { blocked: networkBlocked, reason: networkReason, networkChangedSinceMount, acknowledgeNetworkChange } = useNetworkGuard()
+  const {
+    blocked: networkBlocked,
+    reason: networkReason,
+    networkChangedSinceMount,
+    acknowledgeNetworkChange,
+  } = useNetworkGuard()
   // Pay the real on-chain base_fee; the contract rejects mint if fee_payment < base_fee.
   const feePaymentStroops = factoryState?.baseFee ?? BASE_FEE_STROOPS
   const feeXlm = stroopsToXLM(feePaymentStroops)
