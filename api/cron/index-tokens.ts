@@ -19,25 +19,12 @@ import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { runIngest } from '../_lib/indexer/ingest'
 import { createSorobanChainReader } from '../_lib/indexer/sorobanChain'
 import { getStore } from '../_lib/indexer/store'
-
-/**
- * Vercel signs cron invocations with `Authorization: Bearer $CRON_SECRET`.
- * Ingest only writes chain-derived data, but it is not free to run, so an
- * unauthenticated endpoint would be a cheap way to burn RPC quota.
- */
-function isAuthorized(req: VercelRequest): boolean {
-  const secret = process.env['CRON_SECRET']
-  // No secret configured: allow only outside production, so a misconfigured
-  // deployment fails closed rather than exposing the endpoint.
-  if (!secret) return process.env['VERCEL_ENV'] !== 'production'
-  return req.headers.authorization === `Bearer ${secret}`
-}
+import { requireCronAuth } from '../_lib/http'
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (!isAuthorized(req)) {
-    res.status(401).json({ error: 'Unauthorized' })
-    return
-  }
+  // Ingest only writes chain-derived data, but it is not free to run, so an
+  // unauthenticated endpoint would be a cheap way to burn RPC quota.
+  if (!requireCronAuth(req, res)) return
 
   const factoryContractId = process.env['INDEXER_FACTORY_CONTRACT_ID']
   const rpcUrl = process.env['INDEXER_RPC_URL']

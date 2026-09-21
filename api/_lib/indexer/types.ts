@@ -129,3 +129,8 @@ export function parseCursor(raw: unknown): number | undefined {
   const n = Number.parseInt(raw, 10)
   return Number.isFinite(n) && n > 0 ? n : undefined
 }
+
+/** When the indexed data was last current, as ISO-8601, or `null` if never. */
+export function indexedAtIso(state: Pick<IndexerState, 'lastLedgerCloseTime'>): string | null {
+  return state.lastLedgerCloseTime ? new Date(state.lastLedgerCloseTime).toISOString() : null
+}

@@ -12,15 +12,13 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { getStore } from '../_lib/indexer/store'
+import { indexedAtIso } from '../_lib/indexer/types'
+import { firstQueryValue, indexerUnavailable, requireMethod } from '../_lib/http'
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'GET') {
-    res.status(405).json({ error: 'Method not allowed' })
-    return
-  }
+  if (!requireMethod(req, res, 'GET')) return
 
-  const raw = req.query['address']
-  const address = Array.isArray(raw) ? raw[0] : raw
+  const address = firstQueryValue(req.query['address'])
 
   if (!address) {
     res.status(400).json({ error: 'Missing token address' })
@@ -45,14 +43,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     res.setHeader('Cache-Control', 'public, max-age=30, stale-while-revalidate=120')
     res.status(200).json({
       ...token,
-      indexedAt: state.lastLedgerCloseTime
-        ? new Date(state.lastLedgerCloseTime).toISOString()
-        : null,
+      indexedAt: indexedAtIso(state),
     })
   } catch (err) {
-    res.status(503).json({
-      error: 'Indexer unavailable',
-      detail: err instanceof Error ? err.message : String(err),
-    })
+    indexerUnavailable(res, err)
   }
 }

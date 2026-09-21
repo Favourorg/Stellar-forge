@@ -17,12 +17,10 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { isRateLimitDurable } from '../_lib/rateLimit'
+import { requireMethod } from '../_lib/http'
 
 export default function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'GET') {
-    res.status(405).json({ error: 'Method not allowed' })
-    return
-  }
+  if (!requireMethod(req, res, 'GET')) return
 
   const durable = isRateLimitDurable()
 

@@ -18,6 +18,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { getStore, getStoreHealth, isDurableStoreConfigured } from '../_lib/indexer/store'
 import { lagSeconds, LAG_CRITICAL_SECONDS, LAG_WARNING_SECONDS } from '../_lib/indexer/ingest'
 import { checkReconciliationReadiness } from '../_lib/reconciliationReadiness'
+import { requireMethod } from '../_lib/http'
 
 /**
  * Classify a raw indexer error message into a stable, generic category
@@ -59,10 +60,7 @@ function sanitizeIndexerError(raw: string | null): string | null {
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'GET') {
-    res.status(405).json({ error: 'Method not allowed' })
-    return
-  }
+  if (!requireMethod(req, res, 'GET')) return
 
   try {
     const store = await getStore()

@@ -1,8 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
-import { isActionRateLimited } from '../_lib/rateLimit'
-import { PINATA_API_URL, pinataHeaders } from '../_lib/pinata'
+import { PINATA_API_URL } from '../_lib/pinata'
 import { isValidCid } from '../_lib/schemaValidation'
-import { verifyToken } from '../_lib/jwt'
+import { requireMethod, requirePinataHeaders, requireRateLimitedWallet } from '../_lib/http'
 import { getPinOwner, clearPinOwner } from '../_lib/pinOwnership'
 
 interface UnpinBody {
@@ -10,37 +9,14 @@ interface UnpinBody {
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'POST') {
-    res.status(405).json({ error: 'Method not allowed' })
-    return
-  }
+  if (!requireMethod(req, res, 'POST')) return
 
-  // Authenticate: require a valid JWT from the challenge → signature flow
-  const authHeader = req.headers.authorization
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    res.status(401).json({
-      error: 'Authorization required. Request a challenge and sign with your wallet.',
-    })
-    return
-  }
-
-  let walletAddress: string
-  try {
-    const token = authHeader.slice(7) // Remove "Bearer "
-    const payload = verifyToken(token)
-    walletAddress = payload.address
-  } catch (err) {
-    res.status(401).json({
-      error: err instanceof Error ? err.message : 'Invalid or expired token.',
-    })
-    return
-  }
-
-  // Check rate limits (per wallet address, durable across instances)
-  if (await isActionRateLimited(walletAddress)) {
-    res.status(429).json({ error: 'Too many requests. Please try again later.' })
-    return
-  }
+  const walletAddress = await requireRateLimitedWallet(
+    req,
+    res,
+    'Too many requests. Please try again later.',
+  )
+  if (!walletAddress) return
 
   const body = req.body as UnpinBody | undefined
   const rawCid = typeof body?.cid === 'string' ? body.cid : null
@@ -71,15 +47,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return
   }
 
-  let headers: Record<string, string>
-  try {
-    headers = pinataHeaders()
-  } catch (err) {
-    res.status(500).json({
-      error: err instanceof Error ? err.message : 'Server misconfiguration.',
-    })
-    return
-  }
+  const headers = requirePinataHeaders(res)
+  if (!headers) return
 
   try {
     const pinataRes = await fetch(`${PINATA_API_URL}/pinning/unpin/${cid}`, {

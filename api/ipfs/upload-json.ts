@@ -1,9 +1,8 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
-import { isActionRateLimited } from '../_lib/rateLimit'
-import { PINATA_API_URL, pinataHeaders } from '../_lib/pinata'
+import { PINATA_API_URL } from '../_lib/pinata'
 import { validateTokenMetadata } from '../_lib/schemaValidation'
-import { verifyToken } from '../_lib/jwt'
-import { recordPinOwner } from '../_lib/pinOwnership'
+import { requireMethod, requirePinataHeaders, requireRateLimitedWallet } from '../_lib/http'
+import { recordPinOwnerBestEffort } from '../_lib/pinOwnership'
 
 interface UploadJsonBody {
   metadata: unknown
@@ -11,37 +10,14 @@ interface UploadJsonBody {
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'POST') {
-    res.status(405).json({ error: 'Method not allowed' })
-    return
-  }
+  if (!requireMethod(req, res, 'POST')) return
 
-  // Authenticate: require a valid JWT from the challenge → signature flow
-  const authHeader = req.headers.authorization
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    res.status(401).json({
-      error: 'Authorization required. Request a challenge and sign with your wallet.',
-    })
-    return
-  }
-
-  let walletAddress: string
-  try {
-    const token = authHeader.slice(7) // Remove "Bearer "
-    const payload = verifyToken(token)
-    walletAddress = payload.address
-  } catch (err) {
-    res.status(401).json({
-      error: err instanceof Error ? err.message : 'Invalid or expired token.',
-    })
-    return
-  }
-
-  // Check rate limits (per wallet address, durable across instances)
-  if (await isActionRateLimited(walletAddress)) {
-    res.status(429).json({ error: 'Too many upload requests. Please try again later.' })
-    return
-  }
+  const walletAddress = await requireRateLimitedWallet(
+    req,
+    res,
+    'Too many upload requests. Please try again later.',
+  )
+  if (!walletAddress) return
 
   const body = req.body as UploadJsonBody | undefined
   if (
@@ -65,15 +41,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return
   }
 
-  let headers: Record<string, string>
-  try {
-    headers = pinataHeaders({ 'Content-Type': 'application/json' })
-  } catch (err) {
-    res.status(500).json({
-      error: err instanceof Error ? err.message : 'Server misconfiguration.',
-    })
-    return
-  }
+  const headers = requirePinataHeaders(res, { 'Content-Type': 'application/json' })
+  if (!headers) return
 
   try {
     const pinataRes = await fetch(`${PINATA_API_URL}/pinning/pinJSONToIPFS`, {
@@ -92,13 +61,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const data = (await pinataRes.json()) as { IpfsHash: string }
-
-    try {
-      await recordPinOwner(data.IpfsHash, walletAddress)
-    } catch (err) {
-      console.error('Failed to record pin owner:', err)
-    }
-
+    await recordPinOwnerBestEffort(data.IpfsHash, walletAddress)
     res.status(200).json({ cid: data.IpfsHash })
   } catch {
     res.status(500).json({ error: 'Unexpected error while uploading metadata to IPFS.' })

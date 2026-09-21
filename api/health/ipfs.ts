@@ -13,12 +13,10 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { isPinataConfigured } from '../_lib/pinata'
+import { requireMethod } from '../_lib/http'
 
 export default function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'GET') {
-    res.status(405).json({ error: 'Method not allowed' })
-    return
-  }
+  if (!requireMethod(req, res, 'GET')) return
 
   // The answer only changes on redeploy or an env-var edit, so a short cache
   // keeps this off the critical path of every form mount.

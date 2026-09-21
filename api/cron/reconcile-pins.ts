@@ -29,22 +29,11 @@ import {
   checkReconciliationReadiness,
   type ReconciliationReadiness,
 } from '../_lib/reconciliationReadiness'
-
-/**
- * Vercel signs cron invocations with `Authorization: Bearer <CRON_SECRET>`.
- * Reconciliation is read-heavy (Pinata pinList) and write-heavy for orphaned
- * pins, so it must be authenticated.
- */
-function isAuthorized(req: VercelRequest): boolean {
-  const secret = process.env['CRON_SECRET']
-  if (!secret) return process.env['VERCEL_ENV'] !== 'production'
-  return req.headers.authorization === `Bearer ${secret}`
-}
+import { firstQueryValue, requireCronAuth } from '../_lib/http'
 
 /** Read a boolean toggle from either a query parameter or an env var. */
 function flagEnabled(req: VercelRequest, param: string, envVar: string): boolean {
-  const raw = req.query?.[param]
-  const value = Array.isArray(raw) ? raw[0] : raw
+  const value = firstQueryValue(req.query?.[param])
   if (value === '1' || value === 'true') return true
   return process.env[envVar] === 'true'
 }
@@ -76,10 +65,9 @@ async function getMetadataUrisFromIndexer(): Promise<string[]> {
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (!isAuthorized(req)) {
-    res.status(401).json({ error: 'Unauthorized' })
-    return
-  }
+  // Reconciliation is read-heavy (Pinata pinList) and write-heavy for
+  // orphaned pins, so it must be authenticated.
+  if (!requireCronAuth(req, res)) return
 
   const dryRun = flagEnabled(req, 'dryRun', 'RECONCILE_PINS_DRY_RUN')
   const overrideCircuitBreaker = flagEnabled(

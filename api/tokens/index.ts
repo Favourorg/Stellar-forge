@@ -17,28 +17,20 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { getStore } from '../_lib/indexer/store'
-import { clampLimit, parseCursor } from '../_lib/indexer/types'
-
-/** First query value only — Vercel surfaces repeated params as arrays. */
-function single(value: string | string[] | undefined): string | undefined {
-  return Array.isArray(value) ? value[0] : value
-}
+import { clampLimit, indexedAtIso, parseCursor } from '../_lib/indexer/types'
+import { firstQueryValue, indexerUnavailable, requireMethod } from '../_lib/http'
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'GET') {
-    res.status(405).json({ error: 'Method not allowed' })
-    return
-  }
+  if (!requireMethod(req, res, 'GET')) return
 
   try {
     const store = await getStore()
     const state = await store.getState()
 
-    const creator = single(req.query['creator'] as string | string[] | undefined)
     const result = await store.listTokens({
-      creator,
-      cursor: parseCursor(single(req.query['cursor'] as string | string[] | undefined)),
-      limit: clampLimit(single(req.query['limit'] as string | string[] | undefined)),
+      creator: firstQueryValue(req.query['creator']),
+      cursor: parseCursor(firstQueryValue(req.query['cursor'])),
+      limit: clampLimit(firstQueryValue(req.query['limit'])),
     })
 
     // Short cache: the ingest cron runs every few minutes, so a stale response
@@ -48,14 +40,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     res.status(200).json({
       tokens: result.tokens,
       nextCursor: result.nextCursor,
-      indexedAt: state.lastLedgerCloseTime
-        ? new Date(state.lastLedgerCloseTime).toISOString()
-        : null,
+      indexedAt: indexedAtIso(state),
     })
   } catch (err) {
-    res.status(503).json({
-      error: 'Indexer unavailable',
-      detail: err instanceof Error ? err.message : String(err),
-    })
+    indexerUnavailable(res, err)
   }
 }
