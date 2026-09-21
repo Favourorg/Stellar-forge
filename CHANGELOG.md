@@ -1,3 +1,10 @@
+# [1.10.0](https://github.com/Favourorg/Stellar-forge/compare/v1.9.3...v1.10.0) (2026-09-21)
+
+
+### Features
+
+* enhance env validation error screen with improved UI and helpful links ([#1182](https://github.com/Favourorg/Stellar-forge/issues/1182)) ([59c0a33](https://github.com/Favourorg/Stellar-forge/commit/59c0a3348165a6b9e72293f716bb6bb97fa694d8))
+
 ## [1.9.3](https://github.com/Favourorg/Stellar-forge/compare/v1.9.2...v1.9.3) (2026-08-29)
 
 
