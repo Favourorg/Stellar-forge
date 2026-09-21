@@ -6,7 +6,7 @@ import { useToast } from '../context/ToastContext'
 import { useFactoryState } from '../hooks/useFactoryState'
 import { useTransaction, isTransactionInFlight } from '../hooks/useTransaction'
 import { useNetworkGuard } from '../hooks/useNetworkGuard'
-import { useNetwork } from '../context/NetworkContext'
+import { NetworkGuardAlert } from './NetworkGuardAlert'
 
 // Stroops → display XLM (7 decimals)
 function stroopsToDisplay(stroops: string): string {
@@ -28,13 +28,8 @@ export const AdminPanel: React.FC = () => {
   const { stellarService } = useStellarContext()
   const { addToast } = useToast()
   const { state, isLoading: stateLoading, refetch } = useFactoryState()
-  const {
-    blocked: networkBlocked,
-    reason: networkReason,
-    networkChangedSinceMount,
-    acknowledgeNetworkChange,
-  } = useNetworkGuard()
-  const { network } = useNetwork()
+  const networkGuard = useNetworkGuard()
+  const networkBlocked = networkGuard.blocked
 
   const [baseFee, setBaseFee] = useState('')
   const [metadataFee, setMetadataFee] = useState('')
@@ -185,20 +180,7 @@ export const AdminPanel: React.FC = () => {
           {isPending ? 'Submitting…' : 'Submit Changes'}
         </Button>
 
-        {networkBlocked && networkReason && (
-          <div role="alert" className="mt-2 text-sm text-red-600 dark:text-red-400 space-y-1">
-            <p>{networkReason}</p>
-            {networkChangedSinceMount && (
-              <button
-                type="button"
-                onClick={acknowledgeNetworkChange}
-                className="underline text-red-700 dark:text-red-400 text-xs"
-              >
-                I've reviewed — continue on {network === 'mainnet' ? 'Mainnet' : 'Testnet'}
-              </button>
-            )}
-          </div>
-        )}
+        <NetworkGuardAlert guard={networkGuard} className="mt-2" />
       </form>
 
       {/* ── Whitelist enforcement toggle ─────────────────────────────────── */}
@@ -243,20 +225,7 @@ export const AdminPanel: React.FC = () => {
             Submitting whitelist toggle transaction…
           </p>
         )}
-        {networkBlocked && networkReason && (
-          <div role="alert" className="text-xs text-red-600 dark:text-red-400 space-y-1">
-            <p>{networkReason}</p>
-            {networkChangedSinceMount && (
-              <button
-                type="button"
-                onClick={acknowledgeNetworkChange}
-                className="underline text-red-700 dark:text-red-400"
-              >
-                I've reviewed — continue on {network === 'mainnet' ? 'Mainnet' : 'Testnet'}
-              </button>
-            )}
-          </div>
-        )}
+        <NetworkGuardAlert guard={networkGuard} compact />
       </div>
 
       <ConfirmModal

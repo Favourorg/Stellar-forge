@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNetwork } from '../context/NetworkContext'
 import type { Network } from '../context/NetworkContext'
+import { networkLabel } from '../config/stellar'
 
 /**
  * Returns whether write operations should be blocked due to a network mismatch.
@@ -13,12 +14,14 @@ import type { Network } from '../context/NetworkContext'
  * form should block submission until the user explicitly re-confirms by
  * calling `acknowledgeNetworkChange()`.
  */
-export function useNetworkGuard(): {
+export interface NetworkGuard {
   blocked: boolean
   reason: string | null
   networkChangedSinceMount: boolean
   acknowledgeNetworkChange: () => void
-} {
+}
+
+export function useNetworkGuard(): NetworkGuard {
   const { mismatch, network } = useNetwork()
 
   // Capture the network value that was active when this hook instance first
@@ -40,20 +43,18 @@ export function useNetworkGuard(): {
   }
 
   if (mismatch.isMismatch) {
-    const expected = network === 'mainnet' ? 'Mainnet' : 'Testnet'
     return {
       blocked: true,
-      reason: `Switch Freighter to ${expected} to continue.`,
+      reason: `Switch Freighter to ${networkLabel(network)} to continue.`,
       networkChangedSinceMount,
       acknowledgeNetworkChange,
     }
   }
 
   if (networkChangedSinceMount) {
-    const label = network === 'mainnet' ? 'Mainnet' : 'Testnet'
     return {
       blocked: true,
-      reason: `Network changed to ${label} since you opened this form. Review and confirm before continuing.`,
+      reason: `Network changed to ${networkLabel(network)} since you opened this form. Review and confirm before continuing.`,
       networkChangedSinceMount,
       acknowledgeNetworkChange,
     }
