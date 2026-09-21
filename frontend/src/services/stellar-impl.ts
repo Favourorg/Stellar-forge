@@ -1,7 +1,7 @@
 // Stellar SDK integration service
 import { STELLAR_CONFIG, NETWORK_CONFIGS } from '../config/stellar'
 import { walletService } from './wallet'
-import { captureContractError } from '../lib/monitoring/sentry'
+import { captureContractError, type ContractErrorContext } from '../lib/monitoring/sentry'
 import type {
   AppError,
   ContractEvent,
@@ -60,6 +60,29 @@ function hexToBytes(hex: string): Uint8Array {
     bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16)
   }
   return bytes
+}
+
+/** Lowercase hex, the form `stellar contract install` and explorers print. */
+function bytesToHex(bytes: Iterable<number>): string {
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
+}
+
+/** Build the retryable {@link HttpError} for a non-OK Horizon/RPC response. */
+function httpErrorFromResponse(res: Response, message: string): HttpError {
+  const retryAfter = res.headers.get('Retry-After')
+  return new HttpError(res.status, message, retryAfter ? parseInt(retryAfter, 10) : undefined)
+}
+
+function requireFactoryContractId(): string {
+  const contractId = STELLAR_CONFIG.factoryContractId
+  if (!contractId) throw new Error('Factory contract ID is not configured')
+  return contractId
+}
+
+function requireConnectedAddress(): string {
+  const sourceAddress = walletService.getConnectedAddress()
+  if (!sourceAddress) throw new Error('Wallet not connected')
+  return sourceAddress
 }
 
 /**
@@ -198,16 +221,8 @@ async function simulateAndSubmitDetailed(
   return submitAndConfirm(server, signedTx, options)
 }
 
-/** {@link simulateAndSubmitDetailed} for callers that only need the hash. */
-async function simulateAndSubmit(
-  server: rpc.Server,
-  tx: ReturnType<TransactionBuilder['build']>,
-  network: Network,
-  onStatus?: (status: TransactionLifecycleStatus) => void,
-): Promise<string> {
-  const { hash } = await simulateAndSubmitDetailed(server, tx, network, onStatus)
-  return hash
-}
+/** Result selector for write calls whose callers only need the hash. */
+const selectHash = ({ hash }: SubmitAndConfirmResult): string => hash
 
 // ── Fee Bump Transactions ─────────────────────────────────────────────────────
 
@@ -272,24 +287,20 @@ async function buildTxBuilder(
 
 // ── View function helper ──────────────────────────────────────────────────────
 
-/**
- * Call a read-only contract function via simulation (no signing required).
- */
-async function callView(
+/** Simulate `method` from `account` and return its return value. */
+async function simulateView(
   server: rpc.Server,
+  account: Account,
   contractId: string,
   method: string,
   args: xdr.ScVal[],
-  sourceAddress: string,
   network: Network,
 ): Promise<xdr.ScVal> {
-  const contract = new Contract(contractId)
-  const account = await withRetry(() => server.getAccount(sourceAddress))
   const tx = new TransactionBuilder(account, {
     fee: BASE_FEE,
     networkPassphrase: getNetworkPassphrase(network),
   })
-    .addOperation(contract.call(method, ...args))
+    .addOperation(new Contract(contractId).call(method, ...args))
     .setTimeout(30)
     .build()
 
@@ -301,6 +312,21 @@ async function callView(
     throw new Error(`View call to ${method} returned no result`)
   }
   return simResult.result.retval
+}
+
+/**
+ * Call a read-only contract function via simulation (no signing required).
+ */
+async function callView(
+  server: rpc.Server,
+  contractId: string,
+  method: string,
+  args: xdr.ScVal[],
+  sourceAddress: string,
+  network: Network,
+): Promise<xdr.ScVal> {
+  const account = await withRetry(() => server.getAccount(sourceAddress))
+  return simulateView(server, account, contractId, method, args, network)
 }
 
 /**
@@ -336,28 +362,12 @@ async function callViewReadonly(
   args: xdr.ScVal[],
   network: Network,
 ): Promise<xdr.ScVal> {
-  const contract = new Contract(contractId)
   const source = walletService.getConnectedAddress() ?? READONLY_SOURCE_ACCOUNT
   // Sequence number is irrelevant for a read-only simulation; a locally
   // constructed account avoids an extra `getAccount` round-trip and works even
   // when `source` has never been funded on-chain.
   const account = new Account(source, '0')
-  const tx = new TransactionBuilder(account, {
-    fee: BASE_FEE,
-    networkPassphrase: getNetworkPassphrase(network),
-  })
-    .addOperation(contract.call(method, ...args))
-    .setTimeout(30)
-    .build()
-
-  const simResult = await withRetry(() => server.simulateTransaction(tx))
-  if (rpc.Api.isSimulationError(simResult)) {
-    throw parseContractError(new Error(simResult.error))
-  }
-  if (!rpc.Api.isSimulationSuccess(simResult) || !simResult.result) {
-    throw new Error(`View call to ${method} returned no result`)
-  }
-  return simResult.result.retval
+  return simulateView(server, account, contractId, method, args, network)
 }
 
 // ── Raw RPC types ─────────────────────────────────────────────────────────────
@@ -391,9 +401,7 @@ function scValToString(val: xdr.ScVal | undefined): string {
       if (addr.switch() === xdr.ScAddressType.scAddressTypeAccount()) {
         return StrKey.encodeEd25519PublicKey(addr.accountId().ed25519())
       }
-      return Array.from(addr.contractId() as Uint8Array)
-        .map((b) => b.toString(16).padStart(2, '0'))
-        .join('')
+      return bytesToHex(addr.contractId() as Uint8Array)
     }
     if (type === xdr.ScValType.scvI128()) {
       const hi = BigInt(val.i128().hi().toString())
@@ -412,9 +420,7 @@ function scValToString(val: xdr.ScVal | undefined): string {
     // against `stellar contract install` output and explorer pages, both of
     // which print lowercase hex. Base64 would be unrecognisable there.
     if (type === xdr.ScValType.scvBytes()) {
-      return Array.from(val.bytes() as unknown as Uint8Array)
-        .map((b) => b.toString(16).padStart(2, '0'))
-        .join('')
+      return bytesToHex(val.bytes() as unknown as Uint8Array)
     }
     // An error value in an event payload is readable data, not an opaque blob:
     // render the contract code rather than re-serialising it to base64.
@@ -510,6 +516,41 @@ export const CONTRACT_TOPIC_MAP: Record<string, ContractEventType> = {
 /** Allow-list of recognised event types, derived from CONTRACT_TOPIC_MAP. */
 const EVENT_TOPICS = new Set<string>(Object.keys(CONTRACT_TOPIC_MAP))
 
+/**
+ * Names for each event's positional payload values, in contract emit order.
+ * An empty list means the payload is not decoded into `data`.
+ */
+const EVENT_PAYLOAD_FIELDS: Record<ContractEventType, readonly string[]> = {
+  init: ['admin'],
+  created: ['tokenAddress', 'creator', 'name', 'symbol'],
+  meta: ['tokenAddress', 'metadataUri'],
+  meta_frz: [],
+  mint: ['tokenAddress', 'to', 'amount'],
+  burn: ['tokenAddress', 'from', 'amount'],
+  fees: ['baseFee', 'metadataFee'],
+  fee_redir: ['recipient', 'amount'],
+  split_set: [],
+  split_clr: [],
+  pause: ['admin'],
+  unpause: ['admin'],
+  adm_prop: ['currentAdmin', 'newAdmin', 'expiryLedger'],
+  adm_acc: ['currentAdmin', 'newAdmin'],
+  adm_can: ['currentAdmin', 'cancelledAdmin'],
+  // `deprecatedEntrypoint` is the deprecated entrypoint the caller used —
+  // `transfer_admin` or `update_admin`. Neither completes the rotation;
+  // `accept_admin` must still be called before `expiryLedger`.
+  adm_dep: ['currentAdmin', 'newAdmin', 'expiryLedger', 'deprecatedEntrypoint'],
+  wl_add: ['address'],
+  wl_rm: ['address'],
+  wl_tog: ['enabled'],
+  // The upgrade cannot be executed before `readyAtLedger`. Surfacing it is the
+  // point of the timelock — it is the window in which the proposal can still
+  // be cancelled.
+  upg_prop: ['admin', 'wasmHash', 'readyAtLedger'],
+  upg_exec: ['admin', 'wasmHash'],
+  upg_can: ['admin', 'cancelledWasmHash'],
+}
+
 export async function parseRpcEvent(raw: RpcEventResponse): Promise<ContractEvent | null> {
   try {
     if (!raw.topic?.length || raw.topic.length < 2) return null
@@ -520,93 +561,9 @@ export async function parseRpcEvent(raw: RpcEventResponse): Promise<ContractEven
 
     const items: xdr.ScVal[] = xdr.ScVal.fromXDR(raw.value, 'base64').vec() ?? []
     const data: Record<string, string> = {}
-
-    switch (eventType) {
-      case 'init':
-        data.admin = scValToString(items[0])
-        break
-      case 'created':
-        data.tokenAddress = scValToString(items[0])
-        data.creator = scValToString(items[1])
-        data.name = scValToString(items[2])
-        data.symbol = scValToString(items[3])
-        break
-      case 'meta':
-        data.tokenAddress = scValToString(items[0])
-        data.metadataUri = scValToString(items[1])
-        break
-      case 'mint':
-        data.tokenAddress = scValToString(items[0])
-        data.to = scValToString(items[1])
-        data.amount = scValToString(items[2])
-        break
-      case 'burn':
-        data.tokenAddress = scValToString(items[0])
-        data.from = scValToString(items[1])
-        data.amount = scValToString(items[2])
-        break
-      case 'fees':
-        data.baseFee = scValToString(items[0])
-        data.metadataFee = scValToString(items[1])
-        break
-      case 'pause':
-        data.admin = scValToString(items[0])
-        break
-      case 'unpause':
-        data.admin = scValToString(items[0])
-        break
-      case 'adm_prop':
-        data.currentAdmin = scValToString(items[0])
-        data.newAdmin = scValToString(items[1])
-        data.expiryLedger = scValToString(items[2])
-        break
-      case 'adm_acc':
-        data.currentAdmin = scValToString(items[0])
-        data.newAdmin = scValToString(items[1])
-        break
-      case 'adm_can':
-        data.currentAdmin = scValToString(items[0])
-        data.cancelledAdmin = scValToString(items[1])
-        break
-      case 'adm_dep':
-        data.currentAdmin = scValToString(items[0])
-        data.newAdmin = scValToString(items[1])
-        data.expiryLedger = scValToString(items[2])
-        // The deprecated entrypoint the caller used — `transfer_admin` or
-        // `update_admin`. Neither completes the rotation; `accept_admin` must
-        // still be called before the expiry ledger above.
-        data.deprecatedEntrypoint = scValToString(items[3])
-        break
-      case 'fee_redir':
-        data.recipient = scValToString(items[0])
-        data.amount = scValToString(items[1])
-        break
-      case 'wl_add':
-        data.address = scValToString(items[0])
-        break
-      case 'wl_rm':
-        data.address = scValToString(items[0])
-        break
-      case 'wl_tog':
-        data.enabled = scValToString(items[0])
-        break
-      case 'upg_prop':
-        data.admin = scValToString(items[0])
-        data.wasmHash = scValToString(items[1])
-        // The upgrade cannot be executed before this ledger. Surfacing it is the
-        // point of the timelock — it is the window in which the proposal can
-        // still be cancelled.
-        data.readyAtLedger = scValToString(items[2])
-        break
-      case 'upg_exec':
-        data.admin = scValToString(items[0])
-        data.wasmHash = scValToString(items[1])
-        break
-      case 'upg_can':
-        data.admin = scValToString(items[0])
-        data.cancelledWasmHash = scValToString(items[1])
-        break
-    }
+    EVENT_PAYLOAD_FIELDS[eventType].forEach((field, i) => {
+      data[field] = scValToString(items[i])
+    })
 
     return {
       id: raw.id,
@@ -630,14 +587,7 @@ async function rpcCall<T>(method: string, params: unknown, network: Network): Pr
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
     })
-    if (!res.ok) {
-      const retryAfter = res.headers.get('Retry-After')
-      throw new HttpError(
-        res.status,
-        `RPC HTTP error ${res.status}`,
-        retryAfter ? parseInt(retryAfter, 10) : undefined,
-      )
-    }
+    if (!res.ok) throw httpErrorFromResponse(res, `RPC HTTP error ${res.status}`)
     const json = await res.json()
     if (json.error) {
       const errorMsg: string = json.error.message ?? 'RPC error'
@@ -661,6 +611,48 @@ export class StellarService {
     this.network = network
   }
 
+  /** Report a failed call to Sentry, then throw its user-facing form. */
+  private fail(err: unknown, context: ContractErrorContext & { txHash?: string }): never {
+    const userError = toUserFacingError(err)
+    captureContractError(err instanceof Error ? err : new Error(String(err)), {
+      network: this.network,
+      ...context,
+    })
+    throw userError
+  }
+
+  /**
+   * Build, sign and submit one factory-contract invocation from the connected
+   * wallet, returning `select` applied to the confirmed result. Failures are
+   * reported under `functionName` with `params` as context.
+   */
+  private async invokeFactory<T>(
+    functionName: string,
+    params: Record<string, unknown>,
+    buildCall: (contract: Contract, sourceAddress: string) => xdr.Operation,
+    select: (result: SubmitAndConfirmResult) => T,
+  ): Promise<T> {
+    try {
+      const contractId = requireFactoryContractId()
+      const sourceAddress = requireConnectedAddress()
+      const server = getRpcServer(this.network)
+      const contract = new Contract(contractId)
+
+      const tx = (await buildTxBuilder(server, sourceAddress, this.network))
+        .addOperation(buildCall(contract, sourceAddress))
+        .setTimeout(30)
+        .build()
+
+      return select(await simulateAndSubmitDetailed(server, tx, this.network))
+    } catch (err) {
+      this.fail(err, {
+        contractId: STELLAR_CONFIG.factoryContractId ?? 'unknown',
+        functionName,
+        params,
+      })
+    }
+  }
+
   // ── deployToken ─────────────────────────────────────────────────────────────
 
   /**
@@ -682,55 +674,31 @@ export class StellarService {
     salt: string
     feePayment: string
   }): Promise<DeploymentResult> {
-    const functionName = 'deployToken'
-    try {
-      const contractId = STELLAR_CONFIG.factoryContractId
-      if (!contractId) throw new Error('Factory contract ID is not configured')
-
-      const sourceAddress = walletService.getConnectedAddress()
-      if (!sourceAddress) throw new Error('Wallet not connected')
-
-      const server = getRpcServer(this.network)
-      const contract = new Contract(contractId)
-
-      const tx = (await buildTxBuilder(server, sourceAddress, this.network))
-        .addOperation(
-          contract.call(
-            'create_token',
-            new Address(sourceAddress).toScVal(),
-            nativeToScVal(hexToBytes(params.salt), { type: 'bytes' }),
-            nativeToScVal(params.name, { type: 'string' }),
-            nativeToScVal(params.symbol, { type: 'string' }),
-            nativeToScVal(params.decimals, { type: 'u32' }),
-            nativeToScVal(BigInt(params.initialSupply), { type: 'i128' }),
-            optionI128(params.maxSupply),
-            nativeToScVal(BigInt(params.feePayment), { type: 'i128' }),
-          ),
-        )
-        .setTimeout(30)
-        .build()
-
+    return this.invokeFactory(
+      'deployToken',
+      { name: params.name, symbol: params.symbol, decimals: params.decimals },
+      (contract, sourceAddress) =>
+        contract.call(
+          'create_token',
+          new Address(sourceAddress).toScVal(),
+          nativeToScVal(hexToBytes(params.salt), { type: 'bytes' }),
+          nativeToScVal(params.name, { type: 'string' }),
+          nativeToScVal(params.symbol, { type: 'string' }),
+          nativeToScVal(params.decimals, { type: 'u32' }),
+          nativeToScVal(BigInt(params.initialSupply), { type: 'i128' }),
+          optionI128(params.maxSupply),
+          nativeToScVal(BigInt(params.feePayment), { type: 'i128' }),
+        ),
       // The confirmed response is already in hand — re-fetching it by hash was
       // a redundant round-trip that could itself fail after a successful write.
-      const { hash, response } = await simulateAndSubmitDetailed(server, tx, this.network)
-
-      // Extract the returned token address from the transaction result
-      const tokenAddress = response.returnValue
-        ? (scValToNative(response.returnValue) as string)
-        : ''
-
-      return { tokenAddress, transactionHash: hash, success: true }
-    } catch (err) {
-      const userError = toUserFacingError(err)
-      const factoryContractId = STELLAR_CONFIG.factoryContractId ?? 'unknown'
-      captureContractError(err instanceof Error ? err : new Error(String(err)), {
-        network: this.network,
-        contractId: factoryContractId,
-        functionName,
-        params: { name: params.name, symbol: params.symbol, decimals: params.decimals },
-      })
-      throw userError
-    }
+      ({ hash, response }) => {
+        // Extract the returned token address from the transaction result
+        const tokenAddress = response.returnValue
+          ? (scValToNative(response.returnValue) as string)
+          : ''
+        return { tokenAddress, transactionHash: hash, success: true }
+      },
+    )
   }
 
   // ── mintTokens ──────────────────────────────────────────────────────────────
@@ -745,43 +713,20 @@ export class StellarService {
     amount: string
     feePayment: string
   }): Promise<string> {
-    const functionName = 'mintTokens'
-    try {
-      const contractId = STELLAR_CONFIG.factoryContractId
-      if (!contractId) throw new Error('Factory contract ID is not configured')
-
-      const sourceAddress = walletService.getConnectedAddress()
-      if (!sourceAddress) throw new Error('Wallet not connected')
-
-      const server = getRpcServer(this.network)
-      const contract = new Contract(contractId)
-
-      const tx = (await buildTxBuilder(server, sourceAddress, this.network))
-        .addOperation(
-          contract.call(
-            'mint_tokens',
-            new Address(params.tokenAddress).toScVal(), // token_address
-            new Address(sourceAddress).toScVal(), // admin (caller)
-            new Address(params.to).toScVal(), // to
-            nativeToScVal(BigInt(params.amount), { type: 'i128' }),
-            nativeToScVal(BigInt(params.feePayment), { type: 'i128' }),
-          ),
-        )
-        .setTimeout(30)
-        .build()
-
-      return await simulateAndSubmit(server, tx, this.network)
-    } catch (err) {
-      const userError = toUserFacingError(err)
-      const factoryContractId = STELLAR_CONFIG.factoryContractId ?? 'unknown'
-      captureContractError(err instanceof Error ? err : new Error(String(err)), {
-        network: this.network,
-        contractId: factoryContractId,
-        functionName,
-        params: { tokenAddress: params.tokenAddress, amount: params.amount },
-      })
-      throw userError
-    }
+    return this.invokeFactory(
+      'mintTokens',
+      { tokenAddress: params.tokenAddress, amount: params.amount },
+      (contract, sourceAddress) =>
+        contract.call(
+          'mint_tokens',
+          new Address(params.tokenAddress).toScVal(), // token_address
+          new Address(sourceAddress).toScVal(), // admin (caller)
+          new Address(params.to).toScVal(), // to
+          nativeToScVal(BigInt(params.amount), { type: 'i128' }),
+          nativeToScVal(BigInt(params.feePayment), { type: 'i128' }),
+        ),
+      selectHash,
+    )
   }
 
   // ── burnTokens ──────────────────────────────────────────────────────────────
@@ -791,41 +736,18 @@ export class StellarService {
    * `amount` is a decimal string representation of an i128 value.
    */
   async burnTokens(params: { tokenAddress: string; amount: string }): Promise<string> {
-    const functionName = 'burnTokens'
-    try {
-      const contractId = STELLAR_CONFIG.factoryContractId
-      if (!contractId) throw new Error('Factory contract ID is not configured')
-
-      const sourceAddress = walletService.getConnectedAddress()
-      if (!sourceAddress) throw new Error('Wallet not connected')
-
-      const server = getRpcServer(this.network)
-      const contract = new Contract(contractId)
-
-      const tx = (await buildTxBuilder(server, sourceAddress, this.network))
-        .addOperation(
-          contract.call(
-            'burn',
-            new Address(params.tokenAddress).toScVal(), // token_address
-            new Address(sourceAddress).toScVal(), // from (caller)
-            nativeToScVal(BigInt(params.amount), { type: 'i128' }),
-          ),
-        )
-        .setTimeout(30)
-        .build()
-
-      return await simulateAndSubmit(server, tx, this.network)
-    } catch (err) {
-      const userError = toUserFacingError(err)
-      const factoryContractId = STELLAR_CONFIG.factoryContractId ?? 'unknown'
-      captureContractError(err instanceof Error ? err : new Error(String(err)), {
-        network: this.network,
-        contractId: factoryContractId,
-        functionName,
-        params: { tokenAddress: params.tokenAddress, amount: params.amount },
-      })
-      throw userError
-    }
+    return this.invokeFactory(
+      'burnTokens',
+      { tokenAddress: params.tokenAddress, amount: params.amount },
+      (contract, sourceAddress) =>
+        contract.call(
+          'burn',
+          new Address(params.tokenAddress).toScVal(), // token_address
+          new Address(sourceAddress).toScVal(), // from (caller)
+          nativeToScVal(BigInt(params.amount), { type: 'i128' }),
+        ),
+      selectHash,
+    )
   }
 
   // ── setMetadata ─────────────────────────────────────────────────────────────
@@ -839,42 +761,19 @@ export class StellarService {
     metadataUri: string
     feePayment: string
   }): Promise<string> {
-    const functionName = 'setMetadata'
-    try {
-      const contractId = STELLAR_CONFIG.factoryContractId
-      if (!contractId) throw new Error('Factory contract ID is not configured')
-
-      const sourceAddress = walletService.getConnectedAddress()
-      if (!sourceAddress) throw new Error('Wallet not connected')
-
-      const server = getRpcServer(this.network)
-      const contract = new Contract(contractId)
-
-      const tx = (await buildTxBuilder(server, sourceAddress, this.network))
-        .addOperation(
-          contract.call(
-            'set_metadata',
-            new Address(params.tokenAddress).toScVal(), // token_address
-            new Address(sourceAddress).toScVal(), // admin (caller)
-            nativeToScVal(params.metadataUri, { type: 'string' }),
-            nativeToScVal(BigInt(params.feePayment), { type: 'i128' }),
-          ),
-        )
-        .setTimeout(30)
-        .build()
-
-      return await simulateAndSubmit(server, tx, this.network)
-    } catch (err) {
-      const userError = toUserFacingError(err)
-      const factoryContractId = STELLAR_CONFIG.factoryContractId ?? 'unknown'
-      captureContractError(err instanceof Error ? err : new Error(String(err)), {
-        network: this.network,
-        contractId: factoryContractId,
-        functionName,
-        params: { tokenAddress: params.tokenAddress, metadataUri: params.metadataUri },
-      })
-      throw userError
-    }
+    return this.invokeFactory(
+      'setMetadata',
+      { tokenAddress: params.tokenAddress, metadataUri: params.metadataUri },
+      (contract, sourceAddress) =>
+        contract.call(
+          'set_metadata',
+          new Address(params.tokenAddress).toScVal(), // token_address
+          new Address(sourceAddress).toScVal(), // admin (caller)
+          nativeToScVal(params.metadataUri, { type: 'string' }),
+          nativeToScVal(BigInt(params.feePayment), { type: 'i128' }),
+        ),
+      selectHash,
+    )
   }
 
   // ── getTokenInfo ────────────────────────────────────────────────────────────
@@ -884,12 +783,8 @@ export class StellarService {
    * contract and map the response to the local TokenInfo interface.
    */
   async getTokenInfo(index: number): Promise<TokenInfo> {
-    const functionName = 'getTokenInfo'
-    const contractId = STELLAR_CONFIG.factoryContractId
-    if (!contractId) throw new Error('Factory contract ID is not configured')
-
-    const sourceAddress = walletService.getConnectedAddress()
-    if (!sourceAddress) throw new Error('Wallet not connected')
+    const contractId = requireFactoryContractId()
+    const sourceAddress = requireConnectedAddress()
 
     try {
       const server = getRpcServer(this.network)
@@ -913,15 +808,7 @@ export class StellarService {
         totalSupply: native.total_supply?.toString(),
       }
     } catch (err) {
-      const userError = toUserFacingError(err)
-      const factoryContractId = STELLAR_CONFIG.factoryContractId ?? 'unknown'
-      captureContractError(err instanceof Error ? err : new Error(String(err)), {
-        network: this.network,
-        contractId: factoryContractId,
-        functionName,
-        params: { index },
-      })
-      throw userError
+      this.fail(err, { contractId, functionName: 'getTokenInfo', params: { index } })
     }
   }
 
@@ -931,41 +818,24 @@ export class StellarService {
    * Fetch transaction details from the Horizon server using the transaction hash.
    */
   async getTransaction(hash: string): Promise<Record<string, unknown>> {
-    const functionName = 'getTransaction'
     try {
       return await withRetry(async () => {
         const { horizonUrl } = getNetworkConfig(this.network)
         const res = await fetch(`${horizonUrl}/transactions/${hash}`)
         if (!res.ok) {
           if (res.status === 404) throw new Error(`Transaction not found: ${hash}`)
-          const retryAfter = res.headers.get('Retry-After')
-          throw new HttpError(
-            res.status,
-            `Horizon error ${res.status}`,
-            retryAfter ? parseInt(retryAfter, 10) : undefined,
-          )
+          throw httpErrorFromResponse(res, `Horizon error ${res.status}`)
         }
         return res.json() as Promise<Record<string, unknown>>
       })
     } catch (err) {
-      const userError = toUserFacingError(err)
-      captureContractError(err instanceof Error ? err : new Error(String(err)), {
-        network: this.network,
-        functionName,
-        txHash: hash,
-        params: { hash },
-      })
-      throw userError
+      this.fail(err, { functionName: 'getTransaction', txHash: hash, params: { hash } })
     }
   }
 
   async getFactoryState(): Promise<FactoryState> {
-    const functionName = 'getFactoryState'
-    const contractId = STELLAR_CONFIG.factoryContractId
-    if (!contractId) throw new Error('Factory contract ID is not configured')
-
-    const sourceAddress = walletService.getConnectedAddress()
-    if (!sourceAddress) throw new Error('Wallet not connected')
+    const contractId = requireFactoryContractId()
+    const sourceAddress = requireConnectedAddress()
 
     try {
       const server = getRpcServer(this.network)
@@ -991,19 +861,11 @@ export class StellarService {
         // scValToNative turns BytesN<32> into a Buffer/Uint8Array — normalise
         // to lowercase hex so it is directly comparable to VITE_TOKEN_WASM_HASH.
         tokenWasmHash: native.token_wasm_hash
-          ? [...new Uint8Array(native.token_wasm_hash)]
-              .map((b: number) => b.toString(16).padStart(2, '0'))
-              .join('')
+          ? bytesToHex(new Uint8Array(native.token_wasm_hash))
           : undefined,
       }
     } catch (err) {
-      const userError = toUserFacingError(err)
-      captureContractError(err instanceof Error ? err : new Error(String(err)), {
-        network: this.network,
-        contractId,
-        functionName,
-      })
-      throw userError
+      this.fail(err, { contractId, functionName: 'getFactoryState' })
     }
   }
 
@@ -1014,14 +876,7 @@ export class StellarService {
       const { horizonUrl } = getNetworkConfig(this.network)
       const res = await fetch(`${horizonUrl}/accounts/${address}`)
       if (res.status === 404) return false
-      if (!res.ok) {
-        const retryAfter = res.headers.get('Retry-After')
-        throw new HttpError(
-          res.status,
-          `Horizon error ${res.status}`,
-          retryAfter ? parseInt(retryAfter, 10) : undefined,
-        )
-      }
+      if (!res.ok) throw httpErrorFromResponse(res, `Horizon error ${res.status}`)
       return true
     })
   }
@@ -1029,46 +884,23 @@ export class StellarService {
   // ── updateFees ──────────────────────────────────────────────────────────────
 
   async updateFees(params: { baseFee: string; metadataFee: string }): Promise<string> {
-    const functionName = 'updateFees'
-    try {
-      const contractId = STELLAR_CONFIG.factoryContractId
-      if (!contractId) throw new Error('Factory contract ID is not configured')
-
-      const sourceAddress = walletService.getConnectedAddress()
-      if (!sourceAddress) throw new Error('Wallet not connected')
-
-      const server = getRpcServer(this.network)
-      const contract = new Contract(contractId)
-
-      // `update_fees` takes two `Option<i128>` arguments. These were
-      // previously encoded as `["Some", value]` vectors, which is the layout
-      // for `#[contracttype]` enum variants, not for `Option` — the host
-      // handed the vector straight to i128's converter and the call failed to
-      // decode. See `optionI128` for the correct representation.
-      const tx = (await buildTxBuilder(server, sourceAddress, this.network))
-        .addOperation(
-          contract.call(
-            'update_fees',
-            new Address(sourceAddress).toScVal(),
-            optionI128(params.baseFee),
-            optionI128(params.metadataFee),
-          ),
-        )
-        .setTimeout(30)
-        .build()
-
-      return await simulateAndSubmit(server, tx, this.network)
-    } catch (err) {
-      const userError = toUserFacingError(err)
-      const factoryContractId = STELLAR_CONFIG.factoryContractId ?? 'unknown'
-      captureContractError(err instanceof Error ? err : new Error(String(err)), {
-        network: this.network,
-        contractId: factoryContractId,
-        functionName,
-        params: { baseFee: params.baseFee, metadataFee: params.metadataFee },
-      })
-      throw userError
-    }
+    // `update_fees` takes two `Option<i128>` arguments. These were
+    // previously encoded as `["Some", value]` vectors, which is the layout
+    // for `#[contracttype]` enum variants, not for `Option` — the host
+    // handed the vector straight to i128's converter and the call failed to
+    // decode. See `optionI128` for the correct representation.
+    return this.invokeFactory(
+      'updateFees',
+      { baseFee: params.baseFee, metadataFee: params.metadataFee },
+      (contract, sourceAddress) =>
+        contract.call(
+          'update_fees',
+          new Address(sourceAddress).toScVal(),
+          optionI128(params.baseFee),
+          optionI128(params.metadataFee),
+        ),
+      selectHash,
+    )
   }
 
   // ── setWhitelistEnabled ──────────────────────────────────────────────────────
@@ -1079,40 +911,17 @@ export class StellarService {
    * `create_token` / `create_tokens_batch`.
    */
   async setWhitelistEnabled(enabled: boolean): Promise<string> {
-    const functionName = 'setWhitelistEnabled'
-    try {
-      const contractId = STELLAR_CONFIG.factoryContractId
-      if (!contractId) throw new Error('Factory contract ID is not configured')
-
-      const sourceAddress = walletService.getConnectedAddress()
-      if (!sourceAddress) throw new Error('Wallet not connected')
-
-      const server = getRpcServer(this.network)
-      const contract = new Contract(contractId)
-
-      const tx = (await buildTxBuilder(server, sourceAddress, this.network))
-        .addOperation(
-          contract.call(
-            'set_whitelist_enabled',
-            new Address(sourceAddress).toScVal(),
-            nativeToScVal(enabled, { type: 'bool' }),
-          ),
-        )
-        .setTimeout(30)
-        .build()
-
-      return await simulateAndSubmit(server, tx, this.network)
-    } catch (err) {
-      const userError = toUserFacingError(err)
-      const factoryContractId = STELLAR_CONFIG.factoryContractId ?? 'unknown'
-      captureContractError(err instanceof Error ? err : new Error(String(err)), {
-        network: this.network,
-        contractId: factoryContractId,
-        functionName,
-        params: { enabled },
-      })
-      throw userError
-    }
+    return this.invokeFactory(
+      'setWhitelistEnabled',
+      { enabled },
+      (contract, sourceAddress) =>
+        contract.call(
+          'set_whitelist_enabled',
+          new Address(sourceAddress).toScVal(),
+          nativeToScVal(enabled, { type: 'bool' }),
+        ),
+      selectHash,
+    )
   }
 
   // ── getContractEvents ───────────────────────────────────────────────────────
@@ -1183,8 +992,7 @@ export class StellarService {
      */
     tokenCountSnapshot?: number,
   ): Promise<{ tokens: TokenInfo[]; total: number }> {
-    const contractId = STELLAR_CONFIG.factoryContractId
-    if (!contractId) throw new Error('Factory contract ID is not configured')
+    requireFactoryContractId()
 
     const rawCount =
       tokenCountSnapshot !== undefined
@@ -1244,11 +1052,8 @@ export class StellarService {
    * shorter than `limit` as "end of available data" and stop iterating.
    */
   async getTokensByCreator(creator: string, offset: number, limit: number): Promise<TokenInfo[]> {
-    const contractId = STELLAR_CONFIG.factoryContractId
-    if (!contractId) throw new Error('Factory contract ID is not configured')
-
-    const sourceAddress = walletService.getConnectedAddress()
-    if (!sourceAddress) throw new Error('Wallet not connected')
+    const contractId = requireFactoryContractId()
+    const sourceAddress = requireConnectedAddress()
 
     try {
       const server = getRpcServer(this.network)
@@ -1276,15 +1081,11 @@ export class StellarService {
         .filter((r): r is PromiseFulfilledResult<TokenInfo> => r.status === 'fulfilled')
         .map((r) => r.value)
     } catch (err) {
-      const userError = toUserFacingError(err)
-      const factoryContractId = STELLAR_CONFIG.factoryContractId ?? 'unknown'
-      captureContractError(err instanceof Error ? err : new Error(String(err)), {
-        network: this.network,
-        contractId: factoryContractId,
+      this.fail(err, {
+        contractId,
         functionName: 'getTokensByCreator',
         params: { creator, offset, limit },
       })
-      throw userError
     }
   }
 
@@ -1301,9 +1102,7 @@ export class StellarService {
    * registered with the factory.
    */
   async getTokenInfoByAddressView(tokenAddress: string): Promise<TokenInfo> {
-    const contractId = STELLAR_CONFIG.factoryContractId
-    if (!contractId) throw new Error('Factory contract ID is not configured')
-
+    const contractId = requireFactoryContractId()
     const server = getRpcServer(this.network)
     const retval = await callViewReadonly(
       server,
@@ -1332,9 +1131,7 @@ export class StellarService {
    * retention truncation.
    */
   async getTokenMetadataUri(tokenAddress: string): Promise<string> {
-    const contractId = STELLAR_CONFIG.factoryContractId
-    if (!contractId) throw new Error('Factory contract ID is not configured')
-
+    const contractId = requireFactoryContractId()
     const server = getRpcServer(this.network)
     const retval = await callViewReadonly(
       server,
@@ -1425,19 +1222,11 @@ export class StellarService {
    */
   async getTokenEvents(tokenAddress: string): Promise<TokenEventsResult> {
     const contractId = STELLAR_CONFIG.factoryContractId
-    if (!contractId) {
-      return {
-        events: [],
-        retentionLimited: true,
-        retentionDays: RPC_EVENT_RETENTION_DAYS,
-        cursor: null,
-      }
-    }
-
-    const all = await fetchAllContractEvents(this, contractId)
-    const events = all
-      .filter((event) => event.data.tokenAddress === tokenAddress)
-      .sort((a, b) => b.ledger - a.ledger)
+    const events = contractId
+      ? (await fetchAllContractEvents(this, contractId))
+          .filter((event) => event.data.tokenAddress === tokenAddress)
+          .sort((a, b) => b.ledger - a.ledger)
+      : []
 
     return {
       events,
