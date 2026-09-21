@@ -438,6 +438,22 @@ impl TokenFactory {
         env.storage().instance().extend_ttl(MIN_TTL, MAX_TTL);
     }
 
+    /// Load state, rejecting the call with `Reentrancy` if another factory
+    /// operation currently holds the lock (see `FactoryState::locked`).
+    fn load_unlocked_state(env: &Env) -> Result<FactoryState, Error> {
+        let state = Self::load_state(env)?;
+        if state.locked {
+            return Err(Error::Reentrancy);
+        }
+        Ok(state)
+    }
+
+    /// Acquire (`true`) or release (`false`) the reentrancy lock and persist it.
+    fn set_locked(env: &Env, state: &mut FactoryState, locked: bool) {
+        state.locked = locked;
+        Self::save_state(env, state);
+    }
+
     /// Transfer `amount` of `fee_token` from `payer` to `treasury` (or split
     /// recipients if a fee split is configured).
     ///
@@ -709,6 +725,54 @@ impl TokenFactory {
         Ok(())
     }
 
+    // ─── per-token registry helpers ────────────────────────────────────────
+
+    fn owner_key(token_address: &Address) -> (Address, Symbol) {
+        (token_address.clone(), symbol_short!("owner"))
+    }
+
+    fn supply_key(token_address: &Address) -> (Address, Symbol) {
+        (token_address.clone(), symbol_short!("supply"))
+    }
+
+    /// Write every registry entry for a newly registered token at `index`:
+    /// `TokenInfo`, the creator's page, `TokenIndex`, `TokenAddress` and the
+    /// owner mapping. Shared by `record_token` and the test-only
+    /// `fuzz_seed_token` so seeded tokens are stored exactly like real ones.
+    fn register_token(
+        env: &Env,
+        token_address: &Address,
+        creator: &Address,
+        index: u32,
+        info: &TokenInfo,
+    ) -> Result<(), Error> {
+        Self::set_persistent(env, &DataKey::TokenInfo(index), info);
+        Self::append_creator_token(env, creator, index)?;
+        Self::set_persistent(env, &DataKey::TokenIndex(token_address.clone()), &index);
+        Self::set_persistent(env, &DataKey::TokenAddress(index), token_address);
+        Self::set_persistent(env, &Self::owner_key(token_address), creator);
+        Ok(())
+    }
+
+    /// Stored creator of a factory-registered token, or `TokenNotFound`.
+    fn token_creator(env: &Env, token_address: &Address) -> Result<Address, Error> {
+        Self::migrate_addr_keyed(env, &Self::owner_key(token_address)).ok_or(Error::TokenNotFound)
+    }
+
+    /// Index and `TokenInfo` of a factory-registered token, or `TokenNotFound`.
+    fn registered_token(env: &Env, token_address: &Address) -> Result<(u32, TokenInfo), Error> {
+        let index: u32 = Self::migrate_addr_keyed(env, &DataKey::TokenIndex(token_address.clone()))
+            .ok_or(Error::TokenNotFound)?;
+        let info: TokenInfo = Self::migrate_addr_keyed(env, &DataKey::TokenInfo(index))
+            .ok_or(Error::TokenNotFound)?;
+        Ok((index, info))
+    }
+
+    fn metadata_frozen(env: &Env, token_address: &Address) -> bool {
+        Self::migrate_addr_keyed(env, &DataKey::MetadataFrozen(token_address.clone()))
+            .unwrap_or(false)
+    }
+
     fn whitelist_key(address: &Address) -> (soroban_sdk::Symbol, Address) {
         (symbol_short!("wl"), address.clone())
     }
@@ -814,11 +878,7 @@ impl TokenFactory {
         Self::require_not_paused(&env)?;
         creator.require_auth();
 
-        let mut state = Self::load_state(&env)?;
-
-        if state.locked {
-            return Err(Error::Reentrancy);
-        }
+        let mut state = Self::load_unlocked_state(&env)?;
 
         // Validate up-front — before any state mutation, lock, or fee charge —
         // using the same shared routine and the same ordering as
@@ -838,8 +898,7 @@ impl TokenFactory {
             return Err(Error::ArithmeticOverflow);
         }
 
-        state.locked = true;
-        Self::save_state(&env, &state);
+        Self::set_locked(&env, &mut state, true);
 
         let result = Self::create_token_inner(
             &env,
@@ -853,8 +912,7 @@ impl TokenFactory {
             &mut state,
         );
 
-        state.locked = false;
-        Self::save_state(&env, &state);
+        Self::set_locked(&env, &mut state, false);
 
         result
     }
@@ -965,8 +1023,7 @@ impl TokenFactory {
         // full `max_supply`, since the counter (which `mint_tokens` reads via
         // `.unwrap_or(0)`) would otherwise start at zero (issue #1006).
         if max_supply.is_some() {
-            let supply_key = (&token_address, symbol_short!("supply"));
-            Self::set_persistent(env, &supply_key, &initial_supply);
+            Self::set_persistent(env, &Self::supply_key(&token_address), &initial_supply);
         }
 
         state.token_count = state
@@ -977,9 +1034,11 @@ impl TokenFactory {
 
         let token_name = name.clone();
         let token_symbol = symbol.clone();
-        Self::set_persistent(
+        Self::register_token(
             env,
-            &DataKey::TokenInfo(index),
+            &token_address,
+            creator,
+            index,
             &TokenInfo {
                 name,
                 symbol,
@@ -989,13 +1048,7 @@ impl TokenFactory {
                 burn_enabled: true,
                 max_supply,
             },
-        );
-
-        Self::append_creator_token(env, creator, index)?;
-
-        Self::set_persistent(env, &DataKey::TokenIndex(token_address.clone()), &index);
-        Self::set_persistent(env, &DataKey::TokenAddress(index), &token_address);
-        Self::set_persistent(env, &(&token_address, symbol_short!("owner")), creator);
+        )?;
 
         env.events().publish(
             (symbol_short!("factory"), symbol_short!("created")),
@@ -1018,11 +1071,7 @@ impl TokenFactory {
         Self::require_not_paused(&env)?;
         creator.require_auth();
 
-        let mut state = Self::load_state(&env)?;
-
-        if state.locked {
-            return Err(Error::Reentrancy);
-        }
+        let mut state = Self::load_unlocked_state(&env)?;
 
         // Safe: Soroban `Vec::len()` returns a `u32` (at most u32::MAX ≈ 4 × 10⁹),
         // which is well within i128's positive range.  The empty-batch check
@@ -1061,8 +1110,7 @@ impl TokenFactory {
         // Whitelist gate: when enabled, only whitelisted addresses may create tokens.
         Self::require_whitelisted(&env, &state, &creator)?;
 
-        state.locked = true;
-        Self::save_state(&env, &state);
+        Self::set_locked(&env, &mut state, true);
 
         let mut addresses: Vec<Address> = vec![&env];
 
@@ -1088,34 +1136,13 @@ impl TokenFactory {
         // authorized upper bound (see issue #1008), so any surplus above
         // the required fee is never transferred.
         Self::distribute_fee(&env, &state, &creator, total_fee)?;
-        state.locked = false;
-        Self::save_state(&env, &state);
+        Self::set_locked(&env, &mut state, false);
         Ok(addresses)
     }
 
-    pub fn set_metadata(
-        env: Env,
-        token_address: Address,
-        admin: Address,
-        metadata_uri: String,
-        fee_payment: i128,
-    ) -> Result<(), Error> {
-        Self::require_not_paused(&env)?;
-        admin.require_auth();
-
-        let mut state = Self::load_state(&env)?;
-
-        if state.locked {
-            return Err(Error::Reentrancy);
-        }
-
-        if fee_payment < state.metadata_fee {
-            return Err(Error::InsufficientFee);
-        }
-
-        // --- URI validation ---
-        // Must start with "ipfs://" and be non-empty beyond the prefix.
-        // Length is bounded to METADATA_URI_MAX_LEN bytes.
+    /// Accept only `ipfs://<cid>` URIs of at most `METADATA_URI_MAX_LEN` bytes;
+    /// anything else is `InvalidMetadataUri`.
+    fn validate_metadata_uri(metadata_uri: &String) -> Result<(), Error> {
         if metadata_uri.is_empty() {
             return Err(Error::InvalidMetadataUri);
         }
@@ -1135,22 +1162,35 @@ impl TokenFactory {
         if &buf[..7] != b"ipfs://" {
             return Err(Error::InvalidMetadataUri);
         }
+        Ok(())
+    }
 
-        let creator: Address =
-            Self::migrate_addr_keyed(&env, &(&token_address, symbol_short!("owner")))
-                .ok_or(Error::TokenNotFound)?;
+    pub fn set_metadata(
+        env: Env,
+        token_address: Address,
+        admin: Address,
+        metadata_uri: String,
+        fee_payment: i128,
+    ) -> Result<(), Error> {
+        Self::require_not_paused(&env)?;
+        admin.require_auth();
+
+        let mut state = Self::load_unlocked_state(&env)?;
+
+        if fee_payment < state.metadata_fee {
+            return Err(Error::InsufficientFee);
+        }
+
+        Self::validate_metadata_uri(&metadata_uri)?;
+
+        let creator = Self::token_creator(&env, &token_address)?;
 
         if creator != admin {
             return Err(Error::Unauthorized);
         }
 
         // Reject updates on frozen metadata.
-        if Self::migrate_addr_keyed::<_, bool>(
-            &env,
-            &DataKey::MetadataFrozen(token_address.clone()),
-        )
-        .unwrap_or(false)
-        {
+        if Self::metadata_frozen(&env, &token_address) {
             return Err(Error::MetadataFrozen);
         }
 
@@ -1165,8 +1205,7 @@ impl TokenFactory {
             return Err(Error::MetadataFrozen);
         }
 
-        state.locked = true;
-        Self::save_state(&env, &state);
+        Self::set_locked(&env, &mut state, true);
 
         // Charge exactly `metadata_fee` — `fee_payment` is only the caller's
         // authorized upper bound (see issue #1008), so any surplus above
@@ -1186,8 +1225,7 @@ impl TokenFactory {
             &new_version,
         );
 
-        state.locked = false;
-        Self::save_state(&env, &state);
+        Self::set_locked(&env, &mut state, false);
 
         env.events().publish(
             (symbol_short!("factory"), symbol_short!("meta")),
@@ -1203,20 +1241,13 @@ impl TokenFactory {
         Self::require_not_paused(&env)?;
         admin.require_auth();
 
-        let creator: Address =
-            Self::migrate_addr_keyed(&env, &(&token_address, symbol_short!("owner")))
-                .ok_or(Error::TokenNotFound)?;
+        let creator = Self::token_creator(&env, &token_address)?;
 
         if creator != admin {
             return Err(Error::Unauthorized);
         }
 
-        if Self::migrate_addr_keyed::<_, bool>(
-            &env,
-            &DataKey::MetadataFrozen(token_address.clone()),
-        )
-        .unwrap_or(false)
-        {
+        if Self::metadata_frozen(&env, &token_address) {
             // Already frozen — idempotent, not an error.
             return Ok(());
         }
@@ -1256,35 +1287,24 @@ impl TokenFactory {
             return Err(Error::InvalidParameters);
         }
 
-        let mut state = Self::load_state(&env)?;
-
-        if state.locked {
-            return Err(Error::Reentrancy);
-        }
+        let mut state = Self::load_unlocked_state(&env)?;
 
         if fee_payment < state.base_fee {
             return Err(Error::InsufficientFee);
         }
 
         // Fetch token index and verify creator authorization
-        let index: u32 =
-            Self::migrate_addr_keyed(&env, &DataKey::TokenIndex(token_address.clone()))
-                .ok_or(Error::TokenNotFound)?;
-
-        let token_info: TokenInfo = Self::migrate_addr_keyed(&env, &DataKey::TokenInfo(index))
-            .ok_or(Error::TokenNotFound)?;
+        let (_, token_info) = Self::registered_token(&env, &token_address)?;
 
         // Verify admin is the token creator using direct mapping
-        let creator: Address =
-            Self::migrate_addr_keyed(&env, &(&token_address, symbol_short!("owner")))
-                .ok_or(Error::TokenNotFound)?;
+        let creator = Self::token_creator(&env, &token_address)?;
 
         if creator != admin {
             return Err(Error::Unauthorized);
         }
 
         if let Some(cap) = token_info.max_supply {
-            let supply_key = (&token_address, symbol_short!("supply"));
+            let supply_key = Self::supply_key(&token_address);
             let current: i128 = Self::migrate_addr_keyed(&env, &supply_key).unwrap_or(0i128);
             let new_total = current
                 .checked_add(amount)
@@ -1295,8 +1315,7 @@ impl TokenFactory {
             Self::set_persistent(&env, &supply_key, &new_total);
         }
 
-        state.locked = true;
-        Self::save_state(&env, &state);
+        Self::set_locked(&env, &mut state, true);
 
         // Charge exactly `base_fee` — `fee_payment` is only the caller's
         // authorized upper bound (see issue #1008), so any surplus above
@@ -1305,8 +1324,7 @@ impl TokenFactory {
 
         token::StellarAssetClient::new(&env, &token_address).mint(&to, &amount);
 
-        state.locked = false;
-        Self::save_state(&env, &state);
+        Self::set_locked(&env, &mut state, false);
 
         env.events().publish(
             (symbol_short!("factory"), symbol_short!("mint")),
@@ -1344,11 +1362,7 @@ impl TokenFactory {
         // factory ever invoking it. Making the lookup mandatory also makes the
         // `burn_enabled` gate unconditional: no code path reaches the burn call
         // without having verified the flag.
-        let index: u32 =
-            Self::migrate_addr_keyed(&env, &DataKey::TokenIndex(token_address.clone()))
-                .ok_or(Error::TokenNotFound)?;
-        let info: TokenInfo = Self::migrate_addr_keyed(&env, &DataKey::TokenInfo(index))
-            .ok_or(Error::TokenNotFound)?;
+        let (_, info) = Self::registered_token(&env, &token_address)?;
         if !info.burn_enabled {
             return Err(Error::Unauthorized);
         }
@@ -1368,20 +1382,19 @@ impl TokenFactory {
         // Note: `burn` does not load a full FactoryState (it is intentionally
         // lightweight and works even when the factory is paused), so we guard
         // via a direct storage read/write rather than through `load_state`.
-        let state_key = DataKey::State;
-        if let Some(mut state) = env.storage().instance().get::<_, FactoryState>(&state_key) {
+        if let Some(mut state) = env
+            .storage()
+            .instance()
+            .get::<_, FactoryState>(&DataKey::State)
+        {
             if state.locked {
                 return Err(Error::Reentrancy);
             }
-            state.locked = true;
-            env.storage().instance().set(&state_key, &state);
-            env.storage().instance().extend_ttl(MIN_TTL, MAX_TTL);
+            Self::set_locked(&env, &mut state, true);
 
             token.burn(&from, &amount);
 
-            state.locked = false;
-            env.storage().instance().set(&state_key, &state);
-            env.storage().instance().extend_ttl(MIN_TTL, MAX_TTL);
+            Self::set_locked(&env, &mut state, false);
         } else {
             // Factory not initialized — proceed without the lock (no state to protect).
             token.burn(&from, &amount);
@@ -1402,26 +1415,15 @@ impl TokenFactory {
     ) -> Result<(), Error> {
         admin.require_auth();
 
-        let mut state = Self::load_state(&env)?;
+        let mut state = Self::load_unlocked_state(&env)?;
 
-        if state.locked {
-            return Err(Error::Reentrancy);
-        }
-
-        let creator: Address =
-            Self::migrate_addr_keyed(&env, &(&token_address, symbol_short!("owner")))
-                .ok_or(Error::TokenNotFound)?;
+        let creator = Self::token_creator(&env, &token_address)?;
 
         if creator != admin {
             return Err(Error::Unauthorized);
         }
 
-        let index: u32 =
-            Self::migrate_addr_keyed(&env, &DataKey::TokenIndex(token_address.clone()))
-                .ok_or(Error::TokenNotFound)?;
-
-        let mut info: TokenInfo = Self::migrate_addr_keyed(&env, &DataKey::TokenInfo(index))
-            .ok_or(Error::TokenNotFound)?;
+        let (index, mut info) = Self::registered_token(&env, &token_address)?;
 
         // set_burn_enabled does not make any external cross-contract calls, so
         // the lock is acquired and immediately released in the same call frame.
@@ -1429,14 +1431,12 @@ impl TokenFactory {
         // share the same invariant so future additions cannot accidentally
         // introduce cross-contract calls without being noticed as "already
         // guarded" or "newly needs the guard".
-        state.locked = true;
-        Self::save_state(&env, &state);
+        Self::set_locked(&env, &mut state, true);
 
         info.burn_enabled = enabled;
         Self::set_persistent(&env, &DataKey::TokenInfo(index), &info);
 
-        state.locked = false;
-        Self::save_state(&env, &state);
+        Self::set_locked(&env, &mut state, false);
 
         Ok(())
     }
@@ -1672,15 +1672,10 @@ impl TokenFactory {
         if state.admin != admin {
             return Err(Error::Unauthorized);
         }
-        if state.pending_upgrade_hash.is_none() {
+        let Some(cancelled_hash) = state.pending_upgrade_hash.take() else {
             // Nothing to cancel — idempotent.
             return Ok(());
-        }
-        let cancelled_hash = state
-            .pending_upgrade_hash
-            .clone()
-            .ok_or(Error::NoUpgradePending)?;
-        state.pending_upgrade_hash = None;
+        };
         state.pending_upgrade_ready_at = None;
         Self::save_state(&env, &state);
         env.events().publish(
@@ -1709,11 +1704,7 @@ impl TokenFactory {
 
         if on_chain_version < 1 {
             // Version 1: stamp schema_version onto pre-versioned state.
-            let mut s = Self::load_state(&env)?;
-            s.schema_version = 1;
-            Self::save_state(&env, &s);
-            on_chain_version = 1;
-            env.storage().instance().set(&sv_key, &on_chain_version);
+            on_chain_version = Self::complete_schema_step(&env, 1, |_| {})?;
         }
 
         if on_chain_version < 2 {
@@ -1734,11 +1725,7 @@ impl TokenFactory {
             // `mint` event the token contract itself has emitted since
             // deployment). See docs/contract-abi.md ("Supply cap accounting")
             // for the full back-fill procedure and its limitations.
-            let mut s = Self::load_state(&env)?;
-            s.schema_version = 2;
-            Self::save_state(&env, &s);
-            on_chain_version = 2;
-            env.storage().instance().set(&sv_key, &on_chain_version);
+            on_chain_version = Self::complete_schema_step(&env, 2, |_| {})?;
         }
 
         if on_chain_version < 3 {
@@ -1792,16 +1779,12 @@ impl TokenFactory {
             // more than `MIGRATE_TOKEN_INFO_CHUNK` tokens must therefore call
             // `migrate` repeatedly until `get_state().schema_version == 3`.
             if target >= state.token_count {
-                let mut s = Self::load_state(&env)?;
                 // Version 3 also adds the `whitelist_enabled` field,
                 // defaulting to `false` so existing deployments keep their
                 // open behaviour until an admin explicitly enables
                 // enforcement via `set_whitelist_enabled`.
-                s.whitelist_enabled = false;
-                s.schema_version = 3;
-                Self::save_state(&env, &s);
-                on_chain_version = 3;
-                env.storage().instance().set(&sv_key, &on_chain_version);
+                on_chain_version =
+                    Self::complete_schema_step(&env, 3, |s| s.whitelist_enabled = false)?;
             }
         }
 
@@ -1817,9 +1800,9 @@ impl TokenFactory {
         // Each future migration step follows the same pattern:
         //
         //   if on_chain_version < N {
-        //       // … apply N-specific changes …
-        //       on_chain_version = N;
-        //       env.storage().instance().set(&sv_key, &on_chain_version);
+        //       on_chain_version = Self::complete_schema_step(&env, N, |s| {
+        //           // … apply N-specific changes to `s` …
+        //       })?;
         //   }
         //
         // Because `on_chain_version` is updated in-place between blocks,
@@ -1833,13 +1816,10 @@ impl TokenFactory {
             // existing deployments remain in "no pending proposal" state after
             // migration — there is no behavioral change until `propose_admin`
             // is first called.
-            let mut s = Self::load_state(&env)?;
-            s.pending_admin = None;
-            s.pending_admin_expiry = None;
-            s.schema_version = 4;
-            Self::save_state(&env, &s);
-            on_chain_version = 4;
-            env.storage().instance().set(&sv_key, &on_chain_version);
+            on_chain_version = Self::complete_schema_step(&env, 4, |s| {
+                s.pending_admin = None;
+                s.pending_admin_expiry = None;
+            })?;
         }
 
         if on_chain_version < 5 {
@@ -1849,17 +1829,30 @@ impl TokenFactory {
             // existing deployments remain in "no pending upgrade" state after
             // migration — no behavioral change until `propose_upgrade` is
             // first called.
-            let mut s = Self::load_state(&env)?;
-            s.pending_upgrade_hash = None;
-            s.pending_upgrade_ready_at = None;
-            s.schema_version = 5;
-            Self::save_state(&env, &s);
-            on_chain_version = 5;
-            env.storage().instance().set(&sv_key, &on_chain_version);
+            on_chain_version = Self::complete_schema_step(&env, 5, |s| {
+                s.pending_upgrade_hash = None;
+                s.pending_upgrade_ready_at = None;
+            })?;
         }
 
         let _ = on_chain_version; // suppress unused-variable warning when no further steps exist
         Ok(())
+    }
+
+    /// Finish one `migrate` step: apply `update` to the stored state, stamp it
+    /// with schema `version`, and advance the on-chain `"sv"` marker to match.
+    /// Returns `version` so the caller can bump its local `on_chain_version`.
+    fn complete_schema_step(
+        env: &Env,
+        version: u32,
+        update: impl FnOnce(&mut FactoryState),
+    ) -> Result<u32, Error> {
+        let mut s = Self::load_state(env)?;
+        update(&mut s);
+        s.schema_version = version;
+        Self::save_state(env, &s);
+        env.storage().instance().set(&symbol_short!("sv"), &version);
+        Ok(version)
     }
 
     /// One-time back-fill of the tracked-supply counter for a capped token
@@ -1888,11 +1881,7 @@ impl TokenFactory {
             return Err(Error::Unauthorized);
         }
 
-        let index: u32 =
-            Self::migrate_addr_keyed(&env, &DataKey::TokenIndex(token_address.clone()))
-                .ok_or(Error::TokenNotFound)?;
-        let token_info: TokenInfo = Self::migrate_addr_keyed(&env, &DataKey::TokenInfo(index))
-            .ok_or(Error::TokenNotFound)?;
+        let (_, token_info) = Self::registered_token(&env, &token_address)?;
         let cap = token_info.max_supply.ok_or(Error::InvalidParameters)?;
 
         if verified_supply < 0 || verified_supply > cap {
@@ -1905,7 +1894,7 @@ impl TokenFactory {
             return Err(Error::AlreadyBackfilled);
         }
 
-        let supply_key = (&token_address, symbol_short!("supply"));
+        let supply_key = Self::supply_key(&token_address);
         let current: i128 = Self::migrate_addr_keyed(&env, &supply_key).unwrap_or(0i128);
         if verified_supply > current {
             Self::set_persistent(&env, &supply_key, &verified_supply);
@@ -1979,10 +1968,10 @@ impl TokenFactory {
     pub fn accept_admin(env: Env, new_admin: Address) -> Result<(), Error> {
         new_admin.require_auth();
         let mut state = Self::load_state(&env)?;
-        let proposed = match state.pending_admin.as_ref() {
-            Some(p) => p.clone(),
-            None => return Err(Error::NoPendingProposal),
-        };
+        let proposed = state
+            .pending_admin
+            .clone()
+            .ok_or(Error::NoPendingProposal)?;
         if proposed != new_admin {
             return Err(Error::NoPendingProposal);
         }
@@ -2020,13 +2009,9 @@ impl TokenFactory {
         if state.admin != current_admin {
             return Err(Error::Unauthorized);
         }
-        if state.pending_admin.is_none() {
+        let Some(cancelled) = state.pending_admin.take() else {
             // Nothing to cancel — idempotent.
             return Ok(());
-        }
-        let cancelled = match state.pending_admin.take() {
-            Some(addr) => addr,
-            None => return Ok(()), // already cleared — idempotent
         };
         state.pending_admin_expiry = None;
         Self::save_state(&env, &state);
@@ -2238,11 +2223,7 @@ impl TokenFactory {
 
         // Clamp the requested page size to prevent pathologically large
         // responses from causing ledger entry size errors.
-        let effective_limit = if limit > MAX_TOKENS_BY_CREATOR_PAGE {
-            MAX_TOKENS_BY_CREATOR_PAGE
-        } else {
-            limit
-        };
+        let effective_limit = limit.min(MAX_TOKENS_BY_CREATOR_PAGE);
 
         let total: u32 =
             Self::read_addr_keyed(&env, &DataKey::CreatorTokenCount(creator.clone())).unwrap_or(0);
@@ -2317,9 +2298,11 @@ impl TokenFactory {
             .expect("token_count overflow while seeding");
         let index = state.token_count;
 
-        Self::set_persistent(
+        Self::register_token(
             env,
-            &DataKey::TokenInfo(index),
+            token_addr,
+            creator,
+            index,
             &TokenInfo {
                 name,
                 symbol,
@@ -2329,12 +2312,8 @@ impl TokenFactory {
                 burn_enabled,
                 max_supply,
             },
-        );
-        Self::append_creator_token(env, creator, index)
-            .expect("append_creator_token failed while seeding");
-        Self::set_persistent(env, &DataKey::TokenIndex(token_addr.clone()), &index);
-        Self::set_persistent(env, &DataKey::TokenAddress(index), token_addr);
-        Self::set_persistent(env, &(token_addr, symbol_short!("owner")), creator);
+        )
+        .expect("append_creator_token failed while seeding");
 
         Self::save_state(env, &state);
         index
