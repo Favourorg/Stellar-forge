@@ -1,3 +1,10 @@
+## [1.10.3](https://github.com/Favourorg/Stellar-forge/compare/v1.10.2...v1.10.3) (2026-09-21)
+
+
+### Bug Fixes
+
+* **deps:** patch high-severity npm advisories in frontend ([31bc0b2](https://github.com/Favourorg/Stellar-forge/commit/31bc0b2308e10c48bf0ea9d6feaf4bdd29eda6fe)), closes [hi#severity](https://github.com/hi/issues/severity)
+
 ## [1.10.2](https://github.com/Favourorg/Stellar-forge/compare/v1.10.1...v1.10.2) (2026-09-21)
 
 
