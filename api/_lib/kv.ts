@@ -81,8 +81,11 @@ export async function kvGet(key: string): Promise<string | null> {
   return data.result ?? null
 }
 
-/** Writes `value` with a hard expiry of `exSeconds`, replacing any prior value. */
-export async function kvSet(key: string, value: string, exSeconds: number): Promise<void> {
+/**
+ * Writes `value`, replacing any prior value. With `exSeconds` the key has a
+ * hard expiry; without it the key persists until deleted.
+ */
+export async function kvSet(key: string, value: string, exSeconds?: number): Promise<void> {
   await kvFetch(`set/${encodeURIComponent(key)}`, {
     method: 'POST',
     body: JSON.stringify({ ex: exSeconds, value }),
