@@ -1,3 +1,10 @@
+## [1.10.1](https://github.com/Favourorg/Stellar-forge/compare/v1.10.0...v1.10.1) (2026-09-21)
+
+
+### Bug Fixes
+
+* **scripts:** make stellar-impl ABI check count arguments exactly ([94ff7c7](https://github.com/Favourorg/Stellar-forge/commit/94ff7c78f7ab34b6c0b58f597cd4eefa9abbc537))
+
 # [1.10.0](https://github.com/Favourorg/Stellar-forge/compare/v1.9.3...v1.10.0) (2026-09-21)
 
 
