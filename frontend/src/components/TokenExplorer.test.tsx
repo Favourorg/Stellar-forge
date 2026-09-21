@@ -216,4 +216,40 @@ describe('TokenExplorer', () => {
     const card = cards[0]!.closest('div')!
     expect(within(card).queryByRole('link', { name: /view full details/i })).toBeNull()
   })
+
+  it('searches by 1-based index using the already-loaded event history', async () => {
+    snapshotTokenCount(2)
+    getAllTokens.mockResolvedValue({ tokens: [tokenAt(2), tokenAt(1)], total: 2 })
+    fetchAllContractEvents.mockResolvedValue([created(1, 'CADDR1'), created(2, 'CADDR2')])
+    getTokenInfoByAddress.mockResolvedValue({ ...tokenAt(1), name: 'Found Token' })
+
+    renderExplorer()
+    await waitFor(() => expect(screen.getByText('Token 2')).toBeInTheDocument())
+
+    await userEvent.type(screen.getByLabelText('Token Address or Index'), '1')
+    await userEvent.click(screen.getByRole('button', { name: 'Search' }))
+
+    await waitFor(() => expect(screen.getByText('Found Token')).toBeInTheDocument())
+    expect(getTokenInfoByAddress).toHaveBeenCalledWith('CADDR1')
+    // The index → address correlation comes from the history the list already
+    // fetched; searching does not page through every event again.
+    expect(fetchAllContractEvents).toHaveBeenCalledTimes(1)
+  })
+
+  it('reports an index with no known address as not found', async () => {
+    snapshotTokenCount(2)
+    getAllTokens.mockResolvedValue({ tokens: [tokenAt(2), tokenAt(1)], total: 2 })
+    fetchAllContractEvents.mockResolvedValue([created(1, 'CADDR1')])
+
+    renderExplorer()
+    await waitFor(() => expect(screen.getByText('Token 2')).toBeInTheDocument())
+
+    await userEvent.type(screen.getByLabelText('Token Address or Index'), '2')
+    await userEvent.click(screen.getByRole('button', { name: 'Search' }))
+
+    await waitFor(() =>
+      expect(screen.getByText('Token not found at this index')).toBeInTheDocument(),
+    )
+    expect(getTokenInfoByAddress).not.toHaveBeenCalled()
+  })
 })
