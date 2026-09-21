@@ -15,15 +15,20 @@ export function MisconfigurationScreen({ missing }: Props) {
           <span className="text-3xl" aria-hidden="true">
             ⚠️
           </span>
-          <h1 className="text-xl font-bold text-red-600 dark:text-red-400">Configuration Required</h1>
+          <h1 className="text-xl font-bold text-red-600 dark:text-red-400">
+            Configuration Required
+          </h1>
         </div>
         <p className="text-gray-700 dark:text-gray-300 mb-6">
           To run this application, configure the required environment variables below. Copy{' '}
           <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded text-sm">.env.example</code> to{' '}
-          <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded text-sm">.env</code> in the frontend directory.
+          <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded text-sm">.env</code> in the
+          frontend directory.
         </p>
         <div className="mb-6">
-          <h2 className="text-sm font-semibold text-gray-800 dark:text-gray-200 mb-3">Missing Variables ({missing.length}):</h2>
+          <h2 className="text-sm font-semibold text-gray-800 dark:text-gray-200 mb-3">
+            Missing Variables ({missing.length}):
+          </h2>
           <ul className="space-y-3">
             {missing.map((item) => (
               <li
@@ -32,8 +37,12 @@ export function MisconfigurationScreen({ missing }: Props) {
               >
                 <span className="text-red-500 mt-0.5 font-bold">✗</span>
                 <div className="flex-1">
-                  <code className="block font-mono font-semibold text-red-600 dark:text-red-400 text-base">{item.key}</code>
-                  <span className="text-xs text-gray-600 dark:text-gray-400 mt-1 block leading-relaxed">{item.description}</span>
+                  <code className="block font-mono font-semibold text-red-600 dark:text-red-400 text-base">
+                    {item.key}
+                  </code>
+                  <span className="text-xs text-gray-600 dark:text-gray-400 mt-1 block leading-relaxed">
+                    {item.description}
+                  </span>
                 </div>
               </li>
             ))}
