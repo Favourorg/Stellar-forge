@@ -1,3 +1,10 @@
+## [1.10.2](https://github.com/Favourorg/Stellar-forge/compare/v1.10.1...v1.10.2) (2026-09-21)
+
+
+### Bug Fixes
+
+* **api:** record pin owner in memory when the KV write fails ([06e3d27](https://github.com/Favourorg/Stellar-forge/commit/06e3d2729aa1fd95db9fb56de795bf3677838f29))
+
 ## [1.10.1](https://github.com/Favourorg/Stellar-forge/compare/v1.10.0...v1.10.1) (2026-09-21)
 
 
