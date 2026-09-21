@@ -343,47 +343,54 @@ export function useTransactionPolling(txHash: string): UseTransactionPollingResu
     let attempt = 0
     let pollTimeoutId: ReturnType<typeof setTimeout> | undefined
 
-    const poll = async () => {
+    function settle() {
+      settled = true
+      clearTimeout(pollTimeoutId)
+    }
+
+    function scheduleNextPoll() {
+      const delay = nextBackoffDelay(attempt, {
+        initialDelayMs: INITIAL_DELAY_MS,
+        maxDelayMs: MAX_DELAY_MS,
+      })
+      attempt += 1
+      pollTimeoutId = setTimeout(poll, delay)
+    }
+
+    /** Capture to Sentry with full transaction correlation tags. */
+    function report(err: Error): string | undefined {
+      return captureTransactionError(err, {
+        txHash,
+        network: STELLAR_CONFIG.network,
+        contractId: STELLAR_CONFIG.factoryContractId ?? undefined,
+        functionName: 'pollTransaction',
+      })
+    }
+
+    async function poll() {
       try {
         const result = await stellarService.getTransaction(txHash)
         if (settled) return
 
         if (result.status === 'success') {
-          settled = true
-          clearTimeout(pollTimeoutId)
+          settle()
           setStatus('success')
         } else if (result.status === 'error' || result.status === 'failed') {
-          settled = true
-          clearTimeout(pollTimeoutId)
+          settle()
           setStatus('failed')
           const failure = describePollFailure(
             result,
             typeof result.error === 'string' ? result.error : 'Transaction failed',
           )
-          const errorMessage = failure.message
-          setError(errorMessage)
+          setError(failure.message)
           setDeterministicFailure(failure.deterministic)
           setRetryRequirement(failure.retryRequirement)
 
-          // Capture to Sentry with full transaction correlation tags
-          const eventId = captureTransactionError(
-            new Error(`Transaction failed: ${errorMessage}`),
-            {
-              txHash,
-              network: STELLAR_CONFIG.network,
-              contractId: STELLAR_CONFIG.factoryContractId ?? undefined,
-              functionName: 'pollTransaction',
-            },
-          )
+          const eventId = report(new Error(`Transaction failed: ${failure.message}`))
           if (eventId) setSentryEventId(eventId)
         } else {
           // status === 'pending' — schedule the next attempt with backoff
-          const delay = nextBackoffDelay(attempt, {
-            initialDelayMs: INITIAL_DELAY_MS,
-            maxDelayMs: MAX_DELAY_MS,
-          })
-          attempt += 1
-          pollTimeoutId = setTimeout(poll, delay)
+          scheduleNextPoll()
         }
       } catch (err) {
         if (settled) return
@@ -392,31 +399,16 @@ export function useTransactionPolling(txHash: string): UseTransactionPollingResu
         // the same distinction the RPC poller draws between NOT_FOUND and a
         // transport failure. Keep polling until the overall timeout decides.
         if (isNotFoundError(err)) {
-          const delay = nextBackoffDelay(attempt, {
-            initialDelayMs: INITIAL_DELAY_MS,
-            maxDelayMs: MAX_DELAY_MS,
-          })
-          attempt += 1
-          pollTimeoutId = setTimeout(poll, delay)
+          scheduleNextPoll()
           return
         }
 
-        settled = true
-        clearTimeout(pollTimeoutId)
+        settle()
         setStatus('failed')
         const errorMessage = err instanceof Error ? err.message : 'Transaction failed'
         setError(errorMessage)
 
-        // Capture to Sentry with full transaction correlation tags
-        const eventId = captureTransactionError(
-          err instanceof Error ? err : new Error(errorMessage),
-          {
-            txHash,
-            network: STELLAR_CONFIG.network,
-            contractId: STELLAR_CONFIG.factoryContractId ?? undefined,
-            functionName: 'pollTransaction',
-          },
-        )
+        const eventId = report(err instanceof Error ? err : new Error(errorMessage))
         if (eventId) setSentryEventId(eventId)
       }
     }
@@ -425,8 +417,7 @@ export function useTransactionPolling(txHash: string): UseTransactionPollingResu
 
     const timeoutId = setTimeout(() => {
       if (settled) return
-      settled = true
-      clearTimeout(pollTimeoutId)
+      settle()
       // Not a failure: the transaction was accepted and may still land. The
       // UI must say so rather than inviting a re-sign.
       setStatus('unconfirmed')
@@ -435,12 +426,7 @@ export function useTransactionPolling(txHash: string): UseTransactionPollingResu
           'the polling window. Check the explorer before submitting it again.',
       )
 
-      captureTransactionError(new Error(`Transaction polling timed out: ${txHash}`), {
-        txHash,
-        network: STELLAR_CONFIG.network,
-        contractId: STELLAR_CONFIG.factoryContractId ?? undefined,
-        functionName: 'pollTransaction',
-      })
+      report(new Error(`Transaction polling timed out: ${txHash}`))
     }, TIMEOUT_MS)
 
     return () => {
@@ -456,11 +442,11 @@ export function useTransactionPolling(txHash: string): UseTransactionPollingResu
   // identical call would be rejected identically, at the cost of another fee.
   const safeToRetry = status === 'failed' && !deterministicFailure
 
-  const base = {
+  return {
     status,
     safeToRetry,
     ...(retryRequirement ? { retryRequirement } : {}),
+    ...(error !== undefined ? { error } : {}),
+    ...(sentryEventId ? { sentryEventId } : {}),
   }
-  if (error === undefined) return sentryEventId ? { ...base, sentryEventId } : base
-  return sentryEventId ? { ...base, error, sentryEventId } : { ...base, error }
 }
