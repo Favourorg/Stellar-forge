@@ -5,6 +5,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Manual redeploy from the Actions tab (e.g. after changing Pages settings).
+  workflow_dispatch:
 
 permissions:
   contents: read
