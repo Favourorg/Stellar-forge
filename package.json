@@ -14,8 +14,8 @@
     "test:scripts": "node --test scripts/*.test.mjs",
     "contract:compile": "cd contracts/token-factory && cargo build --target wasm32v1-none --release",
     "frontend:dev": "cd frontend && npm run dev",
-    "start": "npm run contract:compile && npm run frontend:dev",
-    "dev:all": "concurrently -n contract,frontend -c cyan,green \"npm run contract:compile\" \"npm run frontend:dev\"",
+    "start": "node init && npm run contract:compile && npm run frontend:dev",
+    "dev:all": "node init && concurrently -n contract,frontend -c cyan,green \"npm run contract:compile\" \"npm run frontend:dev\"",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

@@ -1,7 +1,5 @@
 node_modules/
 dist/
-.env
-.env.local
 *.local
 
 # Test coverage
@@ -19,7 +17,6 @@ Thumbs.db
 
 # Editor
 .idea/
-.vscode/
 
 # Build output
 build/
@@ -31,3 +28,4 @@ out/
 quick-pr.sh
 push-to-fork.sh
 contracts/token-factory/test_snapshots/**/prop_*.json
+config.bat
