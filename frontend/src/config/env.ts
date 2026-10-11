@@ -4,6 +4,31 @@ export const ENV = {
   network: import.meta.env.VITE_NETWORK || 'testnet',
   factoryContractId: import.meta.env.VITE_FACTORY_CONTRACT_ID ?? '',
   tokenWasmHash: import.meta.env.VITE_TOKEN_WASM_HASH ?? '',
+
+  // Per-network factory contract IDs (Issue #1016)
+  factoryContractIdTestnet:
+    import.meta.env.VITE_FACTORY_CONTRACT_ID_TESTNET ??
+    import.meta.env.VITE_FACTORY_CONTRACT_ID ??
+    '',
+  factoryContractIdMainnet:
+    import.meta.env.VITE_FACTORY_CONTRACT_ID_MAINNET ?? '',
+  factoryContractIdStandalone:
+    import.meta.env.VITE_FACTORY_CONTRACT_ID_STANDALONE ?? '',
+
+  // Per-network token WASM hashes (Issue #1016)
+  tokenWasmHashTestnet:
+    import.meta.env.VITE_TOKEN_WASM_HASH_TESTNET ??
+    import.meta.env.VITE_TOKEN_WASM_HASH ??
+    '',
+  tokenWasmHashMainnet:
+    import.meta.env.VITE_TOKEN_WASM_HASH_MAINNET ?? '',
+  tokenWasmHashStandalone:
+    import.meta.env.VITE_TOKEN_WASM_HASH_STANDALONE ?? '',
+
+  // Explicit Mainnet Soroban RPC endpoint (Issue #1016)
+  sorobanRpcUrlMainnet:
+    import.meta.env.VITE_SOROBAN_RPC_URL_MAINNET ?? '',
+
   /*
    * Pinata credentials are deliberately absent. Vite inlines every `VITE_`
    * variable into the built JS, so reading them here published the key and
@@ -22,5 +47,9 @@ export const ENV = {
   indexerBaseUrl: import.meta.env.VITE_INDEXER_BASE_URL ?? '',
 } as const
 
-export const isFactoryConfigured = (): boolean => Boolean(ENV.factoryContractId)
+export const isFactoryConfigured = (network?: 'testnet' | 'mainnet' | 'standalone'): boolean => {
+  if (network === 'mainnet') return Boolean(ENV.factoryContractIdMainnet)
+  if (network === 'standalone') return Boolean(ENV.factoryContractIdStandalone)
+  return Boolean(ENV.factoryContractIdTestnet || ENV.factoryContractId)
+}
 export const isIndexerEnabled = (): boolean => ENV.indexerEnabled

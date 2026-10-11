@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { stellarService } from '../services/stellar'
-import { STELLAR_CONFIG } from '../config/stellar'
+import { STELLAR_CONFIG, type Network } from '../config/stellar'
 import type { TokenInfo } from '../types'
 
 // ── Module-level cache keyed by creator address ('' = all tokens) ─────────────
@@ -40,8 +40,14 @@ const cache = new Map<string, CacheEntry>()
 
 const GLOBAL_KEY_PREFIX = 'all'
 
-function globalPageKey(page: number, pageSize: number): string {
-  return `${GLOBAL_KEY_PREFIX}:${STELLAR_CONFIG.network}:${STELLAR_CONFIG.factoryContractId}:${pageSize}:${page}`
+function globalPageKey(
+  page: number,
+  pageSize: number,
+  network: Network = (STELLAR_CONFIG.network as Network),
+): string {
+  const contractId =
+    (STELLAR_CONFIG as Record<string, any>)[network]?.factoryContractId || STELLAR_CONFIG.factoryContractId
+  return `${GLOBAL_KEY_PREFIX}:${network}:${contractId}:${pageSize}:${page}`
 }
 
 /**
@@ -50,8 +56,12 @@ function globalPageKey(page: number, pageSize: number): string {
  * invalidates the list (see App's CreateTokenWrapper) — so a new token shows
  * up without waiting for the TTL to lapse.
  */
-function invalidateGlobalPages(): void {
-  const prefix = `${GLOBAL_KEY_PREFIX}:${STELLAR_CONFIG.network}:${STELLAR_CONFIG.factoryContractId}:`
+function invalidateGlobalPages(
+  network: Network = (STELLAR_CONFIG.network as Network),
+): void {
+  const contractId =
+    (STELLAR_CONFIG as Record<string, any>)[network]?.factoryContractId || STELLAR_CONFIG.factoryContractId
+  const prefix = `${GLOBAL_KEY_PREFIX}:${network}:${contractId}:`
   for (const key of [...cache.keys()]) {
     if (key.startsWith(prefix)) cache.delete(key)
   }
