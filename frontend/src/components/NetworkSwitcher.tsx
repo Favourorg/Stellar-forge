@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react'
 import { Button } from './UI'
 import { useTranslation } from 'react-i18next'
 import { useNetwork, type Network } from '../context/NetworkContext'
+import { validateNetworkConfig } from '../config/stellar'
 
 const BADGE_COLORS: Record<Network, string> = {
   testnet: 'bg-yellow-100 text-yellow-800 border-yellow-300',
@@ -14,6 +15,10 @@ export const NetworkSwitcher: React.FC = () => {
   const { network, switchNetwork } = useNetwork()
   const [open, setOpen] = useState(false)
   const [pendingNetwork, setPendingNetwork] = useState<Network | null>(null)
+  const [unconfiguredNetwork, setUnconfiguredNetwork] = useState<{
+    network: Network
+    missingVars: string[]
+  } | null>(null)
   const dropdownRef = useRef<HTMLDivElement>(null)
   const confirmBtnRef = useRef<HTMLButtonElement>(null)
 
@@ -34,6 +39,13 @@ export const NetworkSwitcher: React.FC = () => {
   const handleSelect = (n: Network) => {
     setOpen(false)
     if (n === network) return
+
+    const validation = validateNetworkConfig(n)
+    if (!validation.isConfigured) {
+      setUnconfiguredNetwork({ network: n, missingVars: validation.missingVars })
+      return
+    }
+
     if (n === 'mainnet') setPendingNetwork(n)
     else switchNetwork(n)
   }
@@ -151,6 +163,54 @@ export const NetworkSwitcher: React.FC = () => {
                 onClick={confirmSwitch}
               >
                 {t('networkSwitcher.confirm')}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {unconfiguredNetwork && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="unconfigured-warning-title"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4"
+        >
+          <div className="w-full max-w-sm rounded-lg bg-white p-6 shadow-xl">
+            <div className="flex items-start gap-3">
+              <span className="flex-shrink-0 rounded-full bg-amber-100 p-2" aria-hidden="true">
+                <svg className="h-5 w-5 text-amber-600" viewBox="0 0 20 20" fill="currentColor">
+                  <path
+                    fillRule="evenodd"
+                    d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z"
+                    clipRule="evenodd"
+                  />
+                </svg>
+              </span>
+              <div>
+                <h2 id="unconfigured-warning-title" className="text-sm font-semibold text-gray-900">
+                  {t('networkSwitcher.unconfiguredTitle', 'Network Not Configured')}
+                </h2>
+                <p className="mt-1 text-sm text-gray-600">
+                  {t(
+                    'networkSwitcher.unconfiguredDesc',
+                    'Cannot switch to this network. The following required environment variables are missing:',
+                  )}
+                </p>
+                <ul className="mt-2 list-disc list-inside text-xs font-mono text-amber-900 bg-amber-50 p-2 rounded border border-amber-200">
+                  {unconfiguredNetwork.missingVars.map((v) => (
+                    <li key={v}>{v}</li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+            <div className="mt-5 flex justify-end">
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => setUnconfiguredNetwork(null)}
+              >
+                {t('networkSwitcher.close', 'Close')}
               </Button>
             </div>
           </div>
