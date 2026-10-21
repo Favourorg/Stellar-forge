@@ -1,6 +1,6 @@
 # StellarForge - Stellar Token Deployer
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/Favourorg/Stellar-forge&root=frontend&env=VITE_FACTORY_CONTRACT_ID,VITE_TOKEN_WASM_HASH,PINATA_API_KEY,PINATA_API_SECRET&envDescription=Required%20environment%20variables%20for%20StellarForge&envLink=https://github.com/Favourorg/Stellar-forge/blob/main/docs/deployment-vercel.md)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/Favourorg/Stellar-forge&root=frontend&env=VITE_FACTORY_CONTRACT_ID_TESTNET,VITE_FACTORY_CONTRACT_ID_MAINNET,VITE_TOKEN_WASM_HASH_TESTNET,VITE_SOROBAN_RPC_URL_MAINNET,PINATA_API_KEY,PINATA_API_SECRET&envDescription=Required%20environment%20variables%20for%20StellarForge&envLink=https://github.com/Favourorg/Stellar-forge/blob/main/docs/deployment-vercel.md)
 
 StellarForge is a user-friendly decentralized application (dApp) that enables creators, entrepreneurs, and businesses in emerging markets to deploy custom tokens on the Stellar blockchain without writing a single line of code.
 
@@ -169,7 +169,9 @@ Then edit `frontend/.env`:
 
 ```env
 VITE_NETWORK=testnet
-VITE_FACTORY_CONTRACT_ID=<deployed-contract-id>
+VITE_FACTORY_CONTRACT_ID_TESTNET=<deployed-testnet-contract-id>
+VITE_FACTORY_CONTRACT_ID_MAINNET=<deployed-mainnet-contract-id>
+VITE_SOROBAN_RPC_URL_MAINNET=<your-mainnet-soroban-rpc-endpoint>
 ```
 
 Metadata uploads go through a serverless proxy (`api/ipfs/*`) so Pinata
@@ -197,7 +199,7 @@ VERCEL_KV_REST_API_TOKEN=<vercel-kv-rest-token>
 > Vercel KV, or `503` with `store: "in-memory"` for the local-dev fallback.
 > Local development needs neither variable.
 
-> **Note:** `VITE_FACTORY_CONTRACT_ID` and `VITE_TOKEN_WASM_HASH` are required. The app will display a misconfiguration screen if either is missing, rather than failing silently at runtime.
+> **Note:** Per-network contract configuration (`VITE_FACTORY_CONTRACT_ID_TESTNET` / `_MAINNET`, `VITE_TOKEN_WASM_HASH_TESTNET` / `_MAINNET`) and `VITE_SOROBAN_RPC_URL_MAINNET` (for mainnet) ensure each network points to its own contract identity. The app displays a misconfiguration alert if switching to an unconfigured network, rather than failing silently at runtime.
 >
 > **Pinata credentials are not frontend variables.** Vite inlines every `VITE_`-prefixed
 > value into the built JavaScript, so a `VITE_IPFS_API_KEY` is readable by anyone who

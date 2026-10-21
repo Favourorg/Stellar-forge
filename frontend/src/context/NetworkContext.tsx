@@ -13,6 +13,8 @@ interface NetworkContextValue {
   rpcUrl: string
   horizonUrl: string
   networkPassphrase: string
+  factoryContractId: string
+  tokenWasmHash: string
   mismatch: NetworkMismatchState
 }
 
@@ -38,6 +40,8 @@ function NetworkProviderInner({
         rpcUrl: cfg.sorobanRpcUrl,
         horizonUrl: cfg.horizonUrl,
         networkPassphrase: cfg.networkPassphrase,
+        factoryContractId: cfg.factoryContractId,
+        tokenWasmHash: cfg.tokenWasmHash,
         mismatch,
       }}
     >
