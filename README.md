@@ -1074,3 +1074,8 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 ## Disclaimer
 
 This software is for educational and development purposes. Always test thoroughly on testnet before mainnet deployment. The authors are not responsible for any financial losses incurred through the use of this software.
+
+## Handsoff notes
+
+<!-- handsoff-issue-1015 -->
+- #1015: 🟠 `scValToString` renders contract addresses as raw hex, not StrKey — per-token history and explorer links are broken
