@@ -48,4 +48,31 @@ describe('env config', () => {
     const mod = await loadEnv({})
     expect(mod).not.toHaveProperty('isIpfsConfigured')
   })
+
+  // Issue #1016: Per-network contract identity and explicit mainnet RPC
+  it('resolves per-network factory contract IDs independently', async () => {
+    vi.stubEnv('VITE_FACTORY_CONTRACT_ID_TESTNET', 'CTESTNET123')
+    vi.stubEnv('VITE_FACTORY_CONTRACT_ID_MAINNET', 'CMAINNET456')
+    vi.stubEnv('VITE_SOROBAN_RPC_URL_MAINNET', 'https://mainnet-rpc.example.com')
+    vi.resetModules()
+
+    const { ENV, isFactoryConfigured } = await import('../config/env')
+    expect(ENV.factoryContractIdTestnet).toBe('CTESTNET123')
+    expect(ENV.factoryContractIdMainnet).toBe('CMAINNET456')
+    expect(ENV.sorobanRpcUrlMainnet).toBe('https://mainnet-rpc.example.com')
+
+    expect(isFactoryConfigured('testnet')).toBe(true)
+    expect(isFactoryConfigured('mainnet')).toBe(true)
+    expect(isFactoryConfigured('standalone')).toBe(false)
+  })
+
+  it('falls back to VITE_FACTORY_CONTRACT_ID for testnet if VITE_FACTORY_CONTRACT_ID_TESTNET is unset', async () => {
+    vi.stubEnv('VITE_FACTORY_CONTRACT_ID', 'CLEGACY789')
+    vi.resetModules()
+
+    const { ENV, isFactoryConfigured } = await import('../config/env')
+    expect(ENV.factoryContractIdTestnet).toBe('CLEGACY789')
+    expect(isFactoryConfigured('testnet')).toBe(true)
+    expect(isFactoryConfigured('mainnet')).toBe(false)
+  })
 })
